@@ -35,6 +35,70 @@ Agents should not promise direct edits to:
 
 When a desired improvement requires unsupported styling, either express it as a recommendation or approximate it with supported changes such as node placement, link direction, link color, label text, diagram lines/dividers/groups, link creation/deletion, and clearer node content.
 
+## Choosing Canvas Objects
+
+Choose objects by what the reader needs to understand, not by decoration:
+
+- Use **note nodes** for durable concepts with markdown explanation, implementation notes, references, tags, or graph links. If the concept already exists, update or move the existing node instead of creating a duplicate.
+- Use **portal nodes** for node-level drill-down. A portal should be a clear navigational entry point to another canvas, not a markdown note with extra content.
+- Use **canvases** as new detail spaces when the current canvas would become crowded or when a subsystem deserves its own navigable view. Create the canvas first, then create a portal to it.
+- Use **links** when the relationship itself matters visually. Direction should encode flow, ownership, dependency, causality, or write direction. If a relationship is incidental or only explanatory, prefer concise node content over another edge.
+- Use **group boundaries** for clusters that should be read as one subsystem, ownership zone, lifecycle phase, or concern. Groups work best around several nearby nodes with enough padding.
+- Use **dividers** for broad rows or columns. They should separate lanes such as Clients, Control plane, Processing, Storage, Live sync, Restore, Audit, or External systems.
+- Use **arbitrary lines** sparingly for precise separators, thresholds, or callouts that are not well represented by a full lane or group boundary.
+- Use **diagram primitive subcanvases** when the primitive itself represents drill-down detail, such as a group for an entire subsystem. Use a portal node when the detail belongs to one concept.
+
+## Codebase Architecture Maps
+
+A codebase map should compress source code into maintainable architecture, not redraw the call graph. The test is whether a maintainer can open a node and understand what this part owns, where to look in code, and what can break when it changes.
+
+Before drawing, gather evidence from the repository:
+
+- Inventory package manifests, app or CLI entrypoints, framework boot files, route/command registration, generated-code boundaries, config loading, persistence/schema files, external clients, tests, and operational scripts.
+- Trace one or two representative user/runtime flows end to end, such as request handling, command execution, sync, render, import/export, or startup.
+- Identify the boundaries where data changes form, authority changes hands, state is stored, side effects happen, or errors are normalized.
+- Prefer direct file evidence over inferred architecture. If a claim is uncertain, mark it as an open question in the node.
+
+Create a node for:
+
+- A runtime entrypoint or orchestrator that controls lifecycle, routing, or registration.
+- A subsystem with coherent ownership, such as auth, rendering, search, sync, persistence, billing, command handling, or extension loading.
+- A data/state boundary: database schema, cache, queue, filesystem store, in-memory state owner, serialized document format, or API model.
+- An integration boundary: external API client, native bridge, plugin host, worker process, shell command, or network protocol.
+- A policy boundary: permission check, validation layer, conflict resolver, retry logic, error normalization, migration, or feature flag decision.
+- A build/test/deployment concern only when it materially affects runtime behavior or maintainer workflow.
+
+Avoid nodes for:
+
+- Files, functions, methods, classes, or folders that do not own a distinct architectural responsibility.
+- Helper utilities whose behavior is obvious and local.
+- One-off call edges that do not represent ownership, data flow, lifecycle flow, or policy.
+- Exhaustive file inventories; put those in node markdown or subcanvas detail instead.
+- Duplicate nodes for the same concept under different filenames.
+
+### Codebase Node Markdown
+
+Every note node in a codebase map should be useful when opened. Use compact markdown with concrete evidence:
+
+```markdown
+**Role:** Owns command registration and delegates each command to the bridge client.
+
+**Evidence**
+- `src/index.ts` builds the CLI program and registers command modules.
+- `src/commands/*.ts` define command surfaces and request paths.
+- `test/cli.test.ts` verifies each command maps to the expected bridge endpoint.
+
+**Flow:** CLI args -> command module -> `BridgeClient.request()` -> Enso app bridge.
+
+**Invariants**
+- Selectors must be encoded before they enter bridge URLs.
+- Mutating commands expose dry-run behavior before applying.
+
+**Change notes:** Adding a command usually requires a command module, registration in the entrypoint, README coverage, and endpoint tests.
+```
+
+Adapt the headings to the codebase, but keep these facts present: responsibility, code anchors, inputs/outputs, neighbors, invariants, and change risk. Avoid markdown that only lists function calls; function names are useful only when they support a higher-level claim.
+
 ## Design Goals
 
 An Enso diagram should make the primary read obvious in a few seconds, then reward deeper inspection. Prefer calm structure over dense completeness.
