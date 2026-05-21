@@ -1,6 +1,6 @@
 {
   "name": "@enso-app/cli",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local command line interface for the Enso Mac app.",
   "type": "module",
   "bin": {
@@ -14,6 +14,7 @@
     "skills"
   ],
   "scripts": {
+    "prepublishOnly": "npm run build",
     "build": "tsup src/index.ts --format esm --dts --clean",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
