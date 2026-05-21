@@ -64,6 +64,9 @@ export function printEnvelope(
   if (!pretty && envelope.text) {
     stream.write(envelope.text);
     if (!envelope.text.endsWith("\n")) stream.write("\n");
+    if (!envelope.ok && envelope.error.code === "duplicate_link" && stream === process.stderr) {
+      stream.write(DUPLICATE_LINK_HINT);
+    }
     return;
   }
 
