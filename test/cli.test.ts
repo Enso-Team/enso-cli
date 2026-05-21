@@ -461,6 +461,20 @@ describe("commands", () => {
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ content: "# Auth\n" });
   });
 
+  it("unescapes literal \\n in --content before sending to bridge", async () => {
+    await run(["node", "create", "--title", "Router", "--content", "# Router\\n\\nDispatches events."]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      content: "# Router\n\nDispatches events."
+    });
+  });
+
+  it("unescapes literal \\n in link --bound-line", async () => {
+    await run(["link", "update", "abc", "--bound-line", "Routes to [[Target]]\\nnext clause"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      boundLine: "Routes to [[Target]]\nnext clause"
+    });
+  });
+
   it("renders app unavailable as structured JSON", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new Error("ECONNREFUSED");
