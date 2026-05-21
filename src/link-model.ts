@@ -75,6 +75,9 @@ export function buildLinkUpdateBody(options: LinkUpdateOptions): Record<string, 
   if (options.syncProse && options.boundLine !== undefined) {
     throw new Error("Cannot use --sync-prose and --bound-line together");
   }
+  if (options.clearLabel && options.syncProse) {
+    throw new Error("Cannot use --clear-label and --sync-prose together");
+  }
 
   const body: Record<string, unknown> = { dryRun: Boolean(options.dryRun) };
 
