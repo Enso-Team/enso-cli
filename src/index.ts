@@ -41,7 +41,10 @@ export function buildProgram(): Command {
 
   program.hook("postAction", (thisCommand, actionCommand) => {
     const result = actionCommand.getOptionValue("__ensoResult") as EnsoEnvelope | undefined;
-    if (result) printEnvelope(result, Boolean(thisCommand.optsWithGlobals().pretty));
+    if (result) {
+      const pretty = Boolean(thisCommand.optsWithGlobals().pretty);
+      printEnvelope(result, pretty, result.ok ? process.stdout : process.stderr);
+    }
   });
 
   for (const command of program.commands) {

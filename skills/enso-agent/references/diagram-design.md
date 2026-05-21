@@ -132,7 +132,7 @@ Prefer:
 - Undirected or visually neutral links only for symmetric association, membership, or loose reference.
 - Colored lines for semantic classes such as auth, sync, persistence, restore, audit, error, or optional paths.
 - Curved or Bezier links when they reduce visual collisions or create a more graceful path around nodes.
-- Short labels, usually one to three words.
+- Short canvas link labels (one to three words). Bound relation lines are separate; use `link update --bound-line` for custom prose with the target wikilink, not `--sync-prose` when prose should differ from the label.
 - Consistent verbs for similar relationships.
 - Mostly horizontal or vertical paths when node placement can create them.
 - Labels placed in whitespace, away from node borders.

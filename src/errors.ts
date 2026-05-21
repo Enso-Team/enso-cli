@@ -53,7 +53,14 @@ export function errorEnvelope(error: unknown): EnsoEnvelope {
   };
 }
 
-export function printEnvelope(envelope: EnsoEnvelope, pretty = false, stream: NodeJS.WritableStream = process.stdout): void {
+const DUPLICATE_LINK_HINT =
+  "Hint: a link already exists between these nodes. Use link update on the existing link id instead of link create.\n";
+
+export function printEnvelope(
+  envelope: EnsoEnvelope,
+  pretty = false,
+  stream: NodeJS.WritableStream = process.stdout
+): void {
   if (!pretty && envelope.text) {
     stream.write(envelope.text);
     if (!envelope.text.endsWith("\n")) stream.write("\n");
@@ -63,4 +70,13 @@ export function printEnvelope(envelope: EnsoEnvelope, pretty = false, stream: No
   const { text: _text, ...serializableEnvelope } = envelope;
   stream.write(JSON.stringify(serializableEnvelope, null, pretty ? 2 : 0));
   stream.write("\n");
+
+  if (
+    !pretty &&
+    !envelope.ok &&
+    envelope.error.code === "duplicate_link" &&
+    stream === process.stderr
+  ) {
+    stream.write(DUPLICATE_LINK_HINT);
+  }
 }
