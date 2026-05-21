@@ -114,6 +114,9 @@ export function validateLinkUpdateOperation(op: LinkUpdateOperation): void {
   if (op.syncProse && op.boundLine !== undefined) {
     throw new Error("link.update cannot set both syncProse and boundLine");
   }
+  if (op.label === null && op.syncProse) {
+    throw new Error("link.update cannot set both label: null and syncProse");
+  }
   if (op.boundLine !== undefined) {
     assertBoundLineHasWikilink(op.boundLine);
   }

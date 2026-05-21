@@ -307,6 +307,16 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("rejects --clear-label and --sync-prose together", async () => {
+    const result = await run(["link", "update", "abc", "--clear-label", "--sync-prose"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input", message: "Cannot use --clear-label and --sync-prose together" }
+    });
+    expect(calls).toHaveLength(0);
+  });
+
   it("passes through link primaryBinding fields from bridge responses", async () => {
     vi.stubGlobal(
       "fetch",
@@ -344,6 +354,26 @@ describe("commands", () => {
         }
       }
     });
+  });
+
+  it("surfaces duplicate_link hint with --pretty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return Response.json({
+          ok: false,
+          error: {
+            code: "duplicate_link",
+            message: "Link already exists between these nodes"
+          }
+        });
+      })
+    );
+    const result = await run(["--pretty", "link", "create", "A", "B"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("duplicate_link");
+    expect(result.stderr).toContain("Use link update on the existing link id");
   });
 
   it("surfaces duplicate_link errors with a stderr hint", async () => {
@@ -621,6 +651,17 @@ describe("apply and skill", () => {
         { type: "link.update", id: "ghi", boundLine: "Custom prose with [[Target]] in the middle" }
       ]
     });
+  });
+
+  it("rejects apply link.update with label null and syncProse", async () => {
+    const patch = join(tempDir, "bad-link-update.json");
+    writeFileSync(
+      patch,
+      JSON.stringify({ operations: [{ type: "link.update", id: "abc", label: null, syncProse: true }] })
+    );
+    const result = await run(["apply", patch, "--dry-run"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
   });
 
   it("allows diagram primitive fields in apply patches", async () => {

@@ -74,12 +74,7 @@ export function printEnvelope(
   stream.write(JSON.stringify(serializableEnvelope, null, pretty ? 2 : 0));
   stream.write("\n");
 
-  if (
-    !pretty &&
-    !envelope.ok &&
-    envelope.error.code === "duplicate_link" &&
-    stream === process.stderr
-  ) {
+  if (!envelope.ok && envelope.error.code === "duplicate_link" && stream === process.stderr) {
     stream.write(DUPLICATE_LINK_HINT);
   }
 }
