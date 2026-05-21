@@ -217,6 +217,189 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("sends label-only link update without syncProse", async () => {
+    await run(["link", "update", "abc", "--label", "queries"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      label: "queries",
+      dryRun: false
+    });
+    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("syncProse");
+  });
+
+  it("sends syncProse on link update", async () => {
+    await run(["link", "update", "abc", "--sync-prose"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      syncProse: true,
+      dryRun: false
+    });
+    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("label");
+  });
+
+  it("sends label and syncProse together on link update", async () => {
+    await run(["link", "update", "abc", "--label", "queries", "--sync-prose"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      label: "queries",
+      syncProse: true,
+      dryRun: false
+    });
+  });
+
+  it("sends null label when clearing canvas label", async () => {
+    await run(["link", "update", "abc", "--clear-label"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      label: null,
+      dryRun: false
+    });
+  });
+
+  it("sends boundLine on link update without changing label semantics", async () => {
+    await run([
+      "link",
+      "update",
+      "abc",
+      "--bound-line",
+      "Streams events to [[Event Bus]] before persistence"
+    ]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      boundLine: "Streams events to [[Event Bus]] before persistence",
+      dryRun: false
+    });
+    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("syncProse");
+    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("label");
+  });
+
+  it("reads bound-line content from @file", async () => {
+    const line = join(tempDir, "relation.md");
+    writeFileSync(line, "Before [[Target]] after\n", "utf8");
+    await run(["link", "update", "abc", "--bound-line", `@${line}`]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      boundLine: "Before [[Target]] after\n"
+    });
+  });
+
+  it("rejects bound-line without a wikilink", async () => {
+    const result = await run(["link", "update", "abc", "--bound-line", "no wikilink here"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" }
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects --sync-prose and --bound-line together", async () => {
+    const result = await run(["link", "update", "abc", "--sync-prose", "--bound-line", "x [[T]]"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input", message: "Cannot use --sync-prose and --bound-line together" }
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects --label and --clear-label together", async () => {
+    const result = await run(["link", "update", "abc", "--label", "x", "--clear-label"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input", message: "Cannot use --label and --clear-label together" }
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects --clear-label and --sync-prose together", async () => {
+    const result = await run(["link", "update", "abc", "--clear-label", "--sync-prose"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input", message: "Cannot use --clear-label and --sync-prose together" }
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("passes through link primaryBinding fields from bridge responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return Response.json({
+          ok: true,
+          data: {
+            link: {
+              id: "link-1",
+              sourceNodeID: "a",
+              targetNodeID: "b",
+              label: "queries",
+              type: "interfile",
+              isUnbound: false,
+              primaryBinding: {
+                status: "bound",
+                lastKnownRelationText: "queries: [[Target]]"
+              }
+            }
+          }
+        });
+      })
+    );
+    const result = await run(["--pretty", "link", "create", "A", "B", "--label", "queries"]);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      data: {
+        link: {
+          isUnbound: false,
+          primaryBinding: {
+            status: "bound",
+            lastKnownRelationText: "queries: [[Target]]"
+          }
+        }
+      }
+    });
+  });
+
+  it("surfaces duplicate_link hint with --pretty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return Response.json({
+          ok: false,
+          error: {
+            code: "duplicate_link",
+            message: "Link already exists between these nodes"
+          }
+        });
+      })
+    );
+    const result = await run(["--pretty", "link", "create", "A", "B"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("duplicate_link");
+    expect(result.stderr).toContain("Use link update on the existing link id");
+  });
+
+  it("surfaces duplicate_link errors with a stderr hint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return Response.json({
+          ok: false,
+          error: {
+            code: "duplicate_link",
+            message: "Link already exists between these nodes"
+          }
+        });
+      })
+    );
+    const result = await run(["link", "create", "A", "B"]);
+    expect(result.code).toBe(1);
+    const [envelopeLine] = result.stderr.trim().split("\n");
+    expect(JSON.parse(envelopeLine)).toMatchObject({
+      ok: false,
+      error: { code: "duplicate_link" }
+    });
+    expect(result.stderr).toContain("Use link update on the existing link id");
+  });
+
   it("omits vision context by default", async () => {
     await run(["context", "--canvas", "current"]);
     const request = calls[0];
@@ -308,6 +491,20 @@ describe("commands", () => {
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ content: "# Auth\n" });
   });
 
+  it("unescapes literal \\n in --content before sending to bridge", async () => {
+    await run(["node", "create", "--title", "Router", "--content", "# Router\\n\\nDispatches events."]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      content: "# Router\n\nDispatches events."
+    });
+  });
+
+  it("unescapes literal \\n in link --bound-line", async () => {
+    await run(["link", "update", "abc", "--bound-line", "Routes to [[Target]]\\nnext clause"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      boundLine: "Routes to [[Target]]\nnext clause"
+    });
+  });
+
   it("renders app unavailable as structured JSON", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new Error("ECONNREFUSED");
@@ -336,7 +533,7 @@ describe("commands", () => {
     );
     const result = await run(["node", "read", "Auth"]);
     expect(result.code).toBe(1);
-    expect(JSON.parse(result.stdout)).toMatchObject({
+    expect(JSON.parse(result.stderr)).toMatchObject({
       ok: false,
       error: { code: "ambiguous_selector" }
     });
@@ -430,6 +627,16 @@ describe("apply and skill", () => {
           id: "abc",
           color: "green",
           direction: "undirected"
+        },
+        {
+          type: "link.update",
+          id: "def",
+          label: "queries"
+        },
+        {
+          type: "link.update",
+          id: "ghi",
+          boundLine: "Custom prose with [[Target]] in the middle"
         }
       ]
     }));
@@ -439,9 +646,22 @@ describe("apply and skill", () => {
       dryRun: true,
       operations: [
         { type: "link.create", color: "#3B82F6", direction: "directed" },
-        { type: "link.update", id: "abc", color: "green", direction: "undirected" }
+        { type: "link.update", id: "abc", color: "green", direction: "undirected" },
+        { type: "link.update", id: "def", label: "queries" },
+        { type: "link.update", id: "ghi", boundLine: "Custom prose with [[Target]] in the middle" }
       ]
     });
+  });
+
+  it("rejects apply link.update with label null and syncProse", async () => {
+    const patch = join(tempDir, "bad-link-update.json");
+    writeFileSync(
+      patch,
+      JSON.stringify({ operations: [{ type: "link.update", id: "abc", label: null, syncProse: true }] })
+    );
+    const result = await run(["apply", patch, "--dry-run"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
   });
 
   it("allows diagram primitive fields in apply patches", async () => {

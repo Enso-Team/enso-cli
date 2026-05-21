@@ -2,8 +2,7 @@ import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { z } from "zod";
 import { BridgeClient } from "../client.js";
-
-const linkDirectionSchema = z.enum(["directed", "undirected", "bidirectional"]);
+import { linkDirectionSchema, linkUpdateOperationSchema, validateLinkUpdateOperation } from "../link-model.js";
 const lineStyleSchema = z.enum(["solid", "dashed", "dotted"]);
 const dividerOrientationSchema = z.enum(["horizontal", "vertical"]);
 
@@ -26,13 +25,7 @@ const operationSchema = z.discriminatedUnion("type", [
     color: z.string().optional(),
     direction: linkDirectionSchema.optional()
   }),
-  z.object({
-    type: z.literal("link.update"),
-    id: z.string(),
-    label: z.string().optional(),
-    color: z.string().optional(),
-    direction: linkDirectionSchema.optional()
-  }),
+  linkUpdateOperationSchema,
   z.object({ type: z.literal("link.delete"), id: z.string() }),
   z.object({
     type: z.literal("line.create"),
@@ -106,6 +99,9 @@ export function registerApply(program: Command): void {
     .description("Apply a multi-operation Enso patch")
     .action(async (patchPath: string, options: { dryRun?: boolean }) => {
       const patch = patchSchema.parse(JSON.parse(readFileSync(patchPath, "utf8")));
+      for (const operation of patch.operations) {
+        if (operation.type === "link.update") validateLinkUpdateOperation(operation);
+      }
       return new BridgeClient().request("/v1/apply", {
         method: "POST",
         body: { ...patch, dryRun: Boolean(options.dryRun) },

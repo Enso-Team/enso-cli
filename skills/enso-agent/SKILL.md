@@ -21,7 +21,9 @@ Use this skill when working with an Enso vault through the local `enso` CLI.
 
 ## Current Design Surface
 
-The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and group subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; create and delete links; update link labels, direction, and line color; create/update/delete diagram lines, dividers, and group boundaries; attach, detach, create, and open subcanvases from diagram primitives; and create or open canvases. The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
+The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and group subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; attach, detach, create, and open subcanvases from diagram primitives; and create or open canvases. The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
+
+**Links:** Use `link create`, then `link update --label` for a short canvas predicate. Use `link update --bound-line` for custom relation prose in the source note (must include the target wikilink anywhere in the line). Do not use `--sync-prose` when canvas label and note prose should differ. `--label` does not rewrite note markdown. Avoid `node write` on link sources unless editing non-relation body. Do not create the same edge twice.
 
 Use portal nodes or diagram primitive subcanvas links when a concept needs drill-down detail without crowding the main canvas. Create or open node-level drill-downs with `portal create`, `portal open`, and `portal change-subcanvas`. Attach existing subcanvases to diagram primitives with `diagram attach-subcanvas`, create new empty detail canvases for primitives with `diagram create-subcanvas`, and open them with `diagram open-subcanvas`. Prefer portals and subcanvases over adding many low-level implementation nodes to an already dense overview. Do not write markdown content to nodes whose context output has `kind: "portal"`.
 
@@ -101,8 +103,10 @@ enso node write "Title" --content @note.md --dry-run
 enso portal create --title "Sync Server Detail" --subcanvas-ref "Canvases/Sync Server Detail.json" --dry-run
 enso portal open "Sync Server Detail"
 enso portal change-subcanvas "Sync Server Detail" "Canvases/Existing Detail.json" --dry-run
-enso link create "Source" "Target" --label "supports" --direction directed --color "#3B82F6" --dry-run
-enso link update "link-id" --direction undirected --color green --dry-run
+enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-run
+enso link update "link-id" --label supports --dry-run
+enso link update "link-id" --bound-line "Longer prose anywhere before [[Target Title]]"
+enso link update "link-id" --sync-prose
 enso diagram line --x1 17800 --y1 18100 --x2 19400 --y2 18100 --title "Control plane" --color "#6B7280" --dry-run
 enso diagram divider --orientation horizontal --x 17800 --y 18100 --length 1600 --title "Live sync" --color "#6B7280" --dry-run
 enso diagram group --x 18300 --y 18300 --width 1200 --height 700 --title "Persistence + Restore" --color "#6B7280" --dry-run

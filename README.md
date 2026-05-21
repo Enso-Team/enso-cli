@@ -197,6 +197,8 @@ enso node read "Node Title" --pretty
 enso node create --title "New Node" --content "Markdown body" --dry-run
 enso node create --title "New Node" --content "Markdown body"
 enso node write "Node Title" --content @note.md --dry-run
+
+Inline `--content` and `--bound-line` strings automatically turn shell-style `\n` into real newlines before JSON encoding. Prefer `@file` for long markdown, or use `$'line one\nline two'` in bash if you need explicit control.
 enso node move "Node Title" --x 1200 --y 900 --dry-run
 enso node neighbors "Node Title" --depth 2 --pretty
 ```
@@ -212,12 +214,47 @@ enso portal open "Sync Server Detail"
 enso portal change-subcanvas "Sync Server Detail" "Canvases/Existing Detail.json" --dry-run
 ```
 
-### Links
+### Links and relation sync
+
+Three concepts (do not conflate):
+
+| Concept | Meaning | Where it lives |
+|--------|---------|----------------|
+| Canvas label | Graph predicate on the link | `link.label` in bridge response |
+| Wikilink | `[[TargetTitle]]` in source note | vault `.md` |
+| Bound occurrence | One anchored line owned by the link | `primaryBinding` + line in source note |
+
+Rules:
+
+- `link create` always establishes `primaryBinding` and inserts `Related: [[Target]]` in the source note (even when `--label` is omitted).
+- `link update --label` sets the **canvas label only** — it does not rewrite bound markdown.
+- `link update --bound-line` replaces the owned relation line in the source note (custom prose; must include the target wikilink, which may appear anywhere in the line). Does not change the canvas label.
+- `link update --sync-prose` rewrites the bound line from the canvas label or Related fallback (use when note text should mirror the label, not for longer custom prose).
+- A second `link create` between the same undirected pair returns `duplicate_link`.
+- After `node write`, re-fetch links if binding state matters (`isUnbound`, `primaryBinding.status`).
 
 ```sh
-enso link create "Source Node" "Target Node" --label "depends on" --direction directed --color "#3B82F6" --dry-run
+enso link create "Source Node" "Target Node" --direction directed --color "#3B82F6" --dry-run
 enso link list --pretty
-enso link update "link-id" --label "syncs" --direction directed --color "#10B981" --dry-run
+enso link update "link-id" --label "implements" --dry-run
+enso link update "link-id" --bound-line "Streams domain events to consumers: [[Event Bus]]"
+enso link update "link-id" --bound-line @relation-line.md
+enso link update "link-id" --sync-prose
+enso link update "link-id" --clear-label --dry-run
+```
+
+Typical workflow (short canvas label + longer bound prose):
+
+```sh
+enso link create "Source" "Target"
+enso link update "<id>" --label syncs
+enso link update "<id>" --bound-line "Streams domain events to downstream consumers: [[Event Bus]]"
+```
+
+When note text should mirror the canvas label:
+
+```sh
+enso link update "<id>" --label implements --sync-prose
 ```
 
 Use consistent link semantics when building diagrams:
@@ -290,9 +327,18 @@ For larger changes, use `enso apply` with a patch file:
       "type": "link.create",
       "source": "Client",
       "target": "API",
-      "label": "requests",
       "direction": "directed",
       "color": "#10B981"
+    },
+    {
+      "type": "link.update",
+      "id": "<link-id-from-create>",
+      "label": "syncs"
+    },
+    {
+      "type": "link.update",
+      "id": "<link-id-from-create>",
+      "boundLine": "Streams domain events to downstream consumers: [[API]]"
     },
     {
       "type": "portal.open",
