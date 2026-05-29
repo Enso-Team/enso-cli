@@ -1,6 +1,13 @@
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient } from "../client.js";
 import { readContentValue } from "../content.js";
+
+function parseCoord(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new InvalidArgumentError(`${name} must be a number`);
+  return parsed;
+}
 
 export function registerNode(program: Command): void {
   const node = program.command("node").description("Manage Enso nodes");
@@ -32,20 +39,26 @@ export function registerNode(program: Command): void {
     .requiredOption("--title <title>")
     .option("--content <string|@file>")
     .option("--canvas <selector|current>", "target canvas", "current")
+    .option("--x <number>", "world-space center x (omit to auto-place at viewport center)")
+    .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
     .option("--dry-run", "validate without mutating")
-    .action(async (options: { title: string; content?: string; canvas?: string; dryRun?: boolean }) =>
-      new BridgeClient().request("/v1/nodes", {
+    .action(async (options: { title: string; content?: string; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
+      const x = parseCoord(options.x, "x");
+      const y = parseCoord(options.y, "y");
+      return new BridgeClient().request("/v1/nodes", {
         method: "POST",
         body: {
           kind: "note",
           title: options.title,
           content: options.content ? readContentValue(options.content) : "",
           canvas: options.canvas ?? "current",
+          ...(x !== undefined ? { x } : {}),
+          ...(y !== undefined ? { y } : {}),
           dryRun: Boolean(options.dryRun)
         },
         dryRun: Boolean(options.dryRun)
-      })
-    );
+      });
+    });
   node
     .command("move")
     .argument("<selector>")

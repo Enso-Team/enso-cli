@@ -151,7 +151,8 @@ Because the current bridge cannot style individual nodes, use layout and text to
 - Give primary nodes central positions with more whitespace.
 - Move secondary nodes to the periphery.
 - Use shorter titles for primary nodes.
-- Avoid making a title or overview node look like another processing step unless it participates in the graph.
+- **Never add an overview / summary / title note** when the canvas name already identifies the diagram. That duplicates the canvas tab and often masquerades as a pipeline step. Use canvas name, group titles, dividers, and portal labels for hierarchy instead.
+- Avoid making any remaining title-like node look like a processing step unless it participates in the graph.
 - If a large database or storage concept dominates the diagram, place it as a terminal layer on the right or bottom rather than as a random oversized destination.
 
 ## Grouping

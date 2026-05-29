@@ -18,12 +18,13 @@ Use this skill when working with an Enso vault through the local `enso` CLI.
 7. Use `enso apply --dry-run` for multi-step patches, then `enso apply` only after validation succeeds.
 8. Never edit Enso vault files directly. Mutations must go through the Enso app bridge.
 9. For diagram design work, including codebase architecture maps, read `references/diagram-design.md` before proposing or applying layout changes.
+10. For **Mermaid sequence diagrams**, do not parse or lay them out by hand. Use deterministic CLI conversion when available: `enso import sequence` (see enso-cli). The skill owns spatial diagram design, not Mermaid compilation.
 
 ## Current Design Surface
 
 The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and portal-node subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; attach, create, and open subcanvases on portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; and create or open canvases. Subcanvases live on portal nodes; reach a subcanvas through its portal node. The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
 
-**Links:** Use `link create`, then `link update --label` for a short canvas predicate. Use `link update --bound-line` for custom relation prose in the source note (must include the target wikilink anywhere in the line). Do not use `--sync-prose` when canvas label and note prose should differ. `--label` does not rewrite note markdown. Avoid `node write` on link sources unless editing non-relation body. Do not create the same edge twice.
+**Links:** Use `link create`, then `link update --label` for a short canvas predicate. Use `link update --bound-line` for custom relation prose in the source note (must include the target wikilink anywhere in the line). Do not use `--sync-prose` when canvas label and note prose should differ. `--label` does not rewrite note markdown. Avoid `node write` on link sources unless editing non-relation body. Do not create the same edge twice. **Do not source interfile links from portal nodes** when you need bound note prose — portals have no markdown; use a note as source (often bidirectional back to the portal) or keep the edge canvas-label-only until portal-sourced links are supported. Keep canvas labels free of URL schemes (`finally://`); put schemes in note body or use a short label like `deep link`.
 
 Use portal nodes when a concept needs drill-down detail without crowding the main canvas. Create or open node-level drill-downs with `portal create`, `portal open`, and `portal change-subcanvas`. Subcanvases live on portal nodes. Prefer portals over adding many low-level implementation nodes to an already dense overview. Do not write markdown content to nodes whose context output has `kind: "portal"`.
 
@@ -31,6 +32,7 @@ Use portal nodes when a concept needs drill-down detail without crowding the mai
 
 Use the smallest canvas object that communicates the structure clearly:
 
+- **Do not create overview, summary, or title nodes** on architecture diagrams. The canvas name is the title; high-level context belongs in the canvas name, portal titles, group labels, or the first substantive node — never a floating `* Overview` note wired into the graph.
 - Create a **note node** with `enso node create` or `node.create` for a durable concept that needs markdown content, tags, refs, links, or explanation. Prefer editing an existing note when the concept is already present.
 - Create a **portal node** with `enso portal create` or `portal.create` when a concept needs a drill-down canvas. Portals are navigation objects; do not put markdown content in them.
 - Create a **canvas** with `enso canvas create` or `canvas.create` before creating a portal when the target detail canvas does not already exist.
@@ -39,6 +41,32 @@ Use the smallest canvas object that communicates the structure clearly:
 - Create a **divider** with `enso diagram divider` or `divider.create` for broad horizontal or vertical lanes such as Clients, Control plane, Processing, Storage, Live sync, Restore, or Audit.
 - Create an **arbitrary line** with `enso diagram line` or `line.create` only for a precise separator or callout that a group or divider cannot express cleanly.
 - Create a **portal subcanvas** with `enso portal create` / `portal change-subcanvas` when a concept deserves a drill-down canvas. Subcanvases live on portal nodes; use a portal whenever you want a drill-down.
+
+## Placement and Coordinates
+
+All `x/y` in the API are **world-space coordinates and refer to the element center** (ADR-0003), never viewport pixels. There is no viewport-relative placement.
+
+**Always anchor placement to the live viewport. Never invent absolute coordinates.** Before placing nodes:
+
+1. Run `enso context --canvas current --vision --pretty` and read `data.vision.viewport.visibleRect` (`x`, `y`, `width`, `height`) and `scale`.
+2. Compute the viewport center: `cx = x + width/2`, `cy = y + height/2`.
+3. Lay the diagram out **around `(cx, cy)`** in world units.
+
+**Keep it compact so the whole diagram is visible at one zoom (target 0.5–1.0x, never force the user to 0.2x).** Nodes are ~`220 x 140` world units. Use small gaps, not large ones:
+
+- Column step ~`450`, row step ~`280` between node centers is plenty. A 2x3 grid then spans only ~`900 x 700` world units and frames comfortably.
+- Do **not** use 1000+ unit gaps or absolute origins like `(1200, 800)` unrelated to the viewport — that scatters nodes off-camera and forces extreme zoom-out.
+- Keep the cluster's overall span well inside `visibleRect` (roughly ≤ 60–70% of `width`/`height`) so it reads without panning.
+
+**Place atomically with `node create --x --y`** (or `node.create` with `x`/`y` in an `apply` patch). This sets the world-space center on creation — prefer it over creating then `node.move`, which also avoids the dry-run gap where a `node.move` cannot resolve a node created in the same dry-run batch.
+
+Worked example (viewport center `cx,cy`; a 2x3 grid, steps 450/280):
+
+```sh
+# cols: cx-225, cx+225 ; rows: cy-280, cy, cy+280
+enso node create --title "A" --x "$((CX-225))" --y "$((CY-280))" --dry-run
+enso node create --title "B" --x "$((CX+225))" --y "$((CY-280))" --dry-run
+```
 
 ## Codebase Maps
 

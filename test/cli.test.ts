@@ -139,6 +139,24 @@ describe("commands", () => {
     });
   });
 
+  it("places nodes with world-space x/y on create", async () => {
+    await run(["node", "create", "--title", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+      kind: "note",
+      title: "Placed",
+      x: 2700,
+      y: 2850,
+      dryRun: true
+    });
+  });
+
+  it("omits x/y when not provided on create", async () => {
+    await run(["node", "create", "--title", "Auto"]);
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).not.toHaveProperty("x");
+    expect(body).not.toHaveProperty("y");
+  });
+
   it("passes portal operations", async () => {
     await run(["portal", "create", "--title", "Auth Detail", "--subcanvas-ref", "Canvases/Auth Detail.json", "--dry-run"]);
     expect(new URL(calls[0].url).pathname + new URL(calls[0].url).search).toBe("/v1/nodes?dryRun=true");

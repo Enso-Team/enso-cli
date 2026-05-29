@@ -196,6 +196,9 @@ enso node list --canvas current --pretty
 enso node read "Node Title" --pretty
 enso node create --title "New Node" --content "Markdown body" --dry-run
 enso node create --title "New Node" --content "Markdown body"
+# Optional world-space center placement (omit to auto-place at the viewport center).
+# x/y are world coordinates of the node center (ADR-0003), not viewport pixels.
+enso node create --title "Placed Node" --x 2700 --y 2850
 enso node write "Node Title" --content @note.md --dry-run
 
 Inline `--content` and `--bound-line` strings automatically turn shell-style `\n` into real newlines before JSON encoding. Prefer `@file` for long markdown, or use `$'line one\nline two'` in bash if you need explicit control.

@@ -7,7 +7,7 @@ const lineStyleSchema = z.enum(["solid", "dashed", "dotted"]);
 const dividerOrientationSchema = z.enum(["horizontal", "vertical"]);
 
 const operationSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("node.create"), title: z.string(), content: z.string().optional(), canvas: z.string().optional() }),
+  z.object({ type: z.literal("node.create"), title: z.string(), content: z.string().optional(), canvas: z.string().optional(), x: z.number().optional(), y: z.number().optional() }),
   z.object({ type: z.literal("node.write"), selector: z.string(), content: z.string() }),
   z.object({ type: z.literal("node.move"), selector: z.string(), x: z.number(), y: z.number() }),
   z.object({ type: z.literal("node.delete"), selector: z.string() }),
