@@ -1,6 +1,6 @@
 {
   "name": "@enso-app/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local command line interface for the Enso Mac app.",
   "type": "module",
   "bin": {

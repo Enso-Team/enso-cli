@@ -103,10 +103,6 @@ describe("commands", () => {
     [["diagram", "divider", "--orientation", "horizontal", "--x", "10", "--y", "20", "--length", "400"], "/v1/diagram-primitives?dryRun=false", "POST"],
     [["diagram", "group", "--x", "10", "--y", "20", "--width", "400", "--height", "240"], "/v1/diagram-primitives?dryRun=false", "POST"],
     [["diagram", "update", "abc", "--title", "Identity"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
-    [["diagram", "attach-subcanvas", "abc", "Canvases/Auth%20Detail.json"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
-    [["diagram", "detach-subcanvas", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
-    [["diagram", "create-subcanvas", "abc", "--name", "Group Detail"], "/v1/diagram-primitives/abc/subcanvas?dryRun=false", "POST"],
-    [["diagram", "open-subcanvas", "abc"], "/v1/diagram-primitives/abc/subcanvas/open?dryRun=false", "POST"],
     [["diagram", "delete", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "DELETE"],
     [["graph", "inspect"], "/v1/context", "POST"],
     [["graph", "broken"], "/v1/context", "POST"],
@@ -167,26 +163,6 @@ describe("commands", () => {
 
     await run(["portal", "delete", "Auth Detail", "--dry-run"]);
     expect(new URL(calls[3].url).pathname + new URL(calls[3].url).search).toBe("/v1/nodes/Auth%20Detail?dryRun=true");
-    expect(JSON.parse(String(calls[3].init.body))).toMatchObject({ dryRun: true });
-  });
-
-  it("passes diagram primitive subcanvas operations", async () => {
-    await run(["diagram", "attach-subcanvas", "group-1", "Canvases/Auth Detail.json", "--dry-run"]);
-    expect(new URL(calls[0].url).pathname + new URL(calls[0].url).search).toBe("/v1/diagram-primitives/group-1?dryRun=true");
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      subcanvasRef: "Canvases/Auth Detail.json",
-      dryRun: true
-    });
-
-    await run(["diagram", "detach-subcanvas", "group-1"]);
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ subcanvasRef: null, dryRun: false });
-
-    await run(["diagram", "create-subcanvas", "group-1", "--name", "Group Detail"]);
-    expect(new URL(calls[2].url).pathname + new URL(calls[2].url).search).toBe("/v1/diagram-primitives/group-1/subcanvas?dryRun=false");
-    expect(JSON.parse(String(calls[2].init.body))).toMatchObject({ name: "Group Detail", dryRun: false });
-
-    await run(["diagram", "open-subcanvas", "group-1", "--dry-run"]);
-    expect(new URL(calls[3].url).pathname + new URL(calls[3].url).search).toBe("/v1/diagram-primitives/group-1/subcanvas/open?dryRun=true");
     expect(JSON.parse(String(calls[3].init.body))).toMatchObject({ dryRun: true });
   });
 
@@ -729,11 +705,7 @@ describe("apply and skill", () => {
         { type: "portal.create", title: "Auth Detail", subcanvasRef: "Canvases/Auth Detail.json" },
         { type: "portal.open", selector: "Auth Detail" },
         { type: "portal.changeSubcanvas", selector: "Auth Detail", subcanvasRef: "Canvases/New Detail.json" },
-        { type: "portal.delete", selector: "Auth Detail" },
-        { type: "diagramPrimitive.attachSubcanvas", id: "group-1", subcanvasRef: "Canvases/Group Detail.json" },
-        { type: "diagramPrimitive.detachSubcanvas", id: "group-1" },
-        { type: "diagramPrimitive.createSubcanvas", id: "group-1", name: "Group Detail" },
-        { type: "diagramPrimitive.openSubcanvas", id: "group-1" }
+        { type: "portal.delete", selector: "Auth Detail" }
       ]
     }));
 
@@ -744,11 +716,7 @@ describe("apply and skill", () => {
         { type: "portal.create", title: "Auth Detail", subcanvasRef: "Canvases/Auth Detail.json" },
         { type: "portal.open", selector: "Auth Detail" },
         { type: "portal.changeSubcanvas", selector: "Auth Detail", subcanvasRef: "Canvases/New Detail.json" },
-        { type: "portal.delete", selector: "Auth Detail" },
-        { type: "diagramPrimitive.attachSubcanvas", id: "group-1", subcanvasRef: "Canvases/Group Detail.json" },
-        { type: "diagramPrimitive.detachSubcanvas", id: "group-1" },
-        { type: "diagramPrimitive.createSubcanvas", id: "group-1", name: "Group Detail" },
-        { type: "diagramPrimitive.openSubcanvas", id: "group-1" }
+        { type: "portal.delete", selector: "Auth Detail" }
       ]
     });
   });

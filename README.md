@@ -47,7 +47,7 @@ This means agents can:
 - Create, open, retarget, and delete portal nodes.
 - Create and update links with labels, directions, and colors.
 - Add group boundaries, section dividers, and arbitrary diagram lines.
-- Attach or open subcanvases on diagram primitives.
+- Attach or open subcanvases on portal nodes.
 - Capture viewport-only visual context with screenshot metadata and diagnostics.
 - Apply multi-operation patches with a dry-run validation pass.
 
@@ -134,7 +134,7 @@ The skill teaches agents the safe Enso workflow:
 - Use `enso context --canvas current --vision --pretty` for diagram layout work.
 - Inspect screenshots and diagnostics together.
 - Use `--dry-run` before mutations.
-- Prefer portal nodes or diagram primitive subcanvases for detailed drill-downs instead of crowding one canvas.
+- Prefer portal nodes for detailed drill-downs instead of crowding one canvas.
 - Never edit Enso vault files directly.
 
 ## Basic Usage
@@ -276,17 +276,17 @@ enso diagram divider --orientation vertical --x 2200 --y 900 --length 900 --titl
 enso diagram line --x1 1000 --y1 1800 --x2 2200 --y2 1800 --title "Restore path" --color "#06B6D4" --dry-run
 ```
 
-Groups, dividers, and lines can also have subcanvases attached.
+`--x/--y` (and `--x1/--y1/--x2/--y2`) are the element's **center** in world coordinates, matching node placement. `enso diagram divider` is a convenience that produces a straight horizontal or vertical line; the bridge stores and returns it as `kind: "line"`.
 
 ### Subcanvases
 
-Subcanvases are useful when a portal node or group needs implementation detail without crowding the overview. Use portal nodes for node-level drill-downs. Diagram primitives still support direct subcanvas commands.
+Subcanvases are useful when a portal node needs implementation detail without crowding the overview. Subcanvases live on **portal nodes**: create one, then attach or open it from the portal node.
 
 ```sh
 enso canvas create "Sync Server Detail" --dry-run
 enso portal create --title "Sync Server Detail" --subcanvas-ref "Canvases/Sync Server Detail.json" --dry-run
 enso portal open "Sync Server Detail"
-enso diagram create-subcanvas "group-id" --name "Group Detail" --dry-run
+enso portal change-subcanvas "Sync Server Detail" "Canvases/Existing Detail.json" --dry-run
 ```
 
 ### Multi-Operation Patches

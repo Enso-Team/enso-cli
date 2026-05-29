@@ -195,60 +195,6 @@ export function registerDiagram(program: Command): void {
     );
 
   diagram
-    .command("attach-subcanvas")
-    .argument("<primitive-id>")
-    .argument("<canvas-ref>")
-    .option("--dry-run", "validate without mutating")
-    .description("Attach an existing canvas as this diagram primitive's subcanvas")
-    .action(async (primitiveId: string, canvasRef: string, options: { dryRun?: boolean }) =>
-      new BridgeClient().request(`/v1/diagram-primitives/${encodeURIComponent(primitiveId)}`, {
-        method: "PUT",
-        body: { subcanvasRef: canvasRef, dryRun: Boolean(options.dryRun) },
-        dryRun: Boolean(options.dryRun)
-      })
-    );
-
-  diagram
-    .command("detach-subcanvas")
-    .argument("<primitive-id>")
-    .option("--dry-run", "validate without mutating")
-    .description("Detach this diagram primitive's subcanvas")
-    .action(async (primitiveId: string, options: { dryRun?: boolean }) =>
-      new BridgeClient().request(`/v1/diagram-primitives/${encodeURIComponent(primitiveId)}`, {
-        method: "PUT",
-        body: { subcanvasRef: null, dryRun: Boolean(options.dryRun) },
-        dryRun: Boolean(options.dryRun)
-      })
-    );
-
-  diagram
-    .command("create-subcanvas")
-    .argument("<primitive-id>")
-    .requiredOption("--name <name>")
-    .option("--dry-run", "validate without mutating")
-    .description("Create a new empty canvas and attach it to this diagram primitive")
-    .action(async (primitiveId: string, options: { name: string; dryRun?: boolean }) =>
-      new BridgeClient().request(`/v1/diagram-primitives/${encodeURIComponent(primitiveId)}/subcanvas`, {
-        method: "POST",
-        body: { name: options.name, dryRun: Boolean(options.dryRun) },
-        dryRun: Boolean(options.dryRun)
-      })
-    );
-
-  diagram
-    .command("open-subcanvas")
-    .argument("<primitive-id>")
-    .option("--dry-run", "validate without mutating")
-    .description("Open this diagram primitive's attached subcanvas")
-    .action(async (primitiveId: string, options: { dryRun?: boolean }) =>
-      new BridgeClient().request(`/v1/diagram-primitives/${encodeURIComponent(primitiveId)}/subcanvas/open`, {
-        method: "POST",
-        body: { dryRun: Boolean(options.dryRun) },
-        dryRun: Boolean(options.dryRun)
-      })
-    );
-
-  diagram
     .command("delete")
     .argument("<primitive-id>")
     .option("--dry-run", "validate without mutating")

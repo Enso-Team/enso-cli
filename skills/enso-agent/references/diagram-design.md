@@ -11,7 +11,7 @@ Through the current Enso CLI/app bridge, agents can:
 - Create and delete links.
 - Set link labels, direction, and line color.
 - Create, update, and delete arbitrary diagram lines, structured section dividers, and group boundaries.
-- Attach, detach, create, and open subcanvas links from diagram primitives.
+- Attach, create, and open subcanvas links on portal nodes (subcanvases live on portal nodes).
 - Create, inspect, and open canvases.
 - Capture viewport screenshots and structured vision diagnostics.
 
@@ -21,10 +21,10 @@ The Enso app visual surface includes:
 - Colored relationship lines.
 - Link labels.
 - Arbitrary diagram lines, section dividers, and group boundaries.
-- Portal nodes and group subcanvas affordances for drill-down diagrams.
+- Portal nodes and their subcanvas affordances for drill-down diagrams.
 - Canvas-level visual affordances such as the dark grid and selection states.
 
-Current CLI support is narrower than the app's full visual surface, but link direction, line color, diagram lines, section dividers, group boundaries, portal nodes, and diagram primitive subcanvas links are exposed. Direction values are `directed`, `undirected`, and `bidirectional`. Color is a string passed to the bridge, such as a hex color or named color supported by the app. Treat direction, color, diagram lines, dividers, groups, portals, and subcanvases as semantic tools, not decoration.
+Current CLI support is narrower than the app's full visual surface, but link direction, line color, diagram lines, section dividers, group boundaries, portal nodes, and portal-node subcanvas links are exposed. Subcanvases live on portal nodes. Direction values are `directed`, `undirected`, and `bidirectional`. Color is a string passed to the bridge, such as a hex color or named color supported by the app. Treat direction, color, diagram lines, dividers, groups, portals, and subcanvases as semantic tools, not decoration.
 
 Agents should not promise direct edits to:
 
@@ -46,7 +46,7 @@ Choose objects by what the reader needs to understand, not by decoration:
 - Use **group boundaries** for clusters that should be read as one subsystem, ownership zone, lifecycle phase, or concern. Groups work best around several nearby nodes with enough padding.
 - Use **dividers** for broad rows or columns. They should separate lanes such as Clients, Control plane, Processing, Storage, Live sync, Restore, Audit, or External systems.
 - Use **arbitrary lines** sparingly for precise separators, thresholds, or callouts that are not well represented by a full lane or group boundary.
-- Use **diagram primitive subcanvases** when the primitive itself represents drill-down detail, such as a group for an entire subsystem. Use a portal node when the detail belongs to one concept.
+- Use a **portal node** when a concept needs drill-down detail. Subcanvases live on portal nodes, so to open a subsystem's detail, place a portal node for it.
 
 ## Codebase Architecture Maps
 
@@ -182,9 +182,9 @@ Use structured dividers and group boundaries when proximity alone is not enough:
 Use subcanvases for progressive disclosure:
 
 - Create a portal node when a subsystem or concept needs useful implementation detail.
-- Attach a subcanvas to a group boundary when the whole cluster deserves a detailed follow-up diagram.
+- When a whole cluster deserves a detailed follow-up diagram, add a portal node for it; subcanvases live on portal nodes.
 - Prefer a subcanvas over adding every file, table, endpoint, or edge case to the overview.
-- Keep the portal or group title high level; put the detailed mechanics in the subcanvas.
+- Keep the portal title high level; put the detailed mechanics in the subcanvas.
 
 ## Edges And Labels
 

@@ -21,11 +21,11 @@ Use this skill when working with an Enso vault through the local `enso` CLI.
 
 ## Current Design Surface
 
-The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and group subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; attach, detach, create, and open subcanvases from diagram primitives; and create or open canvases. The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
+The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and portal-node subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; attach, create, and open subcanvases on portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; and create or open canvases. Subcanvases live on portal nodes; reach a subcanvas through its portal node. The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
 
 **Links:** Use `link create`, then `link update --label` for a short canvas predicate. Use `link update --bound-line` for custom relation prose in the source note (must include the target wikilink anywhere in the line). Do not use `--sync-prose` when canvas label and note prose should differ. `--label` does not rewrite note markdown. Avoid `node write` on link sources unless editing non-relation body. Do not create the same edge twice.
 
-Use portal nodes or diagram primitive subcanvas links when a concept needs drill-down detail without crowding the main canvas. Create or open node-level drill-downs with `portal create`, `portal open`, and `portal change-subcanvas`. Attach existing subcanvases to diagram primitives with `diagram attach-subcanvas`, create new empty detail canvases for primitives with `diagram create-subcanvas`, and open them with `diagram open-subcanvas`. Prefer portals and subcanvases over adding many low-level implementation nodes to an already dense overview. Do not write markdown content to nodes whose context output has `kind: "portal"`.
+Use portal nodes when a concept needs drill-down detail without crowding the main canvas. Create or open node-level drill-downs with `portal create`, `portal open`, and `portal change-subcanvas`. Subcanvases live on portal nodes. Prefer portals over adding many low-level implementation nodes to an already dense overview. Do not write markdown content to nodes whose context output has `kind: "portal"`.
 
 ## What To Create When
 
@@ -38,7 +38,7 @@ Use the smallest canvas object that communicates the structure clearly:
 - Create a **group boundary** with `enso diagram group` or `group.create` when several nearby nodes form a subsystem, ownership area, lifecycle phase, or concern that benefits from a visible boundary.
 - Create a **divider** with `enso diagram divider` or `divider.create` for broad horizontal or vertical lanes such as Clients, Control plane, Processing, Storage, Live sync, Restore, or Audit.
 - Create an **arbitrary line** with `enso diagram line` or `line.create` only for a precise separator or callout that a group or divider cannot express cleanly.
-- Create or attach a **diagram primitive subcanvas** when a whole group, divider, or line represents detail worth opening. Use a portal instead when the drill-down belongs to a node-level concept.
+- Create a **portal subcanvas** with `enso portal create` / `portal change-subcanvas` when a concept deserves a drill-down canvas. Subcanvases live on portal nodes; use a portal whenever you want a drill-down.
 
 ## Codebase Maps
 
@@ -54,7 +54,7 @@ Every codebase-map note node must contain useful markdown, not just a call list.
 - **Invariants:** assumptions, constraints, lifecycle rules, or error cases a maintainer must preserve.
 - **Change notes:** where to edit safely, what breaks if the boundary changes, or open questions if the code is ambiguous.
 
-Use links for architectural relationships such as "registers", "calls", "persists", "validates", "publishes", "loads config", or "handles errors". If a relationship needs a long explanation, put the explanation inside the relevant node markdown and keep the visible link label short. Use portals or group subcanvases for drill-downs when a subsystem needs file-level detail.
+Use links for architectural relationships such as "registers", "calls", "persists", "validates", "publishes", "loads config", or "handles errors". If a relationship needs a long explanation, put the explanation inside the relevant node markdown and keep the visible link label short. Use portal nodes for drill-downs when a subsystem needs file-level detail.
 
 ## Diagram Review Workflow
 
@@ -110,5 +110,4 @@ enso link update "link-id" --sync-prose
 enso diagram line --x1 17800 --y1 18100 --x2 19400 --y2 18100 --title "Control plane" --color "#6B7280" --dry-run
 enso diagram divider --orientation horizontal --x 17800 --y 18100 --length 1600 --title "Live sync" --color "#6B7280" --dry-run
 enso diagram group --x 18300 --y 18300 --width 1200 --height 700 --title "Persistence + Restore" --color "#6B7280" --dry-run
-enso diagram create-subcanvas "group-id" --name "Persistence Detail" --dry-run
 ```

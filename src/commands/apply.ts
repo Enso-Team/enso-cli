@@ -80,11 +80,7 @@ const operationSchema = z.discriminatedUnion("type", [
     strokeWidth: z.number().positive().optional(),
     fillOpacity: z.number().min(0).max(0.18).optional()
   }),
-  z.object({ type: z.literal("diagramPrimitive.delete"), id: z.string() }),
-  z.object({ type: z.literal("diagramPrimitive.attachSubcanvas"), id: z.string(), subcanvasRef: z.string() }),
-  z.object({ type: z.literal("diagramPrimitive.detachSubcanvas"), id: z.string() }),
-  z.object({ type: z.literal("diagramPrimitive.createSubcanvas"), id: z.string(), name: z.string() }),
-  z.object({ type: z.literal("diagramPrimitive.openSubcanvas"), id: z.string() })
+  z.object({ type: z.literal("diagramPrimitive.delete"), id: z.string() })
 ]);
 
 const patchSchema = z.object({
