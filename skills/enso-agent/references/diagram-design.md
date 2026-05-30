@@ -2,6 +2,20 @@
 
 Use this reference when creating, reviewing, or improving technical diagrams in Enso.
 
+## Contents
+
+- Capability Contract
+- Choosing Canvas Objects
+- Codebase Architecture Maps (+ Codebase Node Markdown)
+- Design Goals
+- Viewport Anchoring (numeric placement recipe)
+- Layout Patterns
+- Visual Hierarchy Without Styling
+- Grouping
+- Edges And Labels
+- Diagnostics And Fix Order (+ iterative layout loop)
+- Review Checklist
+
 ## Capability Contract
 
 Through the current Enso CLI/app bridge, agents can:
@@ -126,6 +140,28 @@ Avoid:
 - Edge labels squeezed against nodes or other labels.
 - Decorative layout choices that make the technical relationship harder to parse.
 
+## Viewport Anchoring
+
+All `x/y` are world-space coordinates referring to the element **center** (ADR-0003); there is no viewport-relative placement. Always anchor to the live viewport — never invent absolute origins.
+
+1. Run `enso context --canvas current --vision --pretty` and read `data.vision.viewport.visibleRect` (`x`, `y`, `width`, `height`) and `scale`.
+2. Viewport center: `cx = x + width/2`, `cy = y + height/2`.
+3. Lay the diagram out around `(cx, cy)` in world units.
+
+Keep it compact so the whole diagram frames at one zoom (target 0.5–1.0x, never force 0.2x). Nodes are ~`220 x 140` world units:
+
+- Column step ~`450`, row step ~`280` between centers is plenty; a 2x3 grid then spans only ~`900 x 700`.
+- Do not use 1000+ unit gaps or absolute origins like `(1200, 800)` unrelated to the viewport — that scatters nodes off-camera and forces extreme zoom-out.
+- Keep the cluster span well inside `visibleRect` (≤ 60–70% of `width`/`height`) so it reads without panning.
+
+Place atomically with `enso node create --x --y` (sets the center on creation) rather than create-then-`node move`, which avoids the gap where a move cannot resolve a node that does not yet exist.
+
+```sh
+# viewport center cx,cy; 2x3 grid, steps 450/280; cols cx-225, cx+225; rows cy-280, cy, cy+280
+enso node create --title "A" --x "$((CX-225))" --y "$((CY-280))" --dry-run
+enso node create --title "B" --x "$((CX+225))" --y "$((CY-280))" --dry-run
+```
+
 ## Layout Patterns
 
 For system architecture, use columns:
@@ -223,6 +259,30 @@ Suggested color semantics:
 - Failure, rejection, or risk paths: red.
 
 Keep the palette small. Three or four meaningful link colors are usually enough.
+
+## Diagnostics And Fix Order
+
+`enso context --canvas current --vision --pretty` returns `vision.diagnostics` with `metrics` and `issues`. Inspect both the PNG at `data.vision.image.path` and the issues — do not rely on diagnostics alone; screenshot gestalt still judges clarity, hierarchy, and readability.
+
+Fix issues in this order:
+
+1. Overlapping nodes first (`node_overlap`).
+2. Label problems (`label_offscreen`, `link_label_overlap`).
+3. Link paths crossing unrelated nodes (`link_node_intersection`) — reroute or move nodes.
+4. Unnecessary link crossings (`link_crossing`).
+5. Cramped nodes (`low_node_gap`) — add whitespace.
+
+Treat `node_offscreen` as an issue only when a node is accidentally clipped in the intended viewport, or when the task explicitly asks for a single-screen overview. Otherwise prefer a navigable canvas over squeezing everything into view.
+
+`diagnostics.ok: true` means the deterministic checks are clean enough for v1, but still inspect the screenshot for balance, grouping, readable labels, and line tangles before finalizing.
+
+Iterative layout loop (use typed commands, not `apply` patches):
+
+1. `enso context --canvas current --vision --pretty`.
+2. Open the PNG and read `vision.diagnostics.metrics` plus `issues`.
+3. Make the smallest fix with a typed command: `enso node move <selector> --x --y` to reposition; `enso diagram update <id>` to resize/move a group, divider, or line (dry-run first).
+4. Recapture with `enso context --canvas current --vision --pretty`.
+5. Repeat until blocking diagnostics are gone and the screenshot communicates the idea clearly.
 
 ## Review Checklist
 

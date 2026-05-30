@@ -1,6 +1,6 @@
 ---
 name: enso-agent
-description: Work with Enso canvases through the local Enso CLI, including safe context gathering, dry-run mutations, diagram layout, viewport screenshots, diagnostics, links, groups, dividers, portal nodes, and subcanvases.
+description: Works with Enso canvases through the local `enso` CLI — context gathering, dry-run mutations, nodes, links, groups, dividers, portal nodes (drill-down subcanvases), diagram layout, viewport screenshots, and diagnostics. Use when the user wants to explain, map, visualize, or diagram something on an Enso canvas (node by node), or otherwise work with an Enso vault, canvas, node, or the `enso` CLI.
 ---
 
 # Enso Agent
@@ -15,109 +15,67 @@ Use this skill when working with an Enso vault through the local `enso` CLI.
 4. Use `enso context` before edits so changes are grounded in the current canvas or node neighborhood. Use `enso context --canvas current --vision --pretty` when visual layout, sizing, overlap, link routing, or node positioning matters.
 5. Use `enso search` and `enso node neighbors` for discovery.
 6. Use `--dry-run` before mutating commands.
-7. Use `enso apply --dry-run` for multi-step patches, then `enso apply` only after validation succeeds.
+7. **Mutate with typed subcommands, one at a time** — `enso node create`, `enso node move`, `enso link create`, `enso diagram group/divider/line`, `enso diagram update`, `enso portal create`. This is the canonical authoring path; their schema is in `<cmd> --help`. `enso apply` (multi-op JSON patch) is an **escape hatch only** — use it when you must batch *and* have confirmed the exact patch schema; never hand-write a patch from memory.
 8. Never edit Enso vault files directly. Mutations must go through the Enso app bridge.
 9. For diagram design work, including codebase architecture maps, read `references/diagram-design.md` before proposing or applying layout changes.
 10. For **Mermaid sequence diagrams**, do not parse or lay them out by hand. Use deterministic CLI conversion when available: `enso import sequence` (see enso-cli). The skill owns spatial diagram design, not Mermaid compilation.
 
+## Invariants (never violate)
+
+Hold on every run regardless of task; do not rely on the user's request to restate them.
+
+1. **Open the target canvas, then confirm it, before any mutation.** `enso canvas open "<Name>"`, then `enso context --canvas current --pretty` and verify the returned name/id. Create/move act on the *current* canvas — never assume which is current.
+2. **One canvas per build pass.** Fully build and verify a canvas before opening the next.
+3. **Nodes before links, groups, and dividers.** A link/group can only reference nodes that already exist. Create nodes, verify them, then create links.
+4. **Selectors must resolve to real elements.** Use a title, id, or vault ref the CLI actually wrote; read it back with `enso context` / `enso search`. Never invent a ref.
+5. **Safe titles only.** No `/`, `:`, or other path/selector metacharacters — they break selectors and link matching. Use a plain title (`location api`, not `functions/api/location.js`); put the real path in the node body.
+6. **Anchor every coordinate to the live viewport** (see Placement). Never hard-code absolute world origins.
+7. **Verify after each canvas.** `enso context --canvas current --pretty` (add `--vision` for layout); confirm node count, targets, and links before moving on.
+
 ## Current Design Surface
 
-The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and portal-node subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; attach, create, and open subcanvases on portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; and create or open canvases. Subcanvases live on portal nodes; reach a subcanvas through its portal node. The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
+The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and portal-node subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; attach, create, and open subcanvases on portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; and create or open canvases. A subcanvas is a normal canvas (a `Canvases/*.json`) that a portal node references via its `subcanvas-ref`. The portal node is one entry point to it (`enso portal open`); the subcanvas is also openable directly like any canvas (`enso canvas open "<name>"`). The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
 
 **Links:** Use `link create`, then `link update --label` for a short canvas predicate. Use `link update --bound-line` for custom relation prose in the source note (must include the target wikilink anywhere in the line). Do not use `--sync-prose` when canvas label and note prose should differ. `--label` does not rewrite note markdown. Avoid `node write` on link sources unless editing non-relation body. Do not create the same edge twice. **Do not source interfile links from portal nodes** when you need bound note prose — portals have no markdown; use a note as source (often bidirectional back to the portal) or keep the edge canvas-label-only until portal-sourced links are supported. Keep canvas labels free of URL schemes (`finally://`); put schemes in note body or use a short label like `deep link`.
 
-Use portal nodes when a concept needs drill-down detail without crowding the main canvas. Create or open node-level drill-downs with `portal create`, `portal open`, and `portal change-subcanvas`. Subcanvases live on portal nodes. Prefer portals over adding many low-level implementation nodes to an already dense overview. Do not write markdown content to nodes whose context output has `kind: "portal"`.
+Use portal nodes when a concept needs drill-down detail without crowding the main canvas. Create or open node-level drill-downs with `enso portal create`, `enso portal open`, and `enso portal change-subcanvas`. A portal node is the on-canvas handle for a subcanvas; the subcanvas is a normal canvas reachable through the portal or directly via `enso canvas open`. Prefer portals over adding many low-level implementation nodes to an already dense overview. Do not write markdown content to nodes whose context output has `kind: "portal"`.
 
 ## What To Create When
 
 Use the smallest canvas object that communicates the structure clearly:
 
 - **Do not create overview, summary, or title nodes** on architecture diagrams. The canvas name is the title; high-level context belongs in the canvas name, portal titles, group labels, or the first substantive node — never a floating `* Overview` note wired into the graph.
-- Create a **note node** with `enso node create` or `node.create` for a durable concept that needs markdown content, tags, refs, links, or explanation. Prefer editing an existing note when the concept is already present.
-- Create a **portal node** with `enso portal create` or `portal.create` when a concept needs a drill-down canvas. Portals are navigation objects; do not put markdown content in them.
-- Create a **canvas** with `enso canvas create` or `canvas.create` before creating a portal when the target detail canvas does not already exist.
-- Create a **link** with `enso link create` or `link.create` when two nodes have a meaningful relationship the reader should see spatially. Use direction for flow, ownership, dependency, writes, or causality; use labels for non-obvious relationships.
-- Create a **group boundary** with `enso diagram group` or `group.create` when several nearby nodes form a subsystem, ownership area, lifecycle phase, or concern that benefits from a visible boundary.
-- Create a **divider** with `enso diagram divider` or `divider.create` for broad horizontal or vertical lanes such as Clients, Control plane, Processing, Storage, Live sync, Restore, or Audit.
-- Create an **arbitrary line** with `enso diagram line` or `line.create` only for a precise separator or callout that a group or divider cannot express cleanly.
-- Create a **portal subcanvas** with `enso portal create` / `portal change-subcanvas` when a concept deserves a drill-down canvas. Subcanvases live on portal nodes; use a portal whenever you want a drill-down.
+- Create a **note node** with `enso node create` for a durable concept that needs markdown content, tags, refs, links, or explanation. Prefer editing an existing note when the concept is already present.
+- Create a **portal node** with `enso portal create` when a concept needs a drill-down canvas. Portals are navigation objects; do not put markdown content in them.
+- Create a **canvas** with `enso canvas create` before creating a portal when the target detail canvas does not already exist.
+- Create a **link** with `enso link create` when two nodes have a meaningful relationship the reader should see spatially. Use direction for flow, ownership, dependency, writes, or causality; use labels for non-obvious relationships.
+- Create a **group boundary** with `enso diagram group` when several nearby nodes form a subsystem, ownership area, lifecycle phase, or concern that benefits from a visible boundary.
+- Create a **divider** with `enso diagram divider` for broad horizontal or vertical lanes such as Clients, Control plane, Processing, Storage, Live sync, Restore, or Audit.
+- Create an **arbitrary line** with `enso diagram line` only for a precise separator or callout that a group or divider cannot express cleanly.
+- Create a **portal subcanvas** with `enso portal create` / `enso portal change-subcanvas` when a concept deserves a drill-down canvas. Subcanvases live on portal nodes; use a portal whenever you want a drill-down.
 
-## Placement and Coordinates
+## Placement (every build)
 
-All `x/y` in the API are **world-space coordinates and refer to the element center** (ADR-0003), never viewport pixels. There is no viewport-relative placement.
+All `x/y` are **world-space, element-center** coordinates (ADR-0003); there is no viewport-relative placement. **Anchor to the live viewport; never invent absolute coordinates:**
 
-**Always anchor placement to the live viewport. Never invent absolute coordinates.** Before placing nodes:
+1. `enso context --canvas current --vision --pretty` → read `data.vision.viewport.visibleRect` (`x`, `y`, `width`, `height`).
+2. Center: `cx = x + width/2`, `cy = y + height/2`. Lay out around `(cx, cy)`.
+3. Keep it compact (frames at 0.5–1.0x). Nodes ~`220 x 140`; column step ~`450`, row step ~`280`; keep total span ≤ 60–70% of `visibleRect`. No 1000+ gaps or absolute origins like `(1200, 800)`.
+4. Place atomically with `enso node create --x --y` (sets center on creation; avoids the move-before-exists gap).
 
-1. Run `enso context --canvas current --vision --pretty` and read `data.vision.viewport.visibleRect` (`x`, `y`, `width`, `height`) and `scale`.
-2. Compute the viewport center: `cx = x + width/2`, `cy = y + height/2`.
-3. Lay the diagram out **around `(cx, cy)`** in world units.
+Full numeric recipe, layout patterns, and a worked example: `references/diagram-design.md` (Viewport Anchoring, Layout Patterns).
 
-**Keep it compact so the whole diagram is visible at one zoom (target 0.5–1.0x, never force the user to 0.2x).** Nodes are ~`220 x 140` world units. Use small gaps, not large ones:
+## Diagram & Codebase-Map Detail
 
-- Column step ~`450`, row step ~`280` between node centers is plenty. A 2x3 grid then spans only ~`900 x 700` world units and frames comfortably.
-- Do **not** use 1000+ unit gaps or absolute origins like `(1200, 800)` unrelated to the viewport — that scatters nodes off-camera and forces extreme zoom-out.
-- Keep the cluster's overall span well inside `visibleRect` (roughly ≤ 60–70% of `width`/`height`) so it reads without panning.
+For any diagram design, codebase architecture map, or layout review, read **`references/diagram-design.md`** before proposing or applying changes. It is the canonical source for:
 
-**Place atomically with `node create --x --y`** (or `node.create` with `x`/`y` in an `apply` patch). This sets the world-space center on creation — prefer it over creating then `node.move`, which also avoids the dry-run gap where a `node.move` cannot resolve a node created in the same dry-run batch.
+- **Choosing canvas objects** — note vs portal vs canvas vs link vs group vs divider vs line.
+- **Codebase maps** — what deserves a node, and the required node markdown (Role / Evidence / Flow / Invariants / Change notes).
+- **Layout, hierarchy, grouping, edges/labels, color semantics.**
+- **Diagnostics fix-order** (`node_overlap` → labels → `link_node_intersection` → `link_crossing` → `low_node_gap`), the `node_offscreen` nuance, and the iterative typed-command layout loop.
+- **Review checklist** before finalizing.
 
-Worked example (viewport center `cx,cy`; a 2x3 grid, steps 450/280):
-
-```sh
-# cols: cx-225, cx+225 ; rows: cy-280, cy, cy+280
-enso node create --title "A" --x "$((CX-225))" --y "$((CY-280))" --dry-run
-enso node create --title "B" --x "$((CX+225))" --y "$((CY-280))" --dry-run
-```
-
-## Codebase Maps
-
-When mapping a codebase, the diagram is only useful if each node is an architectural explanation backed by code evidence. Before creating nodes, inspect the repository structure, package manifests, app entrypoints, route/command registration, persistence/schema definitions, external integration clients, shared state, and tests. Use `rg --files`, `rg`, package scripts, and relevant source reads to form a small set of architectural claims before drawing.
-
-Create nodes for concepts a maintainer would use to navigate or change the system: runtime entrypoints, subsystem boundaries, data/state ownership, request or command pipelines, persistence boundaries, external service integrations, plugin/extension points, background workers, and cross-cutting concerns such as auth, configuration, errors, logging, or caching. Do not create a node merely because a file, class, function, or call exists. A low-level symbol deserves a node only when it owns a meaningful boundary, policy, lifecycle transition, or failure mode.
-
-Every codebase-map note node must contain useful markdown, not just a call list. Include:
-
-- **Role:** what responsibility this part owns in the system.
-- **Evidence:** concrete files, functions, commands, schemas, or tests that prove the claim.
-- **Flow:** what enters, what leaves, and which neighboring nodes it depends on or feeds.
-- **Invariants:** assumptions, constraints, lifecycle rules, or error cases a maintainer must preserve.
-- **Change notes:** where to edit safely, what breaks if the boundary changes, or open questions if the code is ambiguous.
-
-Use links for architectural relationships such as "registers", "calls", "persists", "validates", "publishes", "loads config", or "handles errors". If a relationship needs a long explanation, put the explanation inside the relevant node markdown and keep the visible link label short. Use portal nodes for drill-downs when a subsystem needs file-level detail.
-
-## Diagram Review Workflow
-
-When creating or improving a technical diagram, request visual context with `enso context --canvas current --vision --pretty`. Inspect both the PNG at `data.vision.image.path` and `data.vision.diagnostics`; do not rely on diagnostics alone because screenshot gestalt still matters for clarity, hierarchy, and readability.
-
-A good diagram should communicate the technical concept clearly, keep related nodes visually grouped, minimize overlapping links and nodes, preserve enough whitespace around nodes, and make link direction/meaning easy to follow. The current vision capture is a viewport sample, not a requirement that every node must fit on screen at once. Users can zoom and pan; do not compress a diagram just to satisfy the visible viewport. Use the screenshot to judge whether the visible region reads well, then use structured node bounds and diagnostics issue subjects to plan precise node moves or link edits.
-
-Use structured diagram primitives when they improve readability:
-
-- Use `diagram.divider` or `divider.create` for horizontal/vertical swimlane separators such as Identity, Live sync, Persistence, Restore, or Control plane.
-- Use `diagram.line` or `line.create` for a precise arbitrary separator or callout line when a divider is too constrained.
-- Use `diagram.group` or `group.create` for light semantic boundaries around clusters when node spacing alone is not enough.
-- Keep lines, dividers, and groups subtle. They should clarify hierarchy and sections, not replace good node placement or clean links.
-- Prefer group boundaries over a pile of ad hoc lines when communicating ownership, lifecycle phase, or subsystem scope.
-
-Fix diagram-quality issues in this order:
-
-1. Fix overlapping nodes first (`node_overlap`).
-2. Fix label problems next (`label_offscreen`, `link_label_overlap`).
-3. Reroute or move nodes for link paths crossing unrelated nodes (`link_node_intersection`).
-4. Reduce unnecessary link crossings (`link_crossing`).
-5. Increase whitespace around cramped nodes (`low_node_gap`).
-
-Treat `node_offscreen` as an issue only when a node is accidentally clipped in the intended viewport or when the task explicitly asks for a single-screen overview. Otherwise, prefer adequate spacing and a navigable canvas over squeezing everything into view.
-
-Use an iterative loop for layout work:
-
-1. Run `enso context --canvas current --vision --pretty`.
-2. Open or attach the PNG path and read `vision.diagnostics.metrics` plus `vision.diagnostics.issues`.
-3. Draft a minimal patch and run `enso apply --dry-run`.
-4. Apply the patch with `enso apply`.
-5. Recapture with `enso context --canvas current --vision --pretty`.
-6. Repeat until blocking diagnostics are gone and the screenshot visually communicates the idea clearly.
-
-`diagnostics.ok: true` means the deterministic checks are clean enough for v1, but still inspect the screenshot for visual balance, node grouping, readable labels, and excessive line tangles before finalizing.
+When layout, sizing, overlap, link routing, or positioning matters, capture `enso context --canvas current --vision --pretty` and inspect both the PNG and `diagnostics` — never diagnostics alone.
 
 ## Common Commands
 
@@ -127,7 +85,9 @@ enso context --canvas current --pretty
 enso context --canvas current --vision --pretty
 enso search "query" --pretty
 enso node read "Title" --pretty
+enso node create --title "Title" --content @note.md --x 18300 --y 18300 --dry-run
 enso node write "Title" --content @note.md --dry-run
+enso node move "Title" --x 18300 --y 18300 --dry-run
 enso portal create --title "Sync Server Detail" --subcanvas-ref "Canvases/Sync Server Detail.json" --dry-run
 enso portal open "Sync Server Detail"
 enso portal change-subcanvas "Sync Server Detail" "Canvases/Existing Detail.json" --dry-run
@@ -138,4 +98,5 @@ enso link update "link-id" --sync-prose
 enso diagram line --x1 17800 --y1 18100 --x2 19400 --y2 18100 --title "Control plane" --color "#6B7280" --dry-run
 enso diagram divider --orientation horizontal --x 17800 --y 18100 --length 1600 --title "Live sync" --color "#6B7280" --dry-run
 enso diagram group --x 18300 --y 18300 --width 1200 --height 700 --title "Persistence + Restore" --color "#6B7280" --dry-run
+enso diagram update "primitive-id" --x 18300 --y 18300 --width 1200 --height 700 --dry-run
 ```
