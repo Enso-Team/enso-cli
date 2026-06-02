@@ -34,4 +34,15 @@ export function registerCanvas(program: Command): void {
     .action(async (selector: string) =>
       new BridgeClient().request(`/v1/canvases/${encodeURIComponent(selector)}/inspect`)
     );
+  canvas
+    .command("delete")
+    .argument("<selector>")
+    .option("--dry-run", "validate without mutating")
+    .action(async (selector: string, options: { dryRun?: boolean }) =>
+      new BridgeClient().request(`/v1/canvases/${encodeURIComponent(selector)}`, {
+        method: "DELETE",
+        body: { dryRun: Boolean(options.dryRun) },
+        dryRun: Boolean(options.dryRun)
+      })
+    );
 }
