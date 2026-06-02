@@ -75,7 +75,7 @@ export function registerNode(program: Command): void {
         body: {
           kind: "note",
           title: options.title,
-          canvas: options.canvas ?? "current",
+          canvas: options.canvas,
           placeExisting: true,
           ...(x !== undefined ? { x } : {}),
           ...(y !== undefined ? { y } : {}),
