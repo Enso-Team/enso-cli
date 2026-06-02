@@ -34,7 +34,7 @@ Hold on every run regardless of task; do not rely on the user's request to resta
 
 ## Current Design Surface
 
-The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and portal-node subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; create, open, retarget, and delete portal nodes; attach, create, and open subcanvases on portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; and create or open canvases. A subcanvas is a normal canvas (a `Canvases/*.json`) that a portal node references via its `subcanvas-ref`. The portal node is one entry point to it (`enso portal open`); the subcanvas is also openable directly like any canvas (`enso canvas open "<name>"`). The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
+The Enso app visual surface includes directed relationship arrows, link labels, colored relationship lines, arbitrary diagram lines, structured section dividers, group boundaries, portal nodes, and portal-node subcanvas links. The current CLI/app bridge can create, write, move, and delete note nodes; place an existing note on a canvas without writing a new file (`node add`); delete a canvas (`canvas delete`); create, open, retarget, and delete portal nodes; attach, create, and open subcanvases on portal nodes; create and delete links; update link canvas labels, direction, and line color; optionally sync bound relation prose with `--sync-prose`; create/update/delete diagram lines, dividers, and group boundaries; and create or open canvases. A subcanvas is a normal canvas (a `Canvases/*.json`) that a portal node references via its `subcanvas-ref`. The portal node is one entry point to it (`enso portal open`); the subcanvas is also openable directly like any canvas (`enso canvas open "<name>"`). The current CLI schema does not expose node styling, custom edge routing, or background themes. Do not promise or attempt those styling changes unless the active bridge exposes fields for them.
 
 **Links:** Use `link create`, then `link update --label` for a short canvas predicate. Use `link update --bound-line` for custom relation prose in the source note (must include the target wikilink anywhere in the line). Do not use `--sync-prose` when canvas label and note prose should differ. `--label` does not rewrite note markdown. Avoid `node write` on link sources unless editing non-relation body. Do not create the same edge twice. **Do not source interfile links from portal nodes** when you need bound note prose — portals have no markdown; use a note as source (often bidirectional back to the portal) or keep the edge canvas-label-only until portal-sourced links are supported. Keep canvas labels free of URL schemes (`finally://`); put schemes in note body or use a short label like `deep link`.
 
@@ -46,6 +46,7 @@ Use the smallest canvas object that communicates the structure clearly:
 
 - **Do not create overview, summary, or title nodes** on architecture diagrams. The canvas name is the title; high-level context belongs in the canvas name, portal titles, group labels, or the first substantive node — never a floating `* Overview` note wired into the graph.
 - Create a **note node** with `enso node create` for a durable concept that needs markdown content, tags, refs, links, or explanation. Prefer editing an existing note when the concept is already present.
+- A Node references a Note (file); the same Note can sit on several canvases. To put an **existing** Note on the current canvas, use `enso node add --title "<name>"` — it references the Note and writes **no** new file. `node create` always makes a *new* Note file and returns `note_exists` if the name is taken; on that error, switch to `node add`.
 - Create a **portal node** with `enso portal create` when a concept needs a drill-down canvas. Portals are navigation objects; do not put markdown content in them.
 - Create a **canvas** with `enso canvas create` before creating a portal when the target detail canvas does not already exist.
 - Create a **link** with `enso link create` when two nodes have a meaningful relationship the reader should see spatially. Use direction for flow, ownership, dependency, writes, or causality; use labels for non-obvious relationships.
@@ -86,6 +87,7 @@ enso context --canvas current --vision --pretty
 enso search "query" --pretty
 enso node read "Title" --pretty
 enso node create --title "Title" --content @note.md --x 18300 --y 18300 --dry-run
+enso node add --title "Existing Note" --x 18300 --y 18300 --dry-run   # place an EXISTING note (no new file)
 enso node write "Title" --content @note.md --dry-run
 enso node move "Title" --x 18300 --y 18300 --dry-run
 enso portal create --title "Sync Server Detail" --subcanvas-ref "Canvases/Sync Server Detail.json" --dry-run
@@ -99,4 +101,5 @@ enso diagram line --x1 17800 --y1 18100 --x2 19400 --y2 18100 --title "Control p
 enso diagram divider --orientation horizontal --x 17800 --y 18100 --length 1600 --title "Live sync" --color "#6B7280" --dry-run
 enso diagram group --x 18300 --y 18300 --width 1200 --height 700 --title "Persistence + Restore" --color "#6B7280" --dry-run
 enso diagram update "primitive-id" --x 18300 --y 18300 --width 1200 --height 700 --dry-run
+enso canvas delete "Old Canvas" --dry-run
 ```
