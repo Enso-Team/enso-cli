@@ -128,6 +128,16 @@ describe("commands", () => {
     expect(JSON.parse(String(request.init.body))).toMatchObject({ content: "hello", dryRun: true });
   });
 
+  it("passes from-note in body on link delete", async () => {
+    await run(["link", "delete", "abc", "--from-note"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: true });
+  });
+
+  it("defaults from-note to false on link delete", async () => {
+    await run(["link", "delete", "abc"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: false });
+  });
+
   it("creates note nodes explicitly", async () => {
     await run(["node", "create", "--title", "Auth", "--content", "hello", "--dry-run"]);
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
