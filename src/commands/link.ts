@@ -76,11 +76,12 @@ export function registerLink(program: Command): void {
   link
     .command("delete")
     .argument("<link-id>")
+    .option("--from-note", "also strip the bound relation line from the note text (affects every canvas); default removes the link from this canvas only")
     .option("--dry-run", "validate without mutating")
-    .action(async (linkId: string, options: { dryRun?: boolean }) =>
+    .action(async (linkId: string, options: { dryRun?: boolean; fromNote?: boolean }) =>
       new BridgeClient().request(`/v1/links/${encodeURIComponent(linkId)}`, {
         method: "DELETE",
-        body: { dryRun: Boolean(options.dryRun) },
+        body: { dryRun: Boolean(options.dryRun), fromNote: Boolean(options.fromNote) },
         dryRun: Boolean(options.dryRun)
       })
     );
