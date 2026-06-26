@@ -23,10 +23,12 @@ function parseLineStyle(value: string): LineStyle {
   throw new InvalidArgumentError("expected solid, dashed, or dotted");
 }
 
-function parseNumberOption(value: string | undefined, name: string): number | undefined {
+function parseNumberOption(value: string | undefined, name: string, min?: number, max?: number): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new InvalidArgumentError(`${name} must be a number`);
+  if (min !== undefined && parsed < min) throw new InvalidArgumentError(`${name} must be >= ${min}`);
+  if (max !== undefined && parsed > max) throw new InvalidArgumentError(`${name} must be <= ${max}`);
   return parsed;
 }
 
@@ -43,22 +45,22 @@ function primitiveVisualBody(options: PrimitiveOptions): {
     color: options.color,
     lineStyle: options.lineStyle,
     strokeWidth: parseNumberOption(options.strokeWidth, "strokeWidth"),
-    fillOpacity: parseNumberOption(options.fillOpacity, "fillOpacity"),
+    fillOpacity: parseNumberOption(options.fillOpacity, "fillOpacity", 0, 0.18),
     dryRun: Boolean(options.dryRun)
   };
 }
 
-export function registerDiagram(program: Command): void {
-  const diagram = program.command("diagram").description("Manage structured diagram primitives");
+export function registerPrimitive(program: Command): void {
+  const primitive = program.command("primitive").description("Manage DiagramPrimitive elements (lines, dividers, regions)");
 
-  diagram
+  primitive
     .command("list")
-    .description("List lines, section dividers, and group boundaries")
+    .description("List lines, section dividers, and regions")
     .action(async () => new BridgeClient().request("/v1/diagram-primitives"));
 
-  diagram
+  primitive
     .command("line")
-    .description("Create an arbitrary diagram line")
+    .description("Create an arbitrary line DiagramPrimitive")
     .requiredOption("--x1 <number>", "start world x coordinate")
     .requiredOption("--y1 <number>", "start world y coordinate")
     .requiredOption("--x2 <number>", "end world x coordinate")
@@ -83,7 +85,7 @@ export function registerDiagram(program: Command): void {
       })
     );
 
-  diagram
+  primitive
     .command("divider")
     .description("Create a horizontal or vertical section divider")
     .requiredOption("--orientation <orientation>", "horizontal or vertical", parseOrientation)
@@ -110,13 +112,13 @@ export function registerDiagram(program: Command): void {
       })
     );
 
-  diagram
-    .command("group")
-    .description("Create a labeled group boundary")
+  primitive
+    .command("region")
+    .description("Create a labeled region boundary")
     .requiredOption("--x <number>", "world-space center x (ADR-0003)")
     .requiredOption("--y <number>", "world-space center y (ADR-0003)")
-    .requiredOption("--width <number>", "group width in world units")
-    .requiredOption("--height <number>", "group height in world units")
+    .requiredOption("--width <number>", "region width in world units")
+    .requiredOption("--height <number>", "region height in world units")
     .option("--title <title>")
     .option("--color <color>", "boundary color, such as #6B7280 or gray")
     .option("--line-style <style>", "solid, dashed, or dotted", parseLineStyle)
@@ -138,7 +140,7 @@ export function registerDiagram(program: Command): void {
       })
     );
 
-  diagram
+  primitive
     .command("update")
     .argument("<primitive-id>")
     .option("--title <title>")
@@ -172,10 +174,18 @@ export function registerDiagram(program: Command): void {
       height?: string;
       length?: string;
       orientation?: DividerOrientation;
-    }) =>
-      new BridgeClient().request(`/v1/diagram-primitives/${encodeURIComponent(primitiveId)}`, {
+    }) => {
+      if (options.clearTitle && options.title) {
+        throw new InvalidArgumentError("Cannot use --title and --clear-title together");
+      }
+      if (options.clearColor && options.color) {
+        throw new InvalidArgumentError("Cannot use --color and --clear-color together");
+      }
+      return new BridgeClient().request(`/v1/diagram-primitives/${encodeURIComponent(primitiveId)}`, {
         method: "PUT",
         body: {
+          ...primitiveVisualBody(options),
+          // Clear-flags emit explicit null after the spread so they aren't overwritten by undefined.
           title: options.clearTitle ? null : options.title,
           color: options.clearColor ? null : options.color,
           x: parseNumberOption(options.x, "x"),
@@ -187,14 +197,13 @@ export function registerDiagram(program: Command): void {
           width: parseNumberOption(options.width, "width"),
           height: parseNumberOption(options.height, "height"),
           length: parseNumberOption(options.length, "length"),
-          orientation: options.orientation,
-          ...primitiveVisualBody(options)
+          orientation: options.orientation
         },
         dryRun: Boolean(options.dryRun)
-      })
-    );
+      });
+    });
 
-  diagram
+  primitive
     .command("delete")
     .argument("<primitive-id>")
     .option("--dry-run", "validate without mutating")
