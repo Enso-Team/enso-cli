@@ -1,0 +1,10 @@
+{
+  "includeAuthors": [
+    "kaungzinye",
+    "pastchum",
+    "jensenhuangyankai"
+  ],
+  "excludeAuthors": ["dependabot[bot]", "*-bot"],
+  "triggerOnUpdates": false,
+  "triggerOnDrafts": false
+}
