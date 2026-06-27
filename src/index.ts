@@ -6,7 +6,7 @@ import { registerApply } from "./commands/apply.js";
 import { registerAuth } from "./commands/auth.js";
 import { registerCanvas } from "./commands/canvas.js";
 import { registerContext } from "./commands/context.js";
-import { registerDiagram } from "./commands/diagram.js";
+import { registerPrimitive } from "./commands/primitive.js";
 import { registerGraph } from "./commands/graph.js";
 import { registerLink } from "./commands/link.js";
 import { registerNode } from "./commands/node.js";
@@ -33,7 +33,7 @@ export function buildProgram(): Command {
   registerNode(program);
   registerPortal(program);
   registerLink(program);
-  registerDiagram(program);
+  registerPrimitive(program);
   registerGraph(program);
   registerContext(program);
   registerApply(program);
@@ -56,6 +56,7 @@ export function buildProgram(): Command {
 
 function wrapActions(command: Command): void {
   for (const child of command.commands) wrapActions(child);
+  // Relies on Commander's private `_actionHandler`; revalidate on any commander major bump (pinned ^12).
   const action = command["_actionHandler" as keyof Command] as ((...args: unknown[]) => unknown) | undefined;
   if (!action) return;
 

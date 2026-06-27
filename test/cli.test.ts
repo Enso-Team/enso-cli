@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/index.js";
 import { writeConfig } from "../src/config.js";
+import { LAYOUT_GEOMETRY } from "../src/layout.js";
 
 type FetchCall = {
   url: string;
@@ -98,12 +99,12 @@ describe("commands", () => {
     [["link", "create", "A", "B", "--label", "uses"], "/v1/links?dryRun=false", "POST"],
     [["link", "update", "abc", "--label", "uses"], "/v1/links/abc?dryRun=false", "PUT"],
     [["link", "delete", "abc"], "/v1/links/abc?dryRun=false", "DELETE"],
-    [["diagram", "list"], "/v1/diagram-primitives", "GET"],
-    [["diagram", "line", "--x1", "10", "--y1", "20", "--x2", "410", "--y2", "20"], "/v1/diagram-primitives?dryRun=false", "POST"],
-    [["diagram", "divider", "--orientation", "horizontal", "--x", "10", "--y", "20", "--length", "400"], "/v1/diagram-primitives?dryRun=false", "POST"],
-    [["diagram", "group", "--x", "10", "--y", "20", "--width", "400", "--height", "240"], "/v1/diagram-primitives?dryRun=false", "POST"],
-    [["diagram", "update", "abc", "--title", "Identity"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
-    [["diagram", "delete", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "DELETE"],
+    [["primitive", "list"], "/v1/diagram-primitives", "GET"],
+    [["primitive", "line", "--x1", "10", "--y1", "20", "--x2", "410", "--y2", "20"], "/v1/diagram-primitives?dryRun=false", "POST"],
+    [["primitive", "divider", "--orientation", "horizontal", "--x", "10", "--y", "20", "--length", "400"], "/v1/diagram-primitives?dryRun=false", "POST"],
+    [["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240"], "/v1/diagram-primitives?dryRun=false", "POST"],
+    [["primitive", "update", "abc", "--title", "Identity"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
+    [["primitive", "delete", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "DELETE"],
     [["graph", "inspect"], "/v1/context", "POST"],
     [["graph", "broken"], "/v1/context", "POST"],
     [["graph", "path", "A", "B"], "/v1/context", "POST"],
@@ -136,6 +137,34 @@ describe("commands", () => {
   it("defaults from-note to false on link delete", async () => {
     await run(["link", "delete", "abc"]);
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: false });
+  });
+
+  it("emits null for primitive clear-title and clear-color", async () => {
+    await run(["primitive", "update", "abc", "--clear-title", "--clear-color"]);
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body.title).toBeNull();
+    expect(body.color).toBeNull();
+  });
+
+  it("rejects --title combined with --clear-title on primitive update", async () => {
+    const result = await run(["primitive", "update", "abc", "--title", "New", "--clear-title"]);
+    expect(result.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    // Same structured error code as the analogous link update mutex guard.
+    expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+  });
+
+  it("rejects --color combined with --clear-color on primitive update", async () => {
+    const result = await run(["primitive", "update", "abc", "--color", "#fff", "--clear-color"]);
+    expect(result.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+  });
+
+  it("rejects out-of-range fill-opacity on primitive region", async () => {
+    const result = await run(["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240", "--fill-opacity", "5"]);
+    expect(result.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
   });
 
   it("creates note nodes explicitly", async () => {
@@ -603,6 +632,284 @@ describe("auth", () => {
     expect(JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8"))).toMatchObject({
       token: "paired-token"
     });
+  });
+});
+
+describe("layout", () => {
+  it("exposes spacing constants for agent layout recipes", () => {
+    expect(LAYOUT_GEOMETRY).toMatchObject({ colStep: 450, rowStep: 280, nodeWidth: 220, nodeHeight: 140 });
+  });
+});
+
+describe("canvas apply", () => {
+  it("builds notes, portals, links, regions, dividers, and lines from one JSON file", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      }
+      return Response.json({ ok: true, data: { url: String(url), method: init?.method ?? "GET" } });
+    });
+    const intent = join(tempDir, "sync-server.json");
+    writeFileSync(intent, JSON.stringify({
+      canvas: "Sync Server",
+      nodes: [
+        { kind: "note", title: "CLI", content: "Command surface", x: 550, y: 2000 },
+        { kind: "existing", title: "Vault Manager", x: 1000, y: 2000 },
+        { kind: "portal", title: "Sync Detail", subcanvasRef: "Canvases/Sync Detail.json", x: 1450, y: 2000 }
+      ],
+      links: [
+        { source: "CLI", target: "Vault Manager", label: "writes through", direction: "directed" },
+        { source: "Vault Manager", target: "Sync Detail", label: "syncs", direction: "directed" }
+      ],
+      regions: [
+        { title: "Persistence", x: 1225, y: 2000, width: 830, height: 300 }
+      ],
+      dividers: [
+        { title: "Control Plane", orientation: "horizontal", x: 1000, y: 1820, length: 1220 }
+      ],
+      lines: [
+        { title: "Section split", x1: 800, y1: 2300, x2: 1700, y2: 2300, color: "#6B7280" }
+      ]
+    }));
+
+    const result = await run(["canvas", "apply", intent]);
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    expect(new URL(calls[0].url).pathname).toBe("/v1/context");
+    // A named canvas is opened before applying so operations land on the right canvas.
+    const openCall = calls.find((call) => new URL(call.url).pathname === "/v1/canvases/Sync%20Server/open");
+    expect(openCall).toBeDefined();
+    expect(new URL(openCall!.url).searchParams.get("dryRun")).toBe("false");
+
+    const applyCalls = calls.filter((call) => new URL(call.url).pathname === "/v1/apply");
+    // Every batch — not just the first — must carry ?dryRun=false on a real apply.
+    expect(applyCalls).toHaveLength(3);
+    for (const call of applyCalls) {
+      expect(new URL(call.url).searchParams.get("dryRun")).toBe("false");
+    }
+    const nodePatch = JSON.parse(String(applyCalls[0].init.body));
+    expect(nodePatch.operations).toMatchObject([
+      { type: "node.create", title: "CLI", content: "Command surface", x: 550, y: 2000 },
+      { type: "node.create", title: "Vault Manager", placeExisting: true, x: 1000, y: 2000 },
+      { type: "portal.create", title: "Sync Detail", subcanvasRef: "Canvases/Sync Detail.json", x: 1450, y: 2000 }
+    ]);
+
+    const linkPatch = JSON.parse(String(applyCalls[1].init.body));
+    expect(linkPatch.operations).toMatchObject([
+      { type: "link.create", source: "CLI", target: "Vault Manager", label: "writes through", direction: "directed" },
+      { type: "link.create", source: "Vault Manager", target: "Sync Detail", label: "syncs", direction: "directed" }
+    ]);
+
+    const primitivePatch = JSON.parse(String(applyCalls[2].init.body));
+    expect(primitivePatch.operations).toMatchObject([
+      { type: "group.create", title: "Persistence", x: 1225, y: 2000, width: 830, height: 300 },
+      { type: "divider.create", title: "Control Plane", orientation: "horizontal", x: 1000, y: 1820, length: 1220 },
+      { type: "line.create", title: "Section split", x1: 800, y1: 2300, x2: 1700, y2: 2300, color: "#6B7280" }
+    ]);
+  });
+
+  it("retargets an existing portal via the subcanvas shorthand", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: {
+          nodes: [{ id: "portal-1", title: "Sync Detail", position: { x: 1450, y: 2000 } }],
+          links: [],
+          diagramPrimitives: []
+        } });
+      }
+      return Response.json({ ok: true, data: { url: String(url), method: init?.method ?? "GET" } });
+    });
+    const intent = join(tempDir, "retarget.json");
+    writeFileSync(intent, JSON.stringify({
+      canvas: "Sync Server",
+      nodes: [{ kind: "portal", title: "Sync Detail", subcanvas: "New Detail.json" }]
+    }));
+
+    const result = await run(["canvas", "apply", intent]);
+    expect(result.code).toBe(0);
+    const applyCall = calls.find((call) => new URL(call.url).pathname === "/v1/apply");
+    const nodePatch = JSON.parse(String(applyCall!.init.body));
+    expect(nodePatch.operations).toMatchObject([
+      { type: "portal.changeSubcanvas", selector: "Sync Detail", subcanvasRef: "Canvases/New Detail.json" }
+    ]);
+  });
+
+  it("reports partial-apply state when a later batch fails", async () => {
+    let applyCalls = 0;
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/v1/context") {
+        return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      }
+      if (pathname !== "/v1/apply") return Response.json({ ok: true, data: {} });
+      applyCalls += 1;
+      if (applyCalls === 1) return Response.json({ ok: true, data: {} });
+      return Response.json({ ok: false, error: { code: "invalid_input", message: "link failed", details: {} } });
+    });
+    const intent = join(tempDir, "partial.json");
+    writeFileSync(intent, JSON.stringify({
+      canvas: "X",
+      nodes: [{ kind: "note", title: "A", content: "a", x: 1, y: 1 }, { kind: "note", title: "B", content: "b", x: 2, y: 2 }],
+      links: [{ source: "A", target: "B" }]
+    }));
+
+    const result = await run(["canvas", "apply", intent]);
+    expect(result.code).toBe(1);
+    const envelope = JSON.parse(result.stderr);
+    expect(envelope.error.details.partialApply).toMatchObject({
+      failedBatch: "links",
+      applied: { nodeOps: 2, linkOps: 0, primitiveOps: 0 }
+    });
+  });
+
+  it("updates existing primitives by title and sends dryRun=false on every batch", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: {
+          nodes: [],
+          links: [],
+          diagramPrimitives: [
+            { id: "grp-1", kind: "group", title: "Persistence" },
+            { id: "div-1", kind: "line", title: "Boundary", orientation: "horizontal" },
+            { id: "line-1", kind: "line", title: "Boundary" }
+          ]
+        } });
+      }
+      return Response.json({ ok: true, data: {} });
+    });
+    const intent = join(tempDir, "dedupe.json");
+    writeFileSync(intent, JSON.stringify({
+      regions: [{ title: "Persistence", x: 1, y: 2, width: 100, height: 50 }],
+      dividers: [{ title: "Boundary", orientation: "horizontal", x: 1, y: 2, length: 100 }],
+      lines: [{ title: "Boundary", x1: 1, y1: 2, x2: 3, y2: 4 }]
+    }));
+
+    const result = await run(["canvas", "apply", intent]);
+    expect(result.code).toBe(0);
+    const applyCall = calls.find((call) => new URL(call.url).pathname === "/v1/apply")!;
+    expect(new URL(applyCall.url).searchParams.get("dryRun")).toBe("false");
+    // divider matches the orientation primitive, line matches the orientation-less one — no cross-update.
+    expect(JSON.parse(String(applyCall.init.body)).operations).toMatchObject([
+      { type: "diagramPrimitive.update", id: "grp-1", title: "Persistence" },
+      { type: "diagramPrimitive.update", id: "div-1", title: "Boundary" },
+      { type: "diagramPrimitive.update", id: "line-1", title: "Boundary" }
+    ]);
+  });
+
+  it("rejects duplicate node and primitive titles before any bridge call", async () => {
+    const dupNodes = join(tempDir, "dup-nodes.json");
+    writeFileSync(dupNodes, JSON.stringify({ nodes: [{ title: "A", x: 1, y: 1 }, { title: "A", x: 2, y: 2 }] }));
+    const r1 = await run(["canvas", "apply", dupNodes, "--dry-run"]);
+    expect(r1.code).toBe(1);
+    expect(calls).toHaveLength(0);
+
+    const dupRegions = join(tempDir, "dup-regions.json");
+    writeFileSync(dupRegions, JSON.stringify({ regions: [
+      { title: "R", x: 1, y: 1, width: 10, height: 10 },
+      { title: "R", x: 2, y: 2, width: 10, height: 10 }
+    ] }));
+    const r2 = await run(["canvas", "apply", dupRegions, "--dry-run"]);
+    expect(r2.code).toBe(1);
+    expect(calls).toHaveLength(0);
+
+    const dupLinks = join(tempDir, "dup-links.json");
+    writeFileSync(dupLinks, JSON.stringify({ links: [
+      { source: "A", target: "B" },
+      { source: "A", target: "B" }
+    ] }));
+    const r3 = await run(["canvas", "apply", dupLinks, "--dry-run"]);
+    expect(r3.code).toBe(1);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("skips node.move when an existing node's position is unchanged", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: {
+          nodes: [{ id: "n1", title: "A", displayTitle: "A", position: { x: 5, y: 5 } }],
+          links: [], diagramPrimitives: []
+        } });
+      }
+      return Response.json({ ok: true, data: {} });
+    });
+    const intent = join(tempDir, "noop-move.json");
+    writeFileSync(intent, JSON.stringify({ nodes: [{ kind: "note", title: "A", x: 5, y: 5 }] }));
+    const result = await run(["canvas", "apply", intent, "--dry-run"]);
+    expect(result.code).toBe(0);
+    // No batches: the only node is unchanged, so no node.move op is emitted.
+    expect(JSON.parse(result.stdout).data.planned.nodeOps).toBe(0);
+  });
+
+  it("rejects content on an existing node", async () => {
+    const intent = join(tempDir, "existing-content.json");
+    writeFileSync(intent, JSON.stringify({
+      nodes: [{ kind: "existing", title: "API Gateway", content: "updated body", x: 1, y: 2 }]
+    }));
+    const result = await run(["canvas", "apply", intent, "--dry-run"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects a subcanvas shorthand containing path separators", async () => {
+    const intent = join(tempDir, "bad-subcanvas.json");
+    writeFileSync(intent, JSON.stringify({
+      nodes: [{ kind: "portal", title: "Detail", subcanvas: "Canvases/Detail.json", x: 1, y: 2 }]
+    }));
+    const result = await run(["canvas", "apply", intent, "--dry-run"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("dry-runs only the first bridge patch and returns the full compiled plan", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      }
+      return Response.json({ ok: true, data: { dryRun: true, valid: true } });
+    });
+    const intent = join(tempDir, "auth-flow-dry-run.json");
+    writeFileSync(intent, JSON.stringify({
+      nodes: [
+        { title: "A", x: 100, y: 200 },
+        { title: "B", x: 550, y: 200 }
+      ],
+      links: [{ source: "A", target: "B" }]
+    }));
+
+    const result = await run(["canvas", "apply", intent, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[1].url).pathname + new URL(calls[1].url).search).toBe("/v1/apply?dryRun=true");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      data: {
+        dryRun: true,
+        valid: true,
+        planned: { nodeOps: 2, linkOps: 1, primitiveOps: 0 }
+      }
+    });
+  });
+
+  it("forwards the bridge's valid:false verdict on dry-run", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      }
+      return Response.json({ ok: true, data: { dryRun: true, valid: false } });
+    });
+    const intent = join(tempDir, "invalid-dry-run.json");
+    writeFileSync(intent, JSON.stringify({ nodes: [{ title: "A", x: 1, y: 2 }] }));
+
+    const result = await run(["canvas", "apply", intent, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, data: { dryRun: true, valid: false } });
   });
 });
 

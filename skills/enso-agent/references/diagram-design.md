@@ -280,7 +280,7 @@ Iterative layout loop (use typed commands, not `apply` patches):
 
 1. `enso context --canvas current --vision --pretty`.
 2. Open the PNG and read `vision.diagnostics.metrics` plus `issues`.
-3. Make the smallest fix with a typed command: `enso node move <selector> --x --y` to reposition; `enso diagram update <id>` to resize/move a group, divider, or line (dry-run first).
+3. Make the smallest fix with a typed command: `enso node move <selector> --x --y` to reposition; `enso primitive update <id>` to resize/move a region, divider, or line (dry-run first).
 4. Recapture with `enso context --canvas current --vision --pretty`.
 5. Repeat until blocking diagnostics are gone and the screenshot communicates the idea clearly.
 
