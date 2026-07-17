@@ -33,18 +33,16 @@ Setup:
 
 Default workflow for diagram or canvas work:
 1. enso status --pretty
-2. enso canvas open "<Canvas Name>"
-3. enso context --canvas current --vision --pretty   # once, for placement
-4. Write a JSON file (e.g. auth-flow.json) with nodes, links, regions, dividers, lines
-5. enso canvas apply auth-flow.json --dry-run
-6. enso canvas apply auth-flow.json
-7. enso context --canvas current --pretty            # verify counts (use --vision only for layout/diagnostics)
+2. enso canvas apply --schema
+3. enso context --canvas "<Canvas Name>" --vision --pretty
+4. Pipe one explicit-mode intent to: enso canvas apply --json - --dry-run
+5. Pipe the same intent to: enso canvas apply --json -
 
 Rules:
 - Never edit Canvases/*.json or other vault files directly.
-- Use --dry-run before mutations.
+- Use --dry-run before mutations and read its bridge-validation limits.
 - Prefer enso canvas apply for multi-element work; use atomic commands for one-off edits.
-- Read skills/enso-agent/SKILL.md (installed via enso skill install) for the full workflow.
+- Read skills/enso/SKILL.md (installed via enso skill install) for the full workflow.
 ```
 
 ## Command model
@@ -54,37 +52,29 @@ Two layers — use the batch path by default.
 
 | Layer      | When                                  | Commands                                                  |
 | ---------- | ------------------------------------- | --------------------------------------------------------- |
-| **Batch**  | Building or reshaping a canvas region | `enso canvas apply <file.json>`                           |
+| **Batch**  | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
 | **Atomic** | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
 
 
-`canvas apply` compiles a JSON file into ordered bridge patches: **nodes/portals → links → DiagramPrimitives**. Links cannot reference nodes created in the same patch, so the CLI splits them automatically.
-
-Raw `enso apply patch.json` remains for low-level operations not covered by `canvas apply`.
+`canvas apply` runs complete local preflight, then applies dependency phases. Each phase is app-atomic; successful earlier phases remain when a later phase fails. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
 
 ## canvas apply
 
-Write a descriptive JSON file per canvas (e.g. `auth-flow.json`), with explicit world-space geometry on every new element. All `x`/`y` values are element **centers** in world coordinates.
+Run `enso canvas apply --schema` for the machine-readable source of truth. Inputs require an explicit Canvas name or `current`, reject unknown fields, and use explicit element modes. All `x`/`y` values are element centers in world coordinates.
 
 ```json
 {
-  "canvas": "Auth Flow",
+  "canvas": "current",
   "nodes": [
-    { "kind": "note", "title": "Client", "content": "# Client\n", "x": 18300, "y": 18200 },
-    { "kind": "existing", "title": "API Gateway", "x": 18600, "y": 18200 },
-    { "kind": "portal", "title": "Auth Detail", "subcanvasRef": "Canvases/Auth Detail.json", "x": 18900, "y": 18200 }
+    { "kind": "note", "mode": "create", "title": "Client", "content": "# Client\n", "x": 18300, "y": 18200 },
+    { "kind": "note", "mode": "reuse", "selector": "API Gateway", "x": 18600, "y": 18200 },
+    { "kind": "portal", "mode": "create", "title": "Auth Detail", "subcanvasRef": "Canvases/Auth Detail.json", "x": 18900, "y": 18200 }
   ],
   "links": [
-    { "source": "Client", "target": "API Gateway", "direction": "directed", "label": "calls" }
+    { "mode": "create", "source": "Client", "target": "API Gateway", "direction": "directed", "label": "calls" }
   ],
-  "regions": [
-    { "title": "Identity", "x": 18600, "y": 18200, "width": 1200, "height": 700 }
-  ],
-  "dividers": [
-    { "title": "Control plane", "orientation": "horizontal", "x": 18600, "y": 18020, "length": 1600 }
-  ],
-  "lines": [
-    { "title": "Section split", "x1": 18600, "y1": 18400, "x2": 19800, "y2": 18400 }
+  "primitives": [
+    { "kind": "region", "mode": "create", "title": "Identity", "x": 18600, "y": 18200, "width": 1200, "height": 700 }
   ]
 }
 ```
@@ -92,9 +82,10 @@ Write a descriptive JSON file per canvas (e.g. `auth-flow.json`), with explicit 
 ```sh
 enso canvas apply auth-flow.json --dry-run
 enso canvas apply auth-flow.json
+rm -f auth-flow.json
 ```
 
-Node kinds: `note` (new note), `existing` (place an existing note), `portal` (drill-down entry point).
+Use a temporary JSON file so dry-run and apply read the same inspectable bytes, then remove it after verification. Inline JSON and `--json -` remain available for automation.
 
 ## Context and vision
 
@@ -103,7 +94,7 @@ enso context --canvas current --pretty
 enso context --canvas current --vision --pretty
 ```
 
-Vision adds a viewport PNG path, visible rectangle, element geometry, and layout diagnostics (overlaps, crossings, offscreen nodes). Use both the screenshot and diagnostics — neither alone is enough to judge layout.
+Vision adds a viewport PNG path (downscaled to at most 1568 px on the long edge), the visible rectangle, and layout diagnostics (overlaps, crossings, offscreen nodes). Element world geometry stays in the structural context sections. Use both the screenshot and diagnostics — neither alone is enough to judge layout.
 
 ## Atomic commands
 
@@ -124,8 +115,10 @@ enso canvas inspect "Auth Flow" --pretty
 enso node create --title "API" --content @note.md --x 18300 --y 18200 --dry-run
 enso node write "API" --content @note.md --dry-run
 enso node move "API" --x 18600 --y 18200 --dry-run
+enso node remove "API" --dry-run
 enso portal create --title "Detail" --subcanvas-ref "Canvases/Detail.json" --dry-run
 enso portal open "Detail"
+enso portal remove "Detail" --dry-run
 ```
 
 Portal nodes do not carry markdown — use `enso node write` only on note nodes.
@@ -145,9 +138,11 @@ enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-
 enso link update "<id>" --label syncs --dry-run
 enso link update "<id>" --bound-line "Streams events to [[Target]]"
 enso link update "<id>" --sync-prose
+enso link remove "<id>" --dry-run
+enso link delete "<id>" --dry-run
 ```
 
-`--label` changes the canvas label only. `--bound-line` rewrites note prose. `--sync-prose` copies the label into the bound line.
+`link remove` removes the Canvas-local Link and preserves relation prose. `link delete` removes the bound relation line from the source Note across canvases. `--label` changes the canvas label only; `--bound-line` rewrites Note prose; `--sync-prose` copies the label into the bound line.
 
 ### DiagramPrimitives
 
@@ -163,24 +158,14 @@ enso primitive list --pretty
 enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 ```
 
-## Low-level apply
-
-For operations not covered by `canvas apply`, use a patch file of bridge operations:
-
-```sh
-enso apply patch.json --dry-run
-enso apply patch.json
-```
-
-Split node and link operations into separate patches when creating both in one pass — links cannot bind to nodes created in the same apply call.
-
 ## Troubleshooting
 
 
 | Error                  | Fix                                                 |
 | ---------------------- | --------------------------------------------------- |
-| `app_unavailable`      | Launch the Enso app                                 |
-| `invalid_token`        | `enso auth unlink && enso auth link`                |
+| `app_unavailable`      | Launch the configured app, or run `enso auth link` to relink |
+| `invalid_token`        | Run `enso auth link` to replace the stale pairing    |
+| `pairing_in_progress`  | Wait for the active pairing attempt                  |
 | `ambiguous_selector`   | Use the candidate list from the error; do not guess |
 | Unreadable JSON output | Add `--pretty`                                      |
 
@@ -194,4 +179,3 @@ npm test
 npm run build
 npm run dev -- status --pretty
 ```
-

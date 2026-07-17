@@ -14,15 +14,15 @@ function packageRoot(): string {
 
 function findSkillPath(): string {
   const candidates = [
-    resolve(process.cwd(), "skills", "enso-agent"),
-    resolve(packageRoot(), "skills", "enso-agent"),
-    resolve(packageRoot(), "..", "skills", "enso-agent")
+    resolve(process.cwd(), "skills", "enso"),
+    resolve(packageRoot(), "skills", "enso"),
+    resolve(packageRoot(), "..", "skills", "enso")
   ];
   return candidates.find((candidate) => existsSync(join(candidate, "SKILL.md"))) ?? candidates[0];
 }
 
 export function registerSkill(program: Command): void {
-  const skill = program.command("skill").description("Install the bundled Enso agent skill");
+  const skill = program.command("skill").description("Install the bundled Enso skill");
 
   skill.command("install").action(async (): Promise<EnsoEnvelope> => {
     const source = findSkillPath();
@@ -32,7 +32,7 @@ export function registerSkill(program: Command): void {
         ok: false,
         error: {
           code: "skill_not_found",
-          message: "Bundled Enso agent skill was not found",
+          message: "Bundled Enso skill was not found",
           details: { skillPath: source }
         }
       };
@@ -60,7 +60,7 @@ export function registerSkill(program: Command): void {
         ok: false,
         error: {
           code: "skill_install_failed",
-          message: "Could not install the Enso agent skill with npx skills",
+          message: "Could not install the Enso skill with npx skills",
           details: {
             source,
             installer,

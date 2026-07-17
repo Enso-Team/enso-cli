@@ -1,5 +1,0 @@
-name: enso-agent
-description: Work with Enso through the local authenticated CLI bridge.
-instructions: |
-  Run `enso status` first. Use `enso context` before edits. Use dry-run for mutations.
-  Never edit Enso vault files directly.

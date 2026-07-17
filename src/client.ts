@@ -22,11 +22,15 @@ export type RequestOptions = {
 };
 
 export class BridgeClient {
-  constructor(private readonly baseUrl = readConfig()?.bridgeUrl ?? defaultBridgeUrl) {}
+  constructor(
+    private readonly baseUrl = readConfig()?.bridgeUrl ?? defaultBridgeUrl,
+    private readonly tokenOverride?: string
+  ) {}
 
   async request(pathname: string, options: RequestOptions = {}): Promise<EnsoEnvelope> {
     const method = options.method ?? "GET";
     const url = new URL(pathname, this.baseUrl);
+    assertLoopbackBridge(url);
     const query: Record<string, string | number | boolean> = {};
 
     for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -46,11 +50,11 @@ export class BridgeClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     const wantsAuth = options.auth !== false;
     if (wantsAuth) {
-      const config = readConfig();
-      if (!config?.token) {
+      const token = this.tokenOverride ?? readConfig()?.token;
+      if (!token) {
         throw new EnsoCliError("auth_required", "Run `enso auth link` before using the Enso bridge");
       }
-      headers.Authorization = `Bearer ${config.token}`;
+      headers.Authorization = `Bearer ${token}`;
     }
 
     let body: string | undefined;
@@ -63,7 +67,10 @@ export class BridgeClient {
     try {
       response = await fetch(url, { method, headers, body });
     } catch {
-      throw new EnsoCliError("app_unavailable", "Enso app bridge is not available");
+      throw new EnsoCliError("app_unavailable", "The configured Enso app bridge is not available", {
+        bridgeUrl: this.baseUrl,
+        hint: "Run `enso auth link` to relink, or launch the configured Enso app"
+      });
     }
 
     let json: unknown;
@@ -84,4 +91,24 @@ export class BridgeClient {
 
     return parsed.data as EnsoEnvelope;
   }
+}
+
+function assertLoopbackBridge(url: URL): void {
+  if (isLoopbackBridgeUrl(url)) return;
+  throw new EnsoCliError("invalid_bridge_url", "Enso bridge requests are restricted to loopback HTTP hosts", {
+    path: "bridgeUrl",
+    expected: "http://127.0.0.1, http://[::1], or http://localhost",
+    hint: "Set ENSO_BRIDGE_URL to a loopback Enso app bridge"
+  });
+}
+
+export function isLoopbackBridgeUrl(value: string | URL): boolean {
+  let url: URL;
+  try {
+    url = value instanceof URL ? value : new URL(value);
+  } catch {
+    return false;
+  }
+  const hosts = new Set(["127.0.0.1", "[::1]", "localhost"]);
+  return url.protocol === "http:" && hosts.has(url.hostname.toLowerCase());
 }

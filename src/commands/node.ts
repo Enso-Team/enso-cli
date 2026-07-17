@@ -98,7 +98,7 @@ export function registerNode(program: Command): void {
       })
     );
   node
-    .command("delete")
+    .command("remove")
     .argument("<selector>")
     .option("--dry-run", "validate without mutating")
     .action(async (selector: string, options: { dryRun?: boolean }) =>

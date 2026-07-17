@@ -1,4 +1,4 @@
-// Shared diagram spacing conventions (see skills/enso-agent/references/diagram-design.md).
+// Shared diagram spacing conventions (see skills/enso/references/diagram-design.md).
 // Agents compute coordinates; canvas apply forwards them.
 
 export const LAYOUT_GEOMETRY = {

@@ -74,14 +74,26 @@ export function registerLink(program: Command): void {
       });
     });
   link
-    .command("delete")
+    .command("remove")
     .argument("<link-id>")
-    .option("--from-note", "also strip the bound relation line from the note text (affects every canvas); default removes the link from this canvas only")
+    .description("Remove the Canvas-local Link and preserve relation prose")
     .option("--dry-run", "validate without mutating")
-    .action(async (linkId: string, options: { dryRun?: boolean; fromNote?: boolean }) =>
+    .action(async (linkId: string, options: { dryRun?: boolean }) =>
       new BridgeClient().request(`/v1/links/${encodeURIComponent(linkId)}`, {
         method: "DELETE",
-        body: { dryRun: Boolean(options.dryRun), fromNote: Boolean(options.fromNote) },
+        body: { dryRun: Boolean(options.dryRun), fromNote: false },
+        dryRun: Boolean(options.dryRun)
+      })
+    );
+  link
+    .command("delete")
+    .argument("<link-id>")
+    .description("Delete the bound relation line from the source Note across canvases")
+    .option("--dry-run", "validate without mutating")
+    .action(async (linkId: string, options: { dryRun?: boolean }) =>
+      new BridgeClient().request(`/v1/links/${encodeURIComponent(linkId)}`, {
+        method: "DELETE",
+        body: { dryRun: Boolean(options.dryRun), fromNote: true },
         dryRun: Boolean(options.dryRun)
       })
     );
