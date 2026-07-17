@@ -1,9 +1,9 @@
 ---
-name: enso-agent
+name: enso
 description: Operate in Enso through its local CLI. Treat "in Enso" as a destination and perform the work through the Enso app. For explain, show, map, or illustrate requests, create or update an Enso Canvas. Also use when work otherwise needs Enso vault or Canvas access.
 ---
 
-# Enso Agent
+# Enso
 
 Enso turns durable Notes and their relationships into navigable Canvases. The agent expresses intent, the CLI validates and compiles it, and the Enso app bridge owns Canvas and vault writes.
 

@@ -11,10 +11,10 @@ describe("skill", () => {
     expect(buildProgram().commands.map((command) => command.name())).not.toContain("apply");
   });
   it("uses one temporary file for the default Canvas pass", () => {
-    const skill = readFileSync(join(process.cwd(), "skills/enso-agent/SKILL.md"), "utf8");
-    const metadata = readFileSync(join(process.cwd(), "skills/enso-agent/agents/openai.yaml"), "utf8");
-    const diagramDesign = readFileSync(join(process.cwd(), "skills/enso-agent/references/diagram-design.md"), "utf8");
-    expect(skill).toContain("name: enso-agent\n");
+    const skill = readFileSync(join(process.cwd(), "skills/enso/SKILL.md"), "utf8");
+    const metadata = readFileSync(join(process.cwd(), "skills/enso/agents/openai.yaml"), "utf8");
+    const diagramDesign = readFileSync(join(process.cwd(), "skills/enso/references/diagram-design.md"), "utf8");
+    expect(skill).toContain("name: enso\n");
     expect(skill).toContain('Treat "in Enso" as a destination and perform the work through the Enso app');
     expect(skill).toContain("For explain, show, map, or illustrate requests, create or update an Enso Canvas");
     expect(metadata).toContain('Treat "in Enso" as a destination and perform the work through the Enso app');
@@ -57,7 +57,7 @@ describe("skill", () => {
     expect(args[0]).toBe("--yes");
     expect(args[1]).toBe("skills");
     expect(args[2]).toBe("add");
-    expect(args[3]).toMatch(/skills\/enso-agent$/);
+    expect(args[3]).toMatch(/skills\/enso$/);
     expect(args.slice(4)).toEqual(["-g", "-y", "--copy"]);
   });
 });

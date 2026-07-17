@@ -42,7 +42,7 @@ Rules:
 - Never edit Canvases/*.json or other vault files directly.
 - Use --dry-run before mutations and read its bridge-validation limits.
 - Prefer enso canvas apply for multi-element work; use atomic commands for one-off edits.
-- Read skills/enso-agent/SKILL.md (installed via enso skill install) for the full workflow.
+- Read skills/enso/SKILL.md (installed via enso skill install) for the full workflow.
 ```
 
 ## Command model
