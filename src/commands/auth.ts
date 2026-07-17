@@ -3,16 +3,19 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { Command } from "commander";
-import { defaultBridgeUrl, readConfig, removeConfig, writeConfig } from "../config.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+import { acquirePairingLock, defaultBridgeUrl, readConfig, removeConfig, writeConfig } from "../config.js";
+import { BridgeClient, isLoopbackBridgeUrl } from "../client.js";
+import { EnsoCliError, printEnvelope, type EnsoEnvelope } from "../errors.js";
 
 type PairingResult = {
   token: string;
   bridgeUrl?: string;
 };
 
-function formatAuthStatus(data: { linked: boolean; bridgeUrl: string; linkedAt?: string }): string {
-  if (!data.linked) return "Enso CLI is not linked to the Enso app.";
+function formatAuthStatus(data: { status: string; linked: boolean; bridgeUrl: string; linkedAt?: string }): string {
+  if (data.status === "unlinked") return "Enso CLI is not linked to the Enso app.";
+  if (data.status === "configured") return "Enso CLI credentials are configured, but the Enso app is unavailable.";
+  if (data.status === "invalid") return "Enso CLI credentials are invalid.";
 
   const lines = [
     "Enso CLI is linked to the Enso app.",
@@ -31,8 +34,9 @@ function openPairingUrl(url: string): Promise<void> {
 }
 
 async function requestPairingOverBridge(callback: string, nonce: string): Promise<boolean> {
-  const bridgeUrls = Array.from(new Set([defaultBridgeUrl, "http://127.0.0.1:17650", "http://127.0.0.1:17651"]));
-  for (const bridgeUrl of bridgeUrls) {
+  type Attempt = "prompted" | "present" | "absent";
+  const attempt = async (bridgeUrl: string): Promise<Attempt> => {
+    if (!isLoopbackBridgeUrl(bridgeUrl)) return "absent";
     try {
       const endpoint = new URL("/v1/pair/request", bridgeUrl);
       const response = await fetch(endpoint, {
@@ -40,14 +44,28 @@ async function requestPairingOverBridge(callback: string, nonce: string): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ callback, nonce })
       });
-      if (!response.ok) continue;
+      if (!response.ok) return "present";
       const payload = (await response.json()) as EnsoEnvelope;
-      if (payload.ok === true) return true;
+      return payload.ok === true ? "prompted" : "present";
     } catch {
-      // Try the next local bridge candidate before falling back to the URL scheme.
+      return "absent";
     }
+  };
+
+  const explicit = process.env.ENSO_BRIDGE_URL;
+  if (explicit && isLoopbackBridgeUrl(explicit)) {
+    const result = await attempt(explicit);
+    if (result === "prompted") return true;
   }
-  return false;
+  const release = "http://127.0.0.1:17650";
+  if (explicit !== release) {
+    const result = await attempt(release);
+    if (result === "prompted") return true;
+    if (result === "present") return false;
+  }
+  const debug = "http://127.0.0.1:17651";
+  if (explicit === debug) return false;
+  return await attempt(debug) === "prompted";
 }
 
 async function waitForPairing(): Promise<PairingResult> {
@@ -69,12 +87,24 @@ async function waitForPairing(): Promise<PairingResult> {
       request.setEncoding("utf8");
       request.on("data", (chunk) => {
         body += chunk;
+        if (body.length > 64 * 1024) {
+          response.writeHead(413, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: false }));
+          request.destroy();
+        }
       });
       request.on("end", () => {
+        if (response.writableEnded) return;
         try {
-          const payload = JSON.parse(body) as PairingResult & { nonce?: string };
+          const payload = JSON.parse(body) as PairingResult & { nonce?: string; status?: string };
           if (payload.nonce !== nonce) {
             throw new EnsoCliError("pairing_failed", "Pairing nonce did not match");
+          }
+          if (payload.status === "rejected") {
+            response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
+            clearTimeout(timeout);
+            server.close();
+            reject(new EnsoCliError("pairing_failed", "Enso pairing was rejected"));
+            return;
           }
           if (!payload.token) {
             throw new EnsoCliError("pairing_failed", "Pairing response did not include a token");
@@ -85,9 +115,6 @@ async function waitForPairing(): Promise<PairingResult> {
           resolve({ token: payload.token, bridgeUrl: payload.bridgeUrl });
         } catch (error) {
           response.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: false }));
-          clearTimeout(timeout);
-          server.close();
-          reject(error);
         }
       });
     });
@@ -102,6 +129,7 @@ async function waitForPairing(): Promise<PairingResult> {
       }
       const callback = `http://127.0.0.1:${address.port}/callback`;
       const url = `enso://agent-pair?callback=${encodeURIComponent(callback)}&nonce=${encodeURIComponent(nonce)}`;
+      printEnvelope({ ok: true, data: { status: "pairing_pending" } });
       if (process.env.ENSO_CLI_PAIRING_URL_FILE) {
         writeFileSync(process.env.ENSO_CLI_PAIRING_URL_FILE, url, "utf8");
       }
@@ -123,39 +151,99 @@ export function registerAuth(program: Command): void {
   const auth = program.command("auth").description("Pair this CLI with the Enso app");
 
   auth.command("link").action(async (): Promise<EnsoEnvelope> => {
+    const existing = readConfig();
+    if (existing) {
+      try {
+        const status = await new BridgeClient(existing.bridgeUrl).request("/v1/status");
+        if (status.ok) {
+          return {
+            ok: true,
+            data: {
+              status: "linked",
+              alreadyLinked: true,
+              linked: true,
+              bridgeUrl: existing.bridgeUrl,
+              linkedAt: existing.linkedAt
+            }
+          };
+        }
+      } catch {
+        // An unavailable or invalid existing configuration does not block a fresh pairing attempt.
+      }
+    }
+    let releaseLock: () => void;
+    try {
+      releaseLock = acquirePairingLock();
+    } catch (error) {
+      if (error instanceof Error && error.message === "pairing_in_progress") {
+        throw new EnsoCliError("pairing_in_progress", "Another Enso pairing attempt is already active", {
+          hint: "Wait for the active attempt to finish or time out"
+        });
+      }
+      throw error;
+    }
+    try {
+      return await completePairing();
+    } finally {
+      releaseLock();
+    }
+  });
+
+  async function completePairing(): Promise<EnsoEnvelope> {
     const result = await waitForPairing();
+    const candidateBridgeUrl = result.bridgeUrl ?? defaultBridgeUrl;
+    let verified: EnsoEnvelope;
+    try {
+      verified = await new BridgeClient(candidateBridgeUrl, result.token).request("/v1/status");
+    } catch (error) {
+      throw new EnsoCliError("pairing_failed", "The paired token could not be verified", {
+        hint: "Keep the Enso app open and approve pairing again",
+        cause: error instanceof Error ? error.message : String(error)
+      });
+    }
+    if (!verified.ok) {
+      throw new EnsoCliError("pairing_failed", "The Enso app rejected the paired token", {
+        bridgeError: verified.error,
+        hint: "Approve pairing again to receive a fresh token"
+      });
+    }
     const config = {
-      bridgeUrl: result.bridgeUrl ?? defaultBridgeUrl,
+      bridgeUrl: candidateBridgeUrl,
       token: result.token,
       linkedAt: new Date().toISOString()
     };
     writeConfig(config);
     return {
       ok: true,
-      text: [
-        "Enso CLI linked successfully.",
-        "",
-        `Bridge: ${config.bridgeUrl}`,
-        `Linked at: ${config.linkedAt}`
-      ].join("\n"),
       data: {
         status: "linked",
         message: "Enso CLI is linked to the Enso app",
+        alreadyLinked: false,
         linked: true,
         bridgeUrl: config.bridgeUrl,
         linkedAt: config.linkedAt
       }
     };
-  });
+  }
 
   auth.command("status").action(async (): Promise<EnsoEnvelope> => {
     const config = readConfig();
-    const linked = Boolean(config?.token);
+    if (!config) {
+      const data = { status: "unlinked", linked: false, bridgeUrl: defaultBridgeUrl };
+      return { ok: true, text: formatAuthStatus(data), data };
+    }
+    let status: "linked" | "configured" | "invalid";
+    try {
+      const response = await new BridgeClient(config.bridgeUrl).request("/v1/status");
+      status = response.ok ? "linked" : "invalid";
+    } catch {
+      status = "configured";
+    }
     const data = {
-      status: linked ? "linked" : "unlinked",
-      linked,
-      bridgeUrl: config?.bridgeUrl ?? defaultBridgeUrl,
-      linkedAt: config?.linkedAt
+      status,
+      linked: status === "linked",
+      bridgeUrl: config.bridgeUrl,
+      linkedAt: config.linkedAt
     };
     return {
       ok: true,

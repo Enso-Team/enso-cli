@@ -2,7 +2,6 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { registerApply } from "./commands/apply.js";
 import { registerAuth } from "./commands/auth.js";
 import { registerCanvas } from "./commands/canvas.js";
 import { registerContext } from "./commands/context.js";
@@ -36,7 +35,6 @@ export function buildProgram(): Command {
   registerPrimitive(program);
   registerGraph(program);
   registerContext(program);
-  registerApply(program);
   registerSkill(program);
 
   program.hook("postAction", (thisCommand, actionCommand) => {

@@ -1,129 +1,100 @@
 ---
 name: enso-agent
-description: Enso canvas edits through the local `enso` CLI — batch `canvas apply` or atomic commands. Use when the user wants to diagram, map, visualize, or build an architecture map on an Enso canvas; or inspect or mutate an Enso vault, canvas, or node.
+description: Operate in Enso through its local CLI. Treat "in Enso" as a destination and perform the work through the Enso app. For explain, show, map, or illustrate requests, create or update an Enso Canvas. Also use when work otherwise needs Enso vault or Canvas access.
 ---
 
 # Enso Agent
 
-## Default Edit Path
+Enso turns durable Notes and their relationships into navigable Canvases. The agent expresses intent, the CLI validates and compiles it, and the Enso app bridge owns Canvas and vault writes.
 
-When the user asks to diagram, map, or visualize something, edit an Enso **Canvas** through the bridge — never edit `Canvases/*.json` directly.
+## Default Canvas Pass
 
-Batch with `enso canvas apply <file.json>`. One JSON file replaces dozens of per-element CLI calls.
+Use one temporary JSON file for a multi-element Canvas build or reshape. The file keeps dry-run and apply on the same inspectable bytes without putting an intent artifact in the repository.
 
-1. `enso status --pretty`. If `app_unavailable`, ask the user to launch Enso and pair with `enso auth link`.
-2. Derive a canvas title from the request (e.g. "auth flow" → `"Auth Flow"`). Open it, or create it if missing. Ask when the target canvas is ambiguous.
+1. Check the intended Enso instance:
+
    ```sh
-   enso canvas open "Auth Flow"            # if this returns not_found, create it first:
-   enso canvas create "Auth Flow" && enso canvas open "Auth Flow"
-   enso context --canvas current --pretty
+   enso status --pretty
    ```
-3. When placement matters, run once: `enso context --canvas current --vision --pretty`. Read `data.vision.viewport.visibleRect` and compute every `x`/`y` before writing JSON (see Placement).
-4. Write a descriptive JSON file (e.g. `auth-flow.json`) with explicit geometry on every new node, region, divider, and line:
-   ```json
-   {
-     "canvas": "Auth Flow",
-     "nodes": [
-       { "kind": "note", "title": "Source", "content": "Markdown body", "x": 18300, "y": 18200 },
-       { "kind": "existing", "title": "Existing Note", "x": 18600, "y": 18200 },
-       { "kind": "portal", "title": "Detail", "subcanvasRef": "Canvases/Detail.json", "x": 18900, "y": 18200 }
-     ],
-     "links": [
-       { "source": "Source", "target": "Existing Note", "direction": "directed", "label": "feeds" }
-     ],
-     "regions": [
-       { "title": "Runtime", "x": 18600, "y": 18200, "width": 1200, "height": 700 }
-     ],
-     "dividers": [
-       { "title": "Control plane", "orientation": "horizontal", "x": 18600, "y": 18020, "length": 1600 }
-     ],
-     "lines": [
-       { "title": "Section split", "x1": 18600, "y1": 18400, "x2": 19800, "y2": 18400 }
-     ]
-   }
+
+   Continue on `ok: true`. On `auth_required`, run `enso auth link` and complete pairing. On `app_unavailable`, inspect `error.details.bridgeUrl`; launch that instance or run `enso auth link` to replace the stale pairing. On `pairing_in_progress`, wait for that attempt to finish. Continue when status succeeds for the intended instance.
+
+2. Select one exact Canvas:
+
+   ```sh
+   enso canvas list --pretty
+   enso context --canvas "<Canvas Name>" --pretty
    ```
-5. Dry-run once: `enso canvas apply auth-flow.json --dry-run`.
-6. Apply once: `enso canvas apply auth-flow.json`.
-7. Verify once with the **smallest** context that answers the question:
-   - After a fresh build: `enso context --canvas current --pretty` only.
-   - `data.canvas.nodes` / `data.canvas.links` / `data.canvas.diagramPrimitives` are integer **counts** (the full arrays live at `data.nodes` etc.). Done when the counts match intent and apply returned `ok: true`.
-   - Use `--vision` only when fixing layout, overlap, or diagnostics — not for a post-apply count check on a canvas you just built.
-   - Do not re-read, grep, or paginate vision or agent-tools output files after apply. Do not run a second verify pass.
 
-Done when `data.canvas` counts match and apply succeeded. Trust the dry-run + apply envelope; do not grep CLI output files to confirm.
+   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it. Copy exact selectors or UUIDs for existing objects; preflight rejects missing or ambiguous identities.
 
-`canvas apply` compiles JSON into bridge operations and applies them in three ordered batches: nodes/portals, links, DiagramPrimitives. It does not compute layout — missing `x`/`y` on a new node fails validation. Omit coordinates only on nodes that already exist on the canvas and should stay put.
+3. For placement work among existing elements, open the target and inspect vision once:
 
-## When Not To Use `canvas apply`
+   ```sh
+   enso canvas open "<Canvas Name>"
+   enso context --canvas current --vision --pretty
+   ```
 
-- Canvas JSON: never edit `Canvases/*.json` directly.
-- One surgical edit: use atomic commands with `--dry-run`, then without `--dry-run`.
-- Unsupported bridge operations: use `enso apply patch.json --dry-run`, then `enso apply patch.json`.
-- Mermaid sequence diagrams: use deterministic import when available (`enso import sequence`). Do not manually convert Mermaid syntax into nodes and edges.
+   Read the screenshot, viewport, and diagnostics; element world geometry is in the same response's `nodes`, `links`, and `diagramPrimitives` sections. Vision describes the open Canvas. A first build on an empty Canvas needs no vision pass; choose fresh world coordinates directly. Read [references/diagram-design.md](references/diagram-design.md) before choosing or repairing geometry.
 
-## Invariants (never violate)
+4. Load the active contract, then write one descriptive temporary intent file:
 
-1. Mutate only through the Enso bridge. Never edit vault files directly.
-2. One canvas per build pass. Verify before opening another canvas.
-3. Links cannot bind to nodes created in the same apply patch. `canvas apply` enforces nodes → links → DiagramPrimitives; with raw `apply`, split patches the same way.
-4. Selectors can be UUIDs, vault-relative refs, or titles. On `ambiguous_selector`, stop and choose from returned candidates; do not guess.
-5. Safe titles only: no `/`, `:`, `?`, `#`, URL schemes, or pre-encoded path fragments. Put real file paths and URLs in node content.
-6. Every hand-placed coordinate is viewport-anchored. Read `visibleRect`, set `cx = x + width/2` and `cy = y + height/2`, lay out around `(cx, cy)` with `colStep=450` and `rowStep=280`; never invent an absolute origin.
-7. Give every region, divider, and line a `title` — it is the only key `canvas apply` uses to dedupe primitives, so untitled ones are re-created (duplicated) on each re-apply.
-8. Link `source`/`target` must match the exact string used as a node's `title` (for existing nodes, the context's `displayTitle`); otherwise the link is created fresh instead of deduped.
+   ```sh
+   enso canvas apply --schema
+   # Write /tmp/enso-<task>-intent.json with a filesystem editing tool.
+   ```
 
-## What To Create When
+   Use explicit modes and final create geometry. For an existing Link endpoint, copy one exact inspected selector. For a Node or Portal created in the same intent, use its declared title. Keep the path outside the repository and reuse it unchanged through apply.
 
-- Do not create title, overview, or summary nodes. Canvas name, portal titles, region labels, and node content carry context.
-- Note nodes: durable concepts with markdown, refs, tags, or evidence.
-- Existing notes: `{ "kind": "existing", ... }` when the note already exists.
-- Portal nodes: drill-down entry points; never write markdown to nodes whose context says `kind: "portal"`.
-- Links: visible flow, ownership, dependency, causality, or writes.
-- Regions: clusters read as one subsystem, phase, owner area, or concern.
-- Dividers: broad lanes (Clients, Control plane, Processing, Storage, etc.).
-- Lines: precise separators or callouts a divider/region cannot express.
+5. Dry-run the file once:
 
-Bridge does not expose node styling, custom edge routing, background themes, icons, or arbitrary shapes beyond DiagramPrimitives.
+   ```sh
+   enso canvas apply /tmp/enso-<task>-intent.json --dry-run
+   ```
 
-## Placement
+   Continue only when the command succeeds, `preflightPassed` is true, planned phase counts match the intent, shared Note writes are intentional, and each validation deferral is understood. A named-Canvas dry-run completes local preflight while bridge validation remains deferred until apply.
 
-Agents compute layout before writing JSON. The CLI forwards coordinates; it does not auto-layout.
+6. Apply the same file once:
 
-1. Ground once with `--vision` and read `visibleRect`.
-2. Anchor at viewport center `(cx, cy)`.
-3. Space nodes with `colStep=450`, `rowStep=280` (world-space element centers).
-4. Put final `x`/`y` on every create in JSON — do not create then move.
-5. For regions/dividers: bbox from enclosed node centers ± half node size (~110×70) + ~40px pad (center coords per ADR-0003). Do not pin region `y` to one row in a multi-row layout. Prefer `enso primitive region` after nodes exist if unsure.
+   ```sh
+   enso canvas apply /tmp/enso-<task>-intent.json
+   ```
 
-For atomic commands or raw `apply`, follow the same anchoring recipe. Read `references/diagram-design.md` for layout patterns, regions, edge semantics, and diagnostics fix order.
+   On success, require `verification.status: "verified"` and inspect `appliedBatches` plus any compact `results`. Targeted verification replaces a redundant whole-Canvas count pass.
 
-## Diagram & Codebase-Map Detail
+7. Recapture vision after apply only when the pass moved or reshaped existing elements, or when the user asks for visual polish. A fresh build whose apply reports `verification.status: "verified"` is complete without a screenshot pass.
 
-Read `references/diagram-design.md` before diagram design work, codebase architecture maps, or layout repair. When layout matters, inspect both the PNG path and `diagnostics`; do not use diagnostics alone.
+   ```sh
+   enso context --canvas current --vision --pretty
+   ```
 
-## Common Commands
+   Use diagnostics to focus screenshot review. Check for Node overlap, clipped content, unreadable Link labels, Links crossing unrelated Nodes, primitive titles that obscure Links or labels, and unclear reading order. Accept warnings and close proximity when the text remains legible and the reading order remains clear. Repair only a materially impaired screenshot, using the smallest typed change, then recapture. The pass is complete when targeted verification succeeds and any inspected screenshot communicates the requested idea clearly.
 
-```sh
-enso status --pretty
-enso context --canvas current --pretty
-enso context --canvas current --vision --pretty
-enso search "query" --pretty
-enso node read "Title" --pretty
-enso canvas apply auth-flow.json --dry-run
-enso canvas apply auth-flow.json
-enso node create --title "Title" --content @note.md --x 18300 --y 18300 --dry-run
-enso node write "Title" --content @note.md --dry-run
-enso node move "Title" --x 18300 --y 18300 --dry-run
-enso portal create --title "Sync Server Detail" --subcanvas-ref "Canvases/Sync Server Detail.json" --dry-run
-enso portal open "Sync Server Detail"
-enso portal change-subcanvas "Sync Server Detail" "Canvases/Existing Detail.json" --dry-run
-enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-run
-enso link update "link-id" --label supports --dry-run
-enso link update "link-id" --bound-line "Longer prose anywhere before [[Target Title]]"
-enso link update "link-id" --sync-prose
-enso primitive line --x1 17800 --y1 18100 --x2 19400 --y2 18100 --title "Control plane" --color "#6B7280" --dry-run
-enso primitive divider --orientation horizontal --x 17800 --y 18100 --length 1600 --title "Live sync" --color "#6B7280" --dry-run
-enso primitive region --x 18300 --y 18300 --width 1200 --height 700 --title "Persistence + Restore" --color "#6B7280" --dry-run
-enso primitive update "primitive-id" --x 18300 --y 18300 --width 1200 --height 700 --dry-run
-enso canvas delete "Old Canvas" --dry-run
-```
+8. Delete the temporary intent with the filesystem editing tool after verification or after preserving any failure details needed for recovery. Confirm `/tmp/enso-<task>-intent.json` no longer exists.
+
+## Failure Recovery
+
+- On a phase failure, preserve `appliedBatches`, `failedBatch`, `returnedIds`, and `retrySections`. Earlier successful phases remain applied. Inspect the target and create a new temporary intent containing only unresolved sections.
+- On `verification_failed`, treat mutation phases as applied and verification as uncertain. Inspect state and construct the smallest corrective intent; do not replay the full payload.
+- On `ambiguous_selector`, choose one exact returned candidate. On `missing_selector`, inspect again and correct the intent instead of inventing a replacement.
+
+## Small Edits
+
+For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`, `enso primitive`, or `enso canvas` command. Run it with `--dry-run`, inspect success, then run the same command without `--dry-run`.
+
+## Guardrails
+
+- Mutate through the Enso bridge. Vault files, including `Canvases/*.json`, remain app-owned.
+- Work on one Canvas per pass.
+- Treat Note content updates as shared vault writes, not Canvas-local decoration.
+- `node remove` and `portal remove` preserve backing content.
+- `link remove` preserves relation prose. `link delete` removes the bound relation line across Canvases.
+- Canvas and DiagramPrimitive destructive typed commands use `delete`.
+- Portal updates change placement or referenced subcanvas; they do not rename Portal titles.
+
+## Object and Placement Choices
+
+- Use a Note for a durable concept, a Portal for navigation to another Canvas, and a Link for a visible relationship.
+- Use a region for a cluster, a divider for a lane, and a line for a precise separator or callout.
+- Coordinates are world-space element centers. Anchor new geometry to the vision viewport or inspected neighbors, compute the arrangement before apply, and put final geometry on creates.
+- Read [references/codebase-maps.md](references/codebase-maps.md) when the Canvas represents a repository or software architecture.

@@ -50,7 +50,7 @@ export function registerPortal(program: Command): void {
     );
 
   portal
-    .command("delete")
+    .command("remove")
     .argument("<selector>")
     .option("--dry-run", "validate without mutating")
     .action(async (selector: string, options: { dryRun?: boolean }) =>

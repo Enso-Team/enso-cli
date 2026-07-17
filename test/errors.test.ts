@@ -6,7 +6,7 @@ describe("printEnvelope", () => {
     vi.restoreAllMocks();
   });
 
-  it("writes duplicate_link hint after envelope.text on stderr", () => {
+  it("writes duplicate_link recovery inside one JSON envelope", () => {
     const chunks: string[] = [];
     vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
       chunks.push(String(chunk));
@@ -24,7 +24,16 @@ describe("printEnvelope", () => {
     );
 
     const output = chunks.join("");
-    expect(output).toContain("Link already exists between these nodes");
-    expect(output).toContain("Use link update on the existing link id");
+    expect(output.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(output)).toMatchObject({
+      ok: false,
+      error: {
+        code: "duplicate_link",
+        message: "Link already exists",
+        details: {
+          hint: "Use link update on the existing link id instead of link create"
+        }
+      }
+    });
   });
 });

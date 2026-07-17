@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -31,10 +31,36 @@ export function readConfig(): EnsoConfig | null {
 }
 
 export function writeConfig(config: EnsoConfig): void {
-  mkdirSync(dirname(configPath()), { recursive: true });
-  writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const directory = dirname(configPath());
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  const temporaryPath = `${configPath()}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  chmodSync(temporaryPath, 0o600);
+  renameSync(temporaryPath, configPath());
+  chmodSync(configPath(), 0o600);
 }
 
 export function removeConfig(): void {
   rmSync(configPath(), { force: true });
+}
+
+export function acquirePairingLock(): () => void {
+  const directory = configDir();
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  const path = join(directory, "pairing.lock");
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error("pairing_in_progress");
+    }
+    throw error;
+  }
+  writeFileSync(descriptor, `${process.pid}\n`, "utf8");
+  closeSync(descriptor);
+  chmodSync(path, 0o600);
+  return () => rmSync(path, { force: true });
 }
