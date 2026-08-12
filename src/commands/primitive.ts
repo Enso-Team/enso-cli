@@ -1,7 +1,6 @@
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient } from "../client.js";
 
-type DividerOrientation = "horizontal" | "vertical";
 type LineStyle = "solid" | "dashed" | "dotted";
 
 type PrimitiveOptions = {
@@ -12,11 +11,6 @@ type PrimitiveOptions = {
   fillOpacity?: string;
   dryRun?: boolean;
 };
-
-function parseOrientation(value: string): DividerOrientation {
-  if (value === "horizontal" || value === "vertical") return value;
-  throw new InvalidArgumentError("expected horizontal or vertical");
-}
 
 function parseLineStyle(value: string): LineStyle {
   if (value === "solid" || value === "dashed" || value === "dotted") return value;
@@ -51,11 +45,11 @@ function primitiveVisualBody(options: PrimitiveOptions): {
 }
 
 export function registerPrimitive(program: Command): void {
-  const primitive = program.command("primitive").description("Manage DiagramPrimitive elements (lines, dividers, regions)");
+  const primitive = program.command("primitive").description("Manage DiagramPrimitive elements (lines and regions)");
 
   primitive
     .command("list")
-    .description("List lines, section dividers, and regions")
+    .description("List lines and regions")
     .action(async () => new BridgeClient().request("/v1/diagram-primitives"));
 
   primitive
@@ -79,33 +73,6 @@ export function registerPrimitive(program: Command): void {
           y1: parseNumberOption(options.y1, "y1"),
           x2: parseNumberOption(options.x2, "x2"),
           y2: parseNumberOption(options.y2, "y2"),
-          ...primitiveVisualBody(options)
-        },
-        dryRun: Boolean(options.dryRun)
-      })
-    );
-
-  primitive
-    .command("divider")
-    .description("Create a horizontal or vertical section divider")
-    .requiredOption("--orientation <orientation>", "horizontal or vertical", parseOrientation)
-    .requiredOption("--x <number>", "world-space center x (ADR-0003)")
-    .requiredOption("--y <number>", "world-space center y (ADR-0003)")
-    .requiredOption("--length <number>", "divider length in world units")
-    .option("--title <title>")
-    .option("--color <color>", "line color, such as #6B7280 or gray")
-    .option("--line-style <style>", "solid, dashed, or dotted", parseLineStyle)
-    .option("--stroke-width <number>")
-    .option("--dry-run", "validate without mutating")
-    .action(async (options: PrimitiveOptions & { orientation: DividerOrientation; x: string; y: string; length: string }) =>
-      new BridgeClient().request("/v1/diagram-primitives", {
-        method: "POST",
-        body: {
-          type: "divider.create",
-          orientation: options.orientation,
-          x: parseNumberOption(options.x, "x"),
-          y: parseNumberOption(options.y, "y"),
-          length: parseNumberOption(options.length, "length"),
           ...primitiveVisualBody(options)
         },
         dryRun: Boolean(options.dryRun)
@@ -155,8 +122,6 @@ export function registerPrimitive(program: Command): void {
     .option("--y2 <number>")
     .option("--width <number>")
     .option("--height <number>")
-    .option("--length <number>")
-    .option("--orientation <orientation>", "horizontal or vertical", parseOrientation)
     .option("--line-style <style>", "solid, dashed, or dotted", parseLineStyle)
     .option("--stroke-width <number>")
     .option("--fill-opacity <number>", "0 to 0.18")
@@ -172,8 +137,6 @@ export function registerPrimitive(program: Command): void {
       y2?: string;
       width?: string;
       height?: string;
-      length?: string;
-      orientation?: DividerOrientation;
     }) => {
       if (options.clearTitle && options.title) {
         throw new InvalidArgumentError("Cannot use --title and --clear-title together");
@@ -195,9 +158,7 @@ export function registerPrimitive(program: Command): void {
           x2: parseNumberOption(options.x2, "x2"),
           y2: parseNumberOption(options.y2, "y2"),
           width: parseNumberOption(options.width, "width"),
-          height: parseNumberOption(options.height, "height"),
-          length: parseNumberOption(options.length, "length"),
-          orientation: options.orientation
+          height: parseNumberOption(options.height, "height")
         },
         dryRun: Boolean(options.dryRun)
       });

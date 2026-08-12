@@ -17,6 +17,8 @@ describe("commands", () => {
     }
     const link = program.commands.find((candidate) => candidate.name() === "link")!;
     expect(link.commands.map((candidate) => candidate.name())).toEqual(expect.arrayContaining(["remove", "delete"]));
+    const primitive = program.commands.find((candidate) => candidate.name() === "primitive")!;
+    expect(primitive.commands.map((candidate) => candidate.name())).toEqual(["list", "line", "region", "update", "delete"]);
   });
 
   const cases: Array<[string[], string, string]> = [
@@ -48,7 +50,6 @@ describe("commands", () => {
     [["link", "delete", "abc"], "/v1/links/abc?dryRun=false", "DELETE"],
     [["primitive", "list"], "/v1/diagram-primitives", "GET"],
     [["primitive", "line", "--x1", "10", "--y1", "20", "--x2", "410", "--y2", "20"], "/v1/diagram-primitives?dryRun=false", "POST"],
-    [["primitive", "divider", "--orientation", "horizontal", "--x", "10", "--y", "20", "--length", "400"], "/v1/diagram-primitives?dryRun=false", "POST"],
     [["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240"], "/v1/diagram-primitives?dryRun=false", "POST"],
     [["primitive", "update", "abc", "--title", "Identity"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
     [["primitive", "delete", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "DELETE"],

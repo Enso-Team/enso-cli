@@ -95,6 +95,6 @@ For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`
 ## Object and Placement Choices
 
 - Use a Note for a durable concept, a Portal for navigation to another Canvas, and a Link for a visible relationship.
-- Use a region for a cluster, a divider for a lane, and a line for a precise separator or callout.
+- Use a region for a cluster and an axis-aligned line for a lane divider, separator, or callout.
 - Coordinates are world-space element centers. Anchor new geometry to the vision viewport or inspected neighbors, compute the arrangement before apply, and put final geometry on creates.
 - Read [references/codebase-maps.md](references/codebase-maps.md) when the Canvas represents a repository or software architecture.

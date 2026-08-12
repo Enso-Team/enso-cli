@@ -4,7 +4,6 @@ import { z } from "zod";
 import { BridgeClient } from "../client.js";
 import { linkDirectionSchema, linkUpdateOperationSchema, validateLinkUpdateOperation } from "../link-model.js";
 const lineStyleSchema = z.enum(["solid", "dashed", "dotted"]);
-const dividerOrientationSchema = z.enum(["horizontal", "vertical"]);
 
 const operationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("node.create"), title: z.string(), content: z.string().optional(), canvas: z.string().optional(), x: z.number().optional(), y: z.number().optional() }),
@@ -39,17 +38,6 @@ const operationSchema = z.discriminatedUnion("type", [
     strokeWidth: z.number().positive().optional()
   }),
   z.object({
-    type: z.literal("divider.create"),
-    orientation: dividerOrientationSchema,
-    x: z.number(),
-    y: z.number(),
-    length: z.number().positive(),
-    title: z.string().optional(),
-    color: z.string().optional(),
-    lineStyle: lineStyleSchema.optional(),
-    strokeWidth: z.number().positive().optional()
-  }),
-  z.object({
     type: z.literal("group.create"),
     x: z.number(),
     y: z.number(),
@@ -74,12 +62,10 @@ const operationSchema = z.discriminatedUnion("type", [
     y2: z.number().optional(),
     width: z.number().positive().optional(),
     height: z.number().positive().optional(),
-    length: z.number().positive().optional(),
-    orientation: dividerOrientationSchema.optional(),
     lineStyle: lineStyleSchema.optional(),
     strokeWidth: z.number().positive().optional(),
     fillOpacity: z.number().min(0).max(0.18).optional()
-  }),
+  }).strict(),
   z.object({ type: z.literal("diagramPrimitive.delete"), id: z.string() })
 ]);
 

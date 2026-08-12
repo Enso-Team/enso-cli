@@ -24,9 +24,18 @@ describe("canvas apply", () => {
     expect(contract.input.links.direction).toEqual(["directed", "undirected", "bidirectional"]);
     expect(contract.input.primitives.create.geometry).toEqual({
       region: { required: ["x", "y", "width", "height"], optional: ["fillOpacity"] },
-      divider: { required: ["orientation", "x", "y", "length"], orientation: ["horizontal", "vertical"] },
       line: { required: ["x1", "y1", "x2", "y2"] }
     });
+  });
+
+  it("rejects divider intents before contacting the bridge", async () => {
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      primitives: [{ kind: "divider", mode: "create", orientation: "horizontal", x: 10, y: 20, length: 400 }]
+    })]);
+    expect(result.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
   });
 
   it("omits compact result entries with no auditable fields", async () => {
@@ -328,7 +337,7 @@ describe("canvas apply", () => {
     expect(JSON.parse(result.stdout).data.planned).not.toHaveProperty("nodePortalWrites");
   });
 
-  it("builds notes, portals, links, regions, dividers, and lines from one JSON file", async () => {
+  it("builds notes, portals, links, regions, and lines from one JSON file", async () => {
     let inspections = 0;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
@@ -358,7 +367,7 @@ describe("canvas apply", () => {
       ],
       primitives: [
         { kind: "region", mode: "create", title: "Persistence", x: 1225, y: 2000, width: 830, height: 300 },
-        { kind: "divider", mode: "create", title: "Control Plane", orientation: "horizontal", x: 1000, y: 1820, length: 1220 },
+        { kind: "line", mode: "create", title: "Control Plane", x1: 390, y1: 1820, x2: 1610, y2: 1820 },
         { kind: "line", mode: "create", title: "Section split", x1: 800, y1: 2300, x2: 1700, y2: 2300, color: "#6B7280" }
       ]
     }));
@@ -389,7 +398,7 @@ describe("canvas apply", () => {
     const primitivePatch = JSON.parse(String(applyCalls[2].init.body));
     expect(primitivePatch.operations).toMatchObject([
       { type: "group.create", title: "Persistence", x: 1225, y: 2000, width: 830, height: 300 },
-      { type: "divider.create", title: "Control Plane", orientation: "horizontal", x: 1000, y: 1820, length: 1220 },
+      { type: "line.create", title: "Control Plane", x1: 390, y1: 1820, x2: 1610, y2: 1820 },
       { type: "line.create", title: "Section split", x1: 800, y1: 2300, x2: 1700, y2: 2300, color: "#6B7280" }
     ]);
   });
@@ -452,7 +461,6 @@ describe("canvas apply", () => {
 
   it("updates existing primitives by app UUID and sends dryRun=false", async () => {
     const group = "00000000-0000-4000-8000-000000000011";
-    const divider = "00000000-0000-4000-8000-000000000012";
     const line = "00000000-0000-4000-8000-000000000013";
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
@@ -462,7 +470,6 @@ describe("canvas apply", () => {
           links: [],
           diagramPrimitives: [
             { id: group, kind: "group" },
-            { id: divider, kind: "line" },
             { id: line, kind: "line" }
           ]
         } });
@@ -474,7 +481,6 @@ describe("canvas apply", () => {
       canvas: "current",
       primitives: [
         { kind: "region", mode: "update", id: group, title: "Persistence", x: 1, y: 2, width: 100, height: 50 },
-        { kind: "divider", mode: "update", id: divider, title: "Boundary", orientation: "horizontal", x: 1, y: 2, length: 100 },
         { kind: "line", mode: "update", id: line, title: "Boundary", x1: 1, y1: 2, x2: 3, y2: 4 }
       ]
     }));
@@ -483,10 +489,8 @@ describe("canvas apply", () => {
     expect(result.code).toBe(0);
     const applyCall = calls.find((call) => new URL(call.url).pathname === "/v1/apply")!;
     expect(new URL(applyCall.url).searchParams.get("dryRun")).toBe("false");
-    // divider matches the orientation primitive, line matches the orientation-less one — no cross-update.
     expect(JSON.parse(String(applyCall.init.body)).operations).toMatchObject([
       { type: "diagramPrimitive.update", id: group, title: "Persistence" },
-      { type: "diagramPrimitive.update", id: divider, title: "Boundary" },
       { type: "diagramPrimitive.update", id: line, title: "Boundary" }
     ]);
   });
