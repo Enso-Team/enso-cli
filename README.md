@@ -146,13 +146,10 @@ enso link delete "<id>" --dry-run
 
 ### DiagramPrimitives
 
-Regions, dividers, and lines are non-node canvas elements.
-
-> **Breaking change (0.5.0):** the `enso diagram` command group is renamed to `enso primitive`, and its `group` subcommand to `region`. Bridge operation types (`group.create`, `divider.create`, …) are unchanged. Update any stored agent prompts or scripts that call `enso diagram …`.
+Regions and lines are non-node canvas elements.
 
 ```sh
 enso primitive region --x 18300 --y 18200 --width 1200 --height 700 --title "Runtime" --dry-run
-enso primitive divider --orientation horizontal --x 18300 --y 18020 --length 1600 --dry-run
 enso primitive line --x1 17800 --y1 18100 --x2 19400 --y2 18100 --dry-run
 enso primitive list --pretty
 enso primitive update "<id>" --x 18300 --y 18200 --dry-run

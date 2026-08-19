@@ -46,12 +46,13 @@ const linkRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid(), 
 const intentLink = z.union([linkCreate, linkUpdate, linkRemove]);
 
 const primitiveVisual = { title: z.string().nullable().optional(), color: z.string().nullable().optional(), lineStyle: z.enum(["solid", "dashed", "dotted"]).optional(), strokeWidth: positiveFinite.optional() };
+const primitiveKinds = ["region", "line"] as const;
+const primitiveKindSchema = z.enum(primitiveKinds);
 const regionCreate = z.object({ kind: z.literal("region"), mode: z.literal("create"), ...coordinates, width: positiveFinite, height: positiveFinite, fillOpacity: finite.min(0).max(0.18).optional(), ...primitiveVisual }).strict();
-const dividerCreate = z.object({ kind: z.literal("divider"), mode: z.literal("create"), orientation: z.enum(["horizontal", "vertical"]), ...coordinates, length: positiveFinite, ...primitiveVisual }).strict();
 const lineCreate = z.object({ kind: z.literal("line"), mode: z.literal("create"), x1: finite, y1: finite, x2: finite, y2: finite, ...primitiveVisual }).strict();
-const primitiveUpdate = z.object({ kind: z.enum(["region", "divider", "line"]), mode: z.literal("update"), id: z.string().uuid(), ...optionalCoordinates, x1: finite.optional(), y1: finite.optional(), x2: finite.optional(), y2: finite.optional(), width: positiveFinite.optional(), height: positiveFinite.optional(), length: positiveFinite.optional(), orientation: z.enum(["horizontal", "vertical"]).optional(), fillOpacity: finite.min(0).max(0.18).optional(), ...primitiveVisual }).strict();
-const primitiveRemove = z.object({ kind: z.enum(["region", "divider", "line"]), mode: z.literal("remove"), id: z.string().uuid() }).strict();
-const intentPrimitive = z.union([regionCreate, dividerCreate, lineCreate, primitiveUpdate, primitiveRemove]);
+const primitiveUpdate = z.object({ kind: primitiveKindSchema, mode: z.literal("update"), id: z.string().uuid(), ...optionalCoordinates, x1: finite.optional(), y1: finite.optional(), x2: finite.optional(), y2: finite.optional(), width: positiveFinite.optional(), height: positiveFinite.optional(), fillOpacity: finite.min(0).max(0.18).optional(), ...primitiveVisual }).strict();
+const primitiveRemove = z.object({ kind: primitiveKindSchema, mode: z.literal("remove"), id: z.string().uuid() }).strict();
+const intentPrimitive = z.union([regionCreate, lineCreate, primitiveUpdate, primitiveRemove]);
 
 export const canvasIntentSchema = z.object({
   canvas: safeString,
@@ -235,7 +236,7 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
     const { kind: _kind, mode: _mode, id, ...fields } = primitive;
     return { type: "diagramPrimitive.update", id, ...defined(fields) };
   }
-  const type = primitive.kind === "region" ? "group.create" : primitive.kind === "divider" ? "divider.create" : "line.create";
+  const type = primitive.kind === "region" ? "group.create" : "line.create";
   const { kind: _kind, mode: _mode, ...fields } = primitive;
   return { type, ...defined(fields) };
 }
@@ -296,13 +297,12 @@ export const canvasApplyContract = {
       remove: { identity: "app Link UUID", required: ["mode", "id"], preservesRelationProse: true }
     },
     primitives: {
-      kinds: ["region", "divider", "line"],
+      kinds: primitiveKinds,
       create: {
         identity: "app-returned UUID",
         commonOptional: ["title", "color", "lineStyle", "strokeWidth"],
         geometry: {
           region: { required: ["x", "y", "width", "height"], optional: ["fillOpacity"] },
-          divider: { required: ["orientation", "x", "y", "length"], orientation: ["horizontal", "vertical"] },
           line: { required: ["x1", "y1", "x2", "y2"] }
         }
       },

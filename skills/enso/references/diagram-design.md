@@ -20,10 +20,9 @@ The chosen pattern is complete when a reader can identify the starting point, do
 - Portals carry navigation to detail Canvases.
 - Links carry relationships whose direction or existence matters visually.
 - Regions carry subsystem, ownership, phase, or concern boundaries around several nearby elements.
-- Dividers carry broad lanes or columns.
-- Lines carry precise separators, thresholds, or callouts.
+- Axis-aligned lines divide broad lanes or columns and mark precise separators, thresholds, or callouts.
 
-Prefer content inside a Note when a relationship is explanatory rather than structural. Prefer proximity before adding a boundary, and prefer a region or divider only when proximity does not communicate the grouping. Object selection is complete when every element has one semantic job.
+Prefer content inside a Note when a relationship is explanatory rather than structural. Prefer proximity before adding a boundary, and prefer a region or line only when proximity does not communicate the grouping. Object selection is complete when every element has one semantic job.
 
 ## Place Geometry
 
@@ -35,9 +34,9 @@ Placement is complete when every new object has final geometry, clusters have di
 
 ## Build Hierarchy and Groups
 
-Put the primary path in the clearest row or column and give it the most direct Links. Move supporting systems, audits, caches, and optional paths to the periphery. Keep primary titles short. Let the Canvas name, region titles, divider titles, and Portal labels provide orientation; add a Note only when it represents a real concept in the graph.
+Put the primary path in the clearest row or column and give it the most direct Links. Move supporting systems, audits, caches, and optional paths to the periphery. Keep primary titles short. Let the Canvas name, region titles, line titles, and Portal labels provide orientation; add a Note only when it represents a real concept in the graph.
 
-Use regions around several elements that form one subsystem or phase. Give each region an intentional color and low fill opacity. Use one color per semantic class, reusing it only when groups share meaning, and keep Nodes and Links in the foreground. Use dividers for lanes that span multiple clusters. Add primitives after the Nodes they organize have stable geometry, and keep them sparse enough that the graph remains the foreground.
+Use regions around several elements that form one subsystem or phase. Give each region an intentional color and low fill opacity. Use one color per semantic class, reusing it only when groups share meaning, and keep Nodes and Links in the foreground. Use axis-aligned lines for lanes that span multiple clusters. Add primitives after the Nodes they organize have stable geometry, and keep them sparse enough that the graph remains the foreground.
 
 Hierarchy is complete when the screenshot has one obvious focal path, each group remains understandable without relying on Link labels alone, and every region has a semantic color.
 
