@@ -1,5 +1,6 @@
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient } from "../client.js";
+import { VISUAL_COLOR_GRAMMAR, isVisualColor } from "../link-model.js";
 
 type LineStyle = "solid" | "dashed" | "dotted";
 
@@ -11,6 +12,12 @@ type PrimitiveOptions = {
   fillOpacity?: string;
   dryRun?: boolean;
 };
+
+function parseColorOption(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isVisualColor(value)) throw new InvalidArgumentError(`color must be ${VISUAL_COLOR_GRAMMAR}`);
+  return value;
+}
 
 function parseLineStyle(value: string): LineStyle {
   if (value === "solid" || value === "dashed" || value === "dotted") return value;
@@ -36,7 +43,7 @@ function primitiveVisualBody(options: PrimitiveOptions): {
 } {
   return {
     title: options.title,
-    color: options.color,
+    color: parseColorOption(options.color),
     lineStyle: options.lineStyle,
     strokeWidth: parseNumberOption(options.strokeWidth, "strokeWidth"),
     fillOpacity: parseNumberOption(options.fillOpacity, "fillOpacity", 0, 0.18),
@@ -112,7 +119,7 @@ export function registerPrimitive(program: Command): void {
     .argument("<primitive-id>")
     .option("--title <title>")
     .option("--clear-title", "remove title")
-    .option("--color <color>")
+    .option("--color <color>", "line or boundary color, such as #6B7280 or gray")
     .option("--clear-color", "remove custom color")
     .option("--x <number>")
     .option("--y <number>")

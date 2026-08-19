@@ -38,6 +38,27 @@ describe("canvas apply", () => {
     expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
   });
 
+  it("rejects a color the app would refuse before contacting the bridge", async () => {
+    const region = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      primitives: [{ kind: "region", mode: "create", title: "Identity", x: 0, y: 0, width: 400, height: 240, color: "slate-ish" }]
+    }), "--dry-run"]);
+    expect(region.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(region.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input", message: expect.stringContaining("#RRGGBB"), details: { path: "primitives.0.color" } }
+    });
+
+    const link = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      links: [{ mode: "create", source: "A", target: "B", color: "#12" }]
+    }), "--dry-run"]);
+    expect(link.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(link.stderr).error.details.path).toBe("links.0.color");
+  });
+
   it("omits compact result entries with no auditable fields", async () => {
     let inspections = 0;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {

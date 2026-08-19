@@ -290,7 +290,7 @@ describe("layout", () => {
       ok: false,
       error: {
         code: "canvas_already_laid_out",
-        message: expect.stringContaining("re-layout"),
+        message: expect.stringContaining("already contains"),
         details: { hint: expect.stringContaining("#25"), cause: { code: "title_collision" } }
       }
     });
@@ -333,7 +333,7 @@ describe("layout", () => {
     expect(calls).toHaveLength(0);
     expect(JSON.parse(result.stderr)).toMatchObject({
       ok: false,
-      error: { code: "invalid_input", details: { path: "transport" } }
+      error: { code: "invalid_input", details: { path: "usage", expected: expect.stringContaining("--apply") } }
     });
   });
 
@@ -352,7 +352,8 @@ describe("layout", () => {
     ["a cluster member that is not a canvas member", "---\ncanvas: Flow\nmembers:\n  - A\nclusters:\n  - name: Core\n    members:\n      - B\n---\n", "clusters.members"],
     ["an unknown direction hint", "---\ncanvas: Flow\ndirection: diagonal\nmembers:\n  - A\n---\n", "direction"],
     ["a malformed frontmatter line", "---\ncanvas: Flow\nmembers\n---\n", "frontmatter:3"],
-    ["an inline collection", "---\ncanvas: Flow\nmembers: []\n---\n", "frontmatter:3"]
+    ["an inline collection", "---\ncanvas: Flow\nmembers: []\n---\n", "frontmatter:3"],
+    ["a key named after an Object prototype member", "---\ncanvas: Flow\nmembers:\n  - A\nconstructor: X\n---\n", "frontmatter"]
   ])("rejects %s as a structured envelope", async (_description, contents, path) => {
     const result = await run(["layout", writeSpec(contents, "broken.canvas.md")]);
     expect(result.code).toBe(1);

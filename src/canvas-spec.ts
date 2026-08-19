@@ -159,7 +159,7 @@ function parseBlock(lines: SpecLine[]): unknown {
 }
 
 function parseMapping(lines: SpecLine[]): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
+  const result = new Map<string, unknown>();
   const indent = lines[0].indent;
   let cursor = 0;
   while (cursor < lines.length) {
@@ -168,7 +168,7 @@ function parseMapping(lines: SpecLine[]): Record<string, unknown> {
     const match = /^([A-Za-z][A-Za-z0-9_-]*):(?:\s+(.*))?$/.exec(line.text);
     if (!match) throw lineError("Expected a `key: value` entry", line.line);
     const key = match[1];
-    if (key in result) throw lineError(`Duplicate key '${key}'`, line.line);
+    if (result.has(key)) throw lineError(`Duplicate key '${key}'`, line.line);
     const inline = (match[2] ?? "").trim();
     const children: SpecLine[] = [];
     cursor += 1;
@@ -178,13 +178,13 @@ function parseMapping(lines: SpecLine[]): Record<string, unknown> {
     }
     if (inline === "") {
       if (children.length === 0) throw lineError(`Key '${key}' has no value; indent its block underneath`, line.line);
-      result[key] = parseBlock(children);
+      result.set(key, parseBlock(children));
     } else {
       if (children.length > 0) throw lineError(`Key '${key}' has both an inline value and an indented block`, line.line);
-      result[key] = parseScalar(inline, line.line);
+      result.set(key, parseScalar(inline, line.line));
     }
   }
-  return result;
+  return Object.fromEntries(result);
 }
 
 function parseSequence(lines: SpecLine[]): unknown[] {

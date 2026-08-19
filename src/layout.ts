@@ -16,7 +16,7 @@ export const LAYOUT_GEOMETRY = {
 
 const ORDERING_SWEEPS = 4;
 
-export type LayoutNode = { title: string; mode: "create" | "reuse"; rank: number; order: number; x: number; y: number };
+export type LayoutNode = { title: string; mode: "create" | "reuse"; x: number; y: number };
 export type LayoutRegion = { name: string; color?: string; x: number; y: number; width: number; height: number };
 export type CanvasLayout = { nodes: LayoutNode[]; regions: LayoutRegion[] };
 
@@ -31,7 +31,7 @@ export function computeCanvasLayout(spec: CanvasSpec): CanvasLayout {
   const edges = spec.edges.map((edge) => ({ from: position.get(edge.from)!, to: position.get(edge.to)! }));
   const ranks = assignRanks(titles.length, edges);
   const layers = orderLayers(titles, edges, ranks, clusterIndexes(spec, position));
-  const nodes = placeNodes(spec, layers, ranks);
+  const nodes = placeNodes(spec, layers);
   const byTitle = new Map(nodes.map((node) => [node.title, node]));
   const regions = spec.clusters.map((cluster) => {
     const members = cluster.members.map((member) => byTitle.get(member)!);
@@ -100,19 +100,20 @@ function assignRanks(count: number, edges: Edge[]): number[] {
   };
   for (let node = 0; node < count; node++) if (state[node] === 0) visit(node);
 
-  const forward = edges.map((edge, index) => ({ edge, index })).filter((item) => !backEdges.has(item.index));
+  const forwardOut = outgoing.map((indexes) => indexes.filter((index) => !backEdges.has(index)));
   const indegree = new Array<number>(count).fill(0);
-  for (const item of forward) indegree[item.edge.to] += 1;
+  for (const indexes of forwardOut) for (const index of indexes) indegree[edges[index].to] += 1;
   const ranks = new Array<number>(count).fill(0);
+  // Each rank is the max over its predecessors, and a node is processed only once every
+  // predecessor has been, so the ranks hold whatever order the queue drains in.
   const ready = indegree.flatMap((degree, node) => degree === 0 ? [node] : []);
-  while (ready.length > 0) {
-    ready.sort((a, b) => a - b);
-    const node = ready.shift()!;
-    for (const item of forward) {
-      if (item.edge.from !== node) continue;
-      ranks[item.edge.to] = Math.max(ranks[item.edge.to], ranks[node] + 1);
-      indegree[item.edge.to] -= 1;
-      if (indegree[item.edge.to] === 0) ready.push(item.edge.to);
+  for (let cursor = 0; cursor < ready.length; cursor++) {
+    const node = ready[cursor];
+    for (const index of forwardOut[node]) {
+      const next = edges[index].to;
+      ranks[next] = Math.max(ranks[next], ranks[node] + 1);
+      indegree[next] -= 1;
+      if (indegree[next] === 0) ready.push(next);
     }
   }
   return ranks;
@@ -159,7 +160,7 @@ function orderLayers(titles: string[], edges: Edge[], ranks: number[], clusters:
   return layers;
 }
 
-function placeNodes(spec: CanvasSpec, layers: number[][], ranks: number[]): LayoutNode[] {
+function placeNodes(spec: CanvasSpec, layers: number[][]): LayoutNode[] {
   const nodes: LayoutNode[] = [];
   layers.forEach((layer, rank) => {
     layer.forEach((node, order) => {
@@ -169,8 +170,6 @@ function placeNodes(spec: CanvasSpec, layers: number[][], ranks: number[]): Layo
       nodes.push({
         title: member.title,
         mode: member.mode,
-        rank: ranks[node],
-        order,
         x: spec.direction === "TB" ? along : across,
         y: spec.direction === "TB" ? across : along
       });

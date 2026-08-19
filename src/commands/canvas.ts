@@ -103,8 +103,10 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean): 
     if (node.mode === "create") return [node.title];
     return [];
   }));
-  for (const query of vaultQueries) {
-    const search = await client.request("/v1/search", { query: { q: query } });
+  // Vault lookups are independent, so they run together; results accumulate in query
+  // order to keep availableNotes deterministic, and the first failure in that order wins.
+  const searches = await Promise.all([...vaultQueries].map((query) => client.request("/v1/search", { query: { q: query } })));
+  for (const search of searches) {
     if (!search.ok) return search;
     availableNotes.push(...noteNames(search.data));
   }
