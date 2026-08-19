@@ -116,10 +116,16 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
       });
     }
   }
+  // Reuse places a vault Note in the node phase, ahead of the link phase, so its selector
+  // is a valid endpoint even though the Canvas does not hold it yet.
+  const declaredEndpoints = [
+    ...declaredTitles,
+    ...intent.nodes.flatMap((node) => node.mode === "reuse" && matches(nodes, node.selector).length === 0 ? [node.selector] : [])
+  ];
   for (const link of intent.links) {
     if (link.mode === "create") {
-      resolveEndpoint(link.source, nodes, declaredTitles);
-      resolveEndpoint(link.target, nodes, declaredTitles);
+      resolveEndpoint(link.source, nodes, declaredEndpoints);
+      resolveEndpoint(link.target, nodes, declaredEndpoints);
       const source = matches(nodes, link.source)[0]?.id;
       const target = matches(nodes, link.target)[0]?.id;
       const existing = source && target ? links.find((candidate) => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source, target)) : undefined;

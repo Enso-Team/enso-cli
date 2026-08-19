@@ -3,6 +3,27 @@ import { z } from "zod";
 export const linkDirectionSchema = z.enum(["directed", "undirected", "bidirectional"]);
 export type LinkDirection = z.infer<typeof linkDirectionSchema>;
 
+// Mirrors Link.visualUIColor in the app (Enso/Models/Data Models/Link.swift): a #RGB,
+// #RRGGBB, or #RRGGBBAA hex value, or one of these names, matched case-insensitively.
+export const VISUAL_COLOR_NAMES = [
+  "black", "blue", "cyan", "gray", "green", "grey", "orange", "pink", "purple", "red", "teal", "white", "yellow"
+] as const;
+
+const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+export function isVisualColor(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed === "") return false;
+  if (trimmed.startsWith("#")) return HEX_COLOR_PATTERN.test(trimmed);
+  return (VISUAL_COLOR_NAMES as readonly string[]).includes(trimmed.toLowerCase());
+}
+
+export const VISUAL_COLOR_GRAMMAR = `#RGB, #RRGGBB, #RRGGBBAA, or one of ${VISUAL_COLOR_NAMES.join(", ")}`;
+
+export const visualColorSchema = z.string().refine(isVisualColor, {
+  message: `color must be ${VISUAL_COLOR_GRAMMAR}`
+});
+
 export const primaryBindingStatusSchema = z.enum(["bound", "unbound", "unresolved"]);
 export type PrimaryBindingStatus = z.infer<typeof primaryBindingStatusSchema>;
 

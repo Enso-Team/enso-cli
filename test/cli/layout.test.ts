@@ -213,6 +213,120 @@ describe("layout", () => {
     expect(JSON.parse(result.stdout).data.applied).toMatchObject({ dryRun: true, preflightPassed: true });
   });
 
+  it("names the phases the app validated and the phases validated locally alone", async () => {
+    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    const validation = JSON.parse(result.stdout).data.validation;
+    expect(validation).toEqual({ bridgeValidated: ["nodePortalWrites"], locallyValidatedOnly: ["linkWrites", "primitives"] });
+  });
+
+  it("rejects a color the app would refuse, before any bridge call", async () => {
+    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("\"#6B7280\"", "slate-ish"), "badcolor.canvas.md"), "--apply"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid_input",
+        message: expect.stringContaining("#RRGGBB"),
+        details: { path: "clusters.0.color", expected: expect.stringContaining("teal") }
+      }
+    });
+  });
+
+  it("rejects a malformed hex color on an edge before any bridge call", async () => {
+    const spec = writeSpec([
+      "---",
+      "canvas: current",
+      "members:",
+      "  - A",
+      "  - B",
+      "edges:",
+      "  - from: A",
+      "    to: B",
+      "    color: \"#12\"",
+      "---",
+      ""
+    ].join("\n"), "badedge.canvas.md");
+    const result = await run(["layout", spec]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.details.path).toBe("edges.0.color");
+  });
+
+  it.each([["#0AF"], ["#3B82F6"], ["#3B82F6CC"], ["green"], ["Teal"]])("accepts the app color %s", async (color) => {
+    const spec = writeSpec([
+      "---",
+      "canvas: current",
+      "members:",
+      "  - A",
+      "  - B",
+      "clusters:",
+      "  - name: Core",
+      `    color: "${color}"`,
+      "    members:",
+      "      - A",
+      "      - B",
+      "---",
+      ""
+    ].join("\n"), "color.canvas.md");
+    const result = await run(["layout", spec]);
+    expect(result.code).toBe(0);
+    expect(patchOf(result.stdout).primitives[0]).toMatchObject({ title: "Core", color });
+  });
+
+  it("reports a canvas that already holds the spec's members as one structured error", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: { nodes: [{ id: "node-0", title: "Gateway", position: { x: 0, y: 0 } }], links: [], diagramPrimitives: [] } });
+      }
+      return Response.json({ ok: true, data: {} });
+    });
+    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply"]);
+    expect(result.code).toBe(1);
+    expect(calls.some((call) => new URL(call.url).pathname === "/v1/apply")).toBe(false);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: {
+        code: "canvas_already_laid_out",
+        message: expect.stringContaining("re-layout"),
+        details: { hint: expect.stringContaining("#25"), cause: { code: "title_collision" } }
+      }
+    });
+  });
+
+  it("reports a reuse member the app rejects as already placed as the same structured error", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/v1/context") return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      if (pathname === "/v1/search") return Response.json({ ok: true, data: { results: [{ node: { title: "Existing Note" } }] } });
+      if (pathname === "/v1/apply") {
+        return Response.json({ ok: false, error: { code: "already_on_canvas", message: "Note is already on the current Canvas", details: {} } }, { status: 409 });
+      }
+      return Response.json({ ok: true, data: {} });
+    });
+    const spec = writeSpec([
+      "---",
+      "canvas: current",
+      "members:",
+      "  - title: Existing Note",
+      "    mode: reuse",
+      "---",
+      ""
+    ].join("\n"), "reuse-apply.canvas.md");
+    const result = await run(["layout", spec, "--apply"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: {
+        code: "canvas_already_laid_out",
+        details: { hint: expect.stringContaining("#25"), failedBatch: "nodePortalWrites" }
+      }
+    });
+  });
+
   it("rejects --dry-run without --apply before reading the spec", async () => {
     const result = await run(["layout", join(tempDir, "missing.canvas.md"), "--dry-run"]);
     expect(result.code).toBe(1);
@@ -237,7 +351,8 @@ describe("layout", () => {
     ["an edge endpoint that is not a member", "---\ncanvas: Flow\nmembers:\n  - A\nedges:\n  - from: A\n    to: B\n---\n", "edges.to"],
     ["a cluster member that is not a canvas member", "---\ncanvas: Flow\nmembers:\n  - A\nclusters:\n  - name: Core\n    members:\n      - B\n---\n", "clusters.members"],
     ["an unknown direction hint", "---\ncanvas: Flow\ndirection: diagonal\nmembers:\n  - A\n---\n", "direction"],
-    ["a malformed frontmatter line", "---\ncanvas: Flow\nmembers\n---\n", "frontmatter:3"]
+    ["a malformed frontmatter line", "---\ncanvas: Flow\nmembers\n---\n", "frontmatter:3"],
+    ["an inline collection", "---\ncanvas: Flow\nmembers: []\n---\n", "frontmatter:3"]
   ])("rejects %s as a structured envelope", async (_description, contents, path) => {
     const result = await run(["layout", writeSpec(contents, "broken.canvas.md")]);
     expect(result.code).toBe(1);
