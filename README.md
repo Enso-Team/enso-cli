@@ -100,6 +100,12 @@ enso layout request-flow.canvas.md --apply
 
 Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry, so the emitted patch is reviewable in a diff. `--out` writes the patch, `--apply` sends it through the `canvas apply` pipeline with its preflight and verification, and `--apply --dry-run` validates without mutating. Run `enso layout --schema` for the machine-readable spec contract.
 
+Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of `black`, `blue`, `cyan`, `gray`, `grey`, `green`, `orange`, `pink`, `purple`, `red`, `teal`, `white`, `yellow`. Anything else fails preflight, before any element reaches the canvas.
+
+`--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply.
+
+`layout` builds a canvas once. Compiling the same spec onto a canvas that already holds its members returns `canvas_already_laid_out`. Re-layout and update mode are tracked in issue #25.
+
 ## canvas apply
 
 Run `enso canvas apply --schema` for the machine-readable source of truth. Inputs require an explicit Canvas name or `current`, reject unknown fields, and use explicit element modes. All `x`/`y` values are element centers in world coordinates.

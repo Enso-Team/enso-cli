@@ -281,6 +281,26 @@ describe("canvas apply", () => {
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/context", "/v1/search", "/v1/apply"]);
   });
 
+  it("accepts a Link endpoint that a reuse node places in an earlier phase", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const parsed = new URL(String(url));
+      if (parsed.pathname === "/v1/context") return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      if (parsed.pathname === "/v1/search") return Response.json({ ok: true, data: { results: [{ type: "file", path: "Files/API Gateway.md" }] } });
+      return Response.json({ ok: true, data: { valid: true } });
+    });
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      nodes: [
+        { kind: "note", mode: "reuse", selector: "API Gateway", x: 1, y: 2 },
+        { kind: "note", mode: "create", title: "Client", x: 3, y: 4 }
+      ],
+      links: [{ mode: "create", source: "Client", target: "API Gateway" }]
+    }), "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data.planned).toMatchObject({ nodePortalWrites: 2, linkWrites: 1 });
+  });
+
   it("rejects a create Note whose title already exists in the vault", async () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
