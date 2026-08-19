@@ -9,7 +9,7 @@ const safeString = z.string().min(1).superRefine((value, ctx) => {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "control characters are not allowed" });
   }
 });
-const safeTitle = safeString.superRefine((value, ctx) => {
+export const safeTitle = safeString.superRefine((value, ctx) => {
   if (/[/:?#]/.test(value) || /%[0-9a-fA-F]{2}/.test(value)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "titles cannot contain /, :, ?, #, or pre-encoded path fragments" });
   }

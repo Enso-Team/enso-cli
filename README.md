@@ -47,16 +47,58 @@ Rules:
 
 ## Command model
 
-Two layers — use the batch path by default.
+Three layers. Compile a whole diagram from a spec, batch a hand-written patch, or edit one element.
 
 
-| Layer      | When                                  | Commands                                                  |
-| ---------- | ------------------------------------- | --------------------------------------------------------- |
-| **Batch**  | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
-| **Atomic** | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
+| Layer       | When                                  | Commands                                                  |
+| ----------- | ------------------------------------- | --------------------------------------------------------- |
+| **Compile** | Building a diagram from a graph       | `enso layout <spec.canvas.md>`                            |
+| **Batch**   | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
+| **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
 
 
 `canvas apply` runs complete local preflight, then applies dependency phases. Each phase is app-atomic; successful earlier phases remain when a later phase fails. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
+
+## layout
+
+`enso layout` compiles a canvas spec into a `canvas apply` patch. Declare the graph; the CLI owns every coordinate.
+
+A canvas spec is one markdown manifest per canvas. Frontmatter carries members by Note title, visible edges, named clusters, and a direction hint of `TB` or `LR`. The body is the canvas's own prose and never compiles.
+
+```markdown
+---
+canvas: Request Flow
+direction: LR
+members:
+  - Gateway
+  - Router
+  - title: Object Store
+    mode: reuse
+edges:
+  - from: Gateway
+    to: Router
+    label: routes
+    direction: directed
+  - from: Router
+    to: Object Store
+clusters:
+  - name: Edge
+    color: "#6B7280"
+    members:
+      - Gateway
+      - Router
+---
+
+How a request reaches the store.
+```
+
+```sh
+enso layout request-flow.canvas.md --out request-flow.json
+enso canvas apply request-flow.json --dry-run
+enso layout request-flow.canvas.md --apply
+```
+
+Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry, so the emitted patch is reviewable in a diff. `--out` writes the patch, `--apply` sends it through the `canvas apply` pipeline with its preflight and verification, and `--apply --dry-run` validates without mutating. Run `enso layout --schema` for the machine-readable spec contract.
 
 ## canvas apply
 
