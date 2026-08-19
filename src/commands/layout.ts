@@ -43,7 +43,7 @@ export function registerLayout(program: Command): void {
         }
         if (!applied.ok) {
           const relayout = relayoutError(applied.error);
-          if (relayout) return { ok: false, error: { ...relayout.body, details: { ...relayout.body.details, ...applied.error.details } } };
+          if (relayout) return { ok: false, error: { ...relayout.body, details: { ...applied.error.details, ...relayout.body.details } } };
           return applied;
         }
         return {
