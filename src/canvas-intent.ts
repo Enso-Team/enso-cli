@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { EnsoCliError } from "./errors.js";
-import { linkDirectionSchema } from "./link-model.js";
+import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
 
 const finite = z.number().finite();
 const positiveFinite = finite.positive();
@@ -39,13 +39,13 @@ const portalUpdate = z.object({ kind: z.literal("portal"), mode: z.literal("upda
 const portalRemove = z.object({ kind: z.literal("portal"), mode: z.literal("remove"), selector }).strict();
 const intentNode = z.union([noteCreate, noteReuse, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
 
-const linkVisual = { label: z.string().nullable().optional(), color: z.string().nullable().optional(), direction: linkDirectionSchema.optional() };
+const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional() };
 const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
 const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, boundLine: z.string().optional(), syncProse: z.boolean().optional() }).strict();
 const linkRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid(), fromNote: z.boolean().optional() }).strict();
 const intentLink = z.union([linkCreate, linkUpdate, linkRemove]);
 
-const primitiveVisual = { title: z.string().nullable().optional(), color: z.string().nullable().optional(), lineStyle: z.enum(["solid", "dashed", "dotted"]).optional(), strokeWidth: positiveFinite.optional() };
+const primitiveVisual = { title: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), lineStyle: z.enum(["solid", "dashed", "dotted"]).optional(), strokeWidth: positiveFinite.optional() };
 const primitiveKinds = ["region", "line"] as const;
 const primitiveKindSchema = z.enum(primitiveKinds);
 const regionCreate = z.object({ kind: z.literal("region"), mode: z.literal("create"), ...coordinates, width: positiveFinite, height: positiveFinite, fillOpacity: finite.min(0).max(0.18).optional(), ...primitiveVisual }).strict();
@@ -94,12 +94,17 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   const availableNotes = readArray<string>(context, "availableNotes");
   const declaredTitles = intent.nodes.flatMap((node) => "title" in node && typeof node.title === "string" ? [node.title] : []);
 
+  // Reuse places a vault Note in the node phase, ahead of the link phase, so its selector
+  // is a valid Link endpoint even though the Canvas does not hold it yet.
+  const placedByReuse: string[] = [];
+
   for (const node of intent.nodes) {
     if (node.mode === "reuse") {
       const canvasMatches = matches(nodes, node.selector);
       const vaultMatches = availableNotes.filter((candidate) => candidate === node.selector);
       if (canvasMatches.length + vaultMatches.length === 0) fail("missing_selector", `No Note matches '${node.selector}'`, `nodes.${node.selector}`, "Use the exact Note name or ref");
       if (canvasMatches.length > 1 || vaultMatches.length > 1) fail("ambiguous_selector", `Multiple Notes match '${node.selector}'`, `nodes.${node.selector}`, "Use the exact unique Note name or ref");
+      if (canvasMatches.length === 0) placedByReuse.push(node.selector);
     } else if ("selector" in node) {
       resolveOne(nodes, node.selector, "node");
     }
@@ -116,12 +121,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
       });
     }
   }
-  // Reuse places a vault Note in the node phase, ahead of the link phase, so its selector
-  // is a valid endpoint even though the Canvas does not hold it yet.
-  const declaredEndpoints = [
-    ...declaredTitles,
-    ...intent.nodes.flatMap((node) => node.mode === "reuse" && matches(nodes, node.selector).length === 0 ? [node.selector] : [])
-  ];
+  const declaredEndpoints = [...declaredTitles, ...placedByReuse];
   for (const link of intent.links) {
     if (link.mode === "create") {
       resolveEndpoint(link.source, nodes, declaredEndpoints);
@@ -283,6 +283,7 @@ export const canvasApplyContract = {
     required: ["canvas"],
     canvas: "Canvas name or current",
     unknownFields: "rejected",
+    color: VISUAL_COLOR_GRAMMAR,
     nodes: {
       note: {
         create: { identity: "title", required: ["kind", "mode", "title", "x", "y"], optional: ["content"] },

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { z } from "zod";
 import { BridgeClient } from "../client.js";
-import { linkDirectionSchema, linkUpdateOperationSchema, validateLinkUpdateOperation } from "../link-model.js";
+import { linkDirectionSchema, linkUpdateOperationSchema, validateLinkUpdateOperation, visualColorSchema } from "../link-model.js";
 const lineStyleSchema = z.enum(["solid", "dashed", "dotted"]);
 
 const operationSchema = z.discriminatedUnion("type", [
@@ -21,7 +21,7 @@ const operationSchema = z.discriminatedUnion("type", [
     source: z.string(),
     target: z.string(),
     label: z.string().optional(),
-    color: z.string().optional(),
+    color: visualColorSchema.optional(),
     direction: linkDirectionSchema.optional()
   }),
   linkUpdateOperationSchema,
@@ -33,7 +33,7 @@ const operationSchema = z.discriminatedUnion("type", [
     x2: z.number(),
     y2: z.number(),
     title: z.string().optional(),
-    color: z.string().optional(),
+    color: visualColorSchema.optional(),
     lineStyle: lineStyleSchema.optional(),
     strokeWidth: z.number().positive().optional()
   }),
@@ -44,7 +44,7 @@ const operationSchema = z.discriminatedUnion("type", [
     width: z.number().positive(),
     height: z.number().positive(),
     title: z.string().optional(),
-    color: z.string().optional(),
+    color: visualColorSchema.optional(),
     lineStyle: lineStyleSchema.optional(),
     strokeWidth: z.number().positive().optional(),
     fillOpacity: z.number().min(0).max(0.18).optional()
@@ -53,7 +53,7 @@ const operationSchema = z.discriminatedUnion("type", [
     type: z.literal("diagramPrimitive.update"),
     id: z.string(),
     title: z.string().nullable().optional(),
-    color: z.string().nullable().optional(),
+    color: visualColorSchema.nullable().optional(),
     x: z.number().optional(),
     y: z.number().optional(),
     x1: z.number().optional(),

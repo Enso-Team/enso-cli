@@ -109,6 +109,25 @@ describe("commands", () => {
     expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
   });
 
+  it("rejects a color the app would refuse on primitive region", async () => {
+    const result = await run(["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240", "--color", "slate-ish"]);
+    expect(result.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.message).toContain("#RRGGBB");
+  });
+
+  it("rejects a color the app would refuse on link create and update", async () => {
+    const created = await run(["link", "create", "A", "B", "--color", "slate-ish"]);
+    expect(created.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(created.stderr).error.message).toContain("#RRGGBB");
+
+    const updated = await run(["link", "update", "abc", "--color", "#12"]);
+    expect(updated.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(updated.stderr).error.message).toContain("#RRGGBB");
+  });
+
   it("rejects out-of-range fill-opacity on primitive region", async () => {
     const result = await run(["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240", "--fill-opacity", "5"]);
     expect(result.code).not.toBe(0);

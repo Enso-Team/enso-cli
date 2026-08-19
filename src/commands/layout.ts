@@ -17,13 +17,13 @@ export function registerLayout(program: Command): void {
     .action(async (specPath: string | undefined, options: { schema?: boolean; out?: string; apply?: boolean; dryRun?: boolean }): Promise<EnsoEnvelope> => {
       if (options.schema) {
         if (specPath || options.out || options.apply || options.dryRun) {
-          throw specError("--schema cannot be combined with a spec path or compilation options", "transport");
+          throw usageError("--schema prints the contract on its own");
         }
         return { ok: true, data: canvasSpecContract };
       }
-      if (!specPath) throw specError("Canvas layout requires a canvas spec path", "transport");
+      if (!specPath) throw usageError("Canvas layout requires a canvas spec path");
       if (options.dryRun && !options.apply) {
-        throw specError("--dry-run only applies with --apply; without it nothing reaches the app", "transport");
+        throw usageError("--dry-run validates the apply pipeline, so it takes --apply");
       }
       let source: string;
       try {
@@ -59,12 +59,19 @@ export function registerLayout(program: Command): void {
     });
 }
 
+function usageError(message: string): EnsoCliError {
+  return new EnsoCliError("invalid_input", message, {
+    path: "usage",
+    expected: "enso layout <spec.canvas.md> [--out <path>] [--apply [--dry-run]], or enso layout --schema",
+    hint: "Run `enso layout --help` for the flag list"
+  });
+}
+
 const RELAYOUT_CODES = new Set(["title_collision", "already_on_canvas"]);
 
 /**
- * Layout compiles a canvas from scratch. When the target Canvas already holds the
- * members, say so in one place instead of leaking a collision from preflight or an
- * already_on_canvas from the middle of the phase loop.
+ * Layout compiles a Canvas once. This folds the preflight title collision and the app's
+ * already_on_canvas into one error that names the re-layout ticket.
  */
 function relayoutError(error: unknown): EnsoCliError | undefined {
   const code = error instanceof EnsoCliError
@@ -73,9 +80,9 @@ function relayoutError(error: unknown): EnsoCliError | undefined {
       ? (error as { code: string }).code
       : undefined;
   if (code === undefined || !RELAYOUT_CODES.has(code)) return undefined;
-  return new EnsoCliError("canvas_already_laid_out", "The target Canvas already contains members of this spec; re-layout is not supported yet", {
+  return new EnsoCliError("canvas_already_laid_out", "The target Canvas already contains members of this spec", {
     path: "canvas",
-    expected: "a Canvas without the spec's members",
+    expected: "a target Canvas free of the spec's members",
     hint: "Compile onto an empty Canvas, or remove the existing elements first. Re-layout and update mode are tracked in issue #25.",
     cause: error instanceof EnsoCliError ? error.body : error
   });
