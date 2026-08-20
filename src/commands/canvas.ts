@@ -4,6 +4,7 @@ import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanva
 import { centerPatchOnCanvas, existingContent, isPureCreation } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+import { noteNames } from "../vault-notes.js";
 
 export function registerCanvas(program: Command): void {
   const canvas = program.command("canvas").description("Manage Enso canvases");
@@ -245,23 +246,4 @@ function projectResults(data: unknown): Record<string, unknown>[] {
     const projected = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => keys.has(key)));
     return Object.keys(projected).length > 0 ? [projected] : [];
   });
-}
-
-function noteNames(data: unknown): string[] {
-  if (!data || typeof data !== "object" || !Array.isArray((data as { results?: unknown }).results)) return [];
-  const names: string[] = [];
-  for (const result of (data as { results: unknown[] }).results) {
-    if (!result || typeof result !== "object") continue;
-    const item = result as { path?: unknown; node?: unknown };
-    if (typeof item.path === "string") {
-      names.push(item.path);
-      const filename = item.path.split("/").pop();
-      if (filename) names.push(filename.replace(/\.md$/i, ""));
-    }
-    if (item.node && typeof item.node === "object") {
-      const node = item.node as { title?: unknown; displayTitle?: unknown; ref?: unknown };
-      for (const value of [node.title, node.displayTitle, node.ref]) if (typeof value === "string") names.push(value);
-    }
-  }
-  return names;
 }

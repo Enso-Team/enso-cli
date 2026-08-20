@@ -52,7 +52,7 @@ Three layers. Compile a whole diagram from a spec, batch a hand-written patch, o
 
 | Layer       | When                                  | Commands                                                  |
 | ----------- | ------------------------------------- | --------------------------------------------------------- |
-| **Compile** | Building a diagram from a graph       | `enso layout <spec.canvas.md>`                            |
+| **Compile** | Building a diagram from a graph       | `enso layout <spec.canvas.md>`, `enso layout --from-mermaid <graph.mmd>` |
 | **Batch**   | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
 | **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
 | **Verify**  | Linting an authoring folder           | `enso check [folder]`                                     |
@@ -106,6 +106,35 @@ Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of 
 `--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply.
 
 `layout` builds a canvas once. Compiling the same spec onto a canvas that already holds its members returns `canvas_already_laid_out`. Re-layout and update mode are tracked in issue #25.
+
+### mermaid
+
+A mermaid flowchart or state diagram carries the same graph a canvas spec does, so `layout` compiles one through the same engine to the same patch.
+
+```mermaid
+---
+title: Request Flow
+---
+flowchart LR
+  subgraph Edge
+    Gateway[API Gateway] -->|routes| Router
+  end
+  Router --> Store[(Object Store)]
+```
+
+```sh
+enso layout --from-mermaid request-flow.mmd --canvas "Request Flow" --apply
+```
+
+Nodes become members, titled by their label where they carry one and by their id otherwise. Edges become Links, and the arrow head sets `directed`, `undirected`, or `bidirectional`. The end the head touches sets which way the Link runs, so `A <-- B` is a Link from B to A. Subgraphs and composite states become clusters. `TB`, `TD`, and `LR` set the direction hint. The target Canvas comes from the diagram's frontmatter `title`, from `--canvas`, or `current`.
+
+A canvas Link is one unordered pair, so opposite arrows between the same two nodes fold into a single bidirectional Link. A cycle draws the way you would expect. Drawing the same arrow twice is an error, as is asking one Link to carry two labels.
+
+Every title goes through the vault tree and vault search. A title either surface holds is placed as that Note; the rest become stub Notes to fill with `enso node write`. The envelope reports both lists under `notes`. A vault listing the app refuses to return stops the compile, because a wrong guess here costs a duplicate Note.
+
+Resolution reads the vault at compile time, so the patch and the `notes` lists follow vault state. Geometry does not: identical mermaid input yields byte-identical coordinates whatever the vault holds. `--apply` centers the cluster the same way a canvas spec does, and `--spacing` applies to both inputs.
+
+The subset stops where the canvas mapping does. `BT` and `RL` reverse the flow, nested subgraphs and nested composite states have no flat cluster, and styling statements (`classDef`, `class`, `style`, `linkStyle`, `click`) carry no structure. The `[*]` start and end pseudostate carries no Note, so `layout` drops it. Sequence, class, ER, gantt, and every other diagram type fails with `unsupported_diagram` naming `flowchart` and `stateDiagram`. Run `enso layout --schema` for the machine-readable mermaid contract.
 
 ## check
 

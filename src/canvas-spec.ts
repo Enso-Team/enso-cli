@@ -42,6 +42,7 @@ export const canvasSpecSchema = z.object({
 }).strict();
 
 export type CanvasSpec = z.infer<typeof canvasSpecSchema>;
+export type DirectionHint = CanvasSpec["direction"];
 
 /**
  * Every structural rule carries its own code, so a caller acts on the rule itself rather than
@@ -59,10 +60,28 @@ export type SpecIssueCode =
 export type SpecIssue = { code: SpecIssueCode; message: string; path: string };
 
 export function parseCanvasSpec(source: string): CanvasSpec {
-  const spec = canvasSpecFromFrontmatter(readSpecFrontmatter(source).value);
-  const issue = canvasSpecIssues(spec)[0];
-  if (issue) throw specError(issue.message, issue.path);
-  return spec;
+  return buildCanvasSpec(readSpecFrontmatter(source).value, specError, "frontmatter");
+}
+
+/** The graph model every layout front end compiles to, with its invariants enforced. */
+export function buildCanvasSpec(
+  value: unknown,
+  fail: (message: string, path: string, expected?: string) => EnsoCliError,
+  root = "graph"
+): CanvasSpec {
+  const parsed = canvasSpecSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue?.path.join(".") || root;
+    throw fail(
+      issue?.message ?? "The canvas graph is invalid",
+      path,
+      path.endsWith("color") ? VISUAL_COLOR_GRAMMAR : undefined
+    );
+  }
+  const issue = canvasSpecIssues(parsed.data)[0];
+  if (issue) throw fail(issue.message, issue.path);
+  return parsed.data;
 }
 
 /** The shared frontmatter reader in canvas spec dressing. */
@@ -105,6 +124,8 @@ export function canvasSpecIssues(spec: CanvasSpec): SpecIssue[] {
     }
     members.add(member.title);
   }
+  // The app holds one Link per unordered endpoint pair, so a pair takes one declaration
+  // and a two-way relationship rides on the Link's own direction.
   const pairs = new Set<string>();
   for (const edge of spec.edges) {
     for (const [end, title] of [["from", edge.from], ["to", edge.to]] as const) {
