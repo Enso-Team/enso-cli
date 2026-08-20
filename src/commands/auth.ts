@@ -68,7 +68,7 @@ async function requestPairingOverBridge(callback: string, nonce: string): Promis
   return await attempt(debug) === "prompted";
 }
 
-async function waitForPairing(): Promise<PairingResult> {
+async function waitForPairing(aborted: Promise<never>): Promise<PairingResult> {
   const nonce = randomBytes(16).toString("hex");
 
   return new Promise((resolve, reject) => {
@@ -76,6 +76,12 @@ async function waitForPairing(): Promise<PairingResult> {
       server.close();
       reject(new EnsoCliError("pairing_failed", "Timed out waiting for Enso pairing approval"));
     }, 120_000);
+
+    aborted.catch((error: unknown) => {
+      clearTimeout(timeout);
+      server.close();
+      reject(error);
+    });
 
     const server = createServer((request, response) => {
       if (request.method !== "POST" || !request.url?.startsWith("/callback")) {
@@ -171,9 +177,25 @@ export function registerAuth(program: Command): void {
         // An unavailable or invalid existing configuration does not block a fresh pairing attempt.
       }
     }
+    // The lock heartbeat can find the lock directory taken over by another process, which means this
+    // attempt no longer owns pairing and has to abandon the callback server it is waiting on.
+    let abort: (error: EnsoCliError) => void = () => {};
+    const lockLost = { reason: null as EnsoCliError | null };
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abort = reject;
+    });
+    aborted.catch(() => {
+      // The rejection is delivered through waitForPairing; this keeps it from surfacing unhandled.
+    });
     let releaseLock: () => void;
     try {
-      releaseLock = acquirePairingLock();
+      releaseLock = acquirePairingLock((error) => {
+        lockLost.reason = new EnsoCliError("pairing_lock_lost", "The Enso pairing lock was taken over by another process", {
+          hint: "Run enso auth link again",
+          cause: error.message
+        });
+        abort(lockLost.reason);
+      });
     } catch (error) {
       if (error instanceof Error && error.message === "pairing_in_progress") {
         throw new EnsoCliError("pairing_in_progress", "Another Enso pairing attempt is already active", {
@@ -183,14 +205,17 @@ export function registerAuth(program: Command): void {
       throw error;
     }
     try {
-      return await completePairing();
+      return await completePairing(aborted, lockLost);
     } finally {
       releaseLock();
     }
   });
 
-  async function completePairing(): Promise<EnsoEnvelope> {
-    const result = await waitForPairing();
+  async function completePairing(
+    aborted: Promise<never>,
+    lockLost: { reason: EnsoCliError | null }
+  ): Promise<EnsoEnvelope> {
+    const result = await waitForPairing(aborted);
     const candidateBridgeUrl = result.bridgeUrl ?? defaultBridgeUrl;
     let verified: EnsoEnvelope;
     try {
@@ -207,6 +232,9 @@ export function registerAuth(program: Command): void {
         hint: "Approve pairing again to receive a fresh token"
       });
     }
+    // A lock lost while the approval was in flight means another pairing owns the credentials now,
+    // so this attempt reports the loss rather than overwriting them.
+    if (lockLost.reason) throw lockLost.reason;
     const config = {
       bridgeUrl: candidateBridgeUrl,
       token: result.token,

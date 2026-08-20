@@ -1,10 +1,21 @@
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { writeConfig } from "../../src/config.js";
+import { acquirePairingLock, writeConfig } from "../../src/config.js";
 import { calls, nativeFetch, run, setupCliTest, sleep, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
+
+async function readPairingUrl(urlFile: string): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return readFileSync(urlFile, "utf8");
+    } catch {
+      await sleep(10);
+    }
+  }
+  throw new Error("pairing url was never written");
+}
 
 describe("auth", () => {
   it("stores credentials with private directory and file permissions", () => {
@@ -181,7 +192,8 @@ describe("auth", () => {
       ok: false,
       error: { code: "pairing_in_progress", details: { hint: expect.any(String) } }
     });
-    expect(statSync(join(tempDir, "pairing.lock")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(tempDir, "pairing")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(tempDir, "pairing.lock")).isDirectory()).toBe(true);
 
     const parsed = new URL(pairingUrl);
     await nativeFetch(parsed.searchParams.get("callback")!, {
@@ -193,6 +205,112 @@ describe("auth", () => {
       })
     });
     await first;
+  });
+
+  it("recovers a lock whose holder stopped heartbeating", async () => {
+    await run(["auth", "unlink"]);
+    const lockDir = join(tempDir, "pairing.lock");
+    writeFileSync(join(tempDir, "pairing"), "", "utf8");
+    mkdirSync(lockDir);
+    const abandoned = new Date(Date.now() - 5 * 60 * 1000);
+    utimesSync(lockDir, abandoned, abandoned);
+    const urlFile = join(tempDir, "pairing-url.txt");
+    process.env.ENSO_CLI_PAIRING_URL_FILE = urlFile;
+
+    const pending = run(["auth", "link"]);
+    const parsed = new URL(await readPairingUrl(urlFile));
+    expect(statSync(lockDir).mtimeMs).toBeGreaterThan(abandoned.getTime());
+
+    await nativeFetch(parsed.searchParams.get("callback")!, {
+      method: "POST",
+      body: JSON.stringify({ token: "paired-token", nonce: parsed.searchParams.get("nonce") })
+    });
+    expect((await pending).code).toBe(0);
+  });
+
+  it("keeps rejecting while the lock is being heartbeated", async () => {
+    await run(["auth", "unlink"]);
+    writeFileSync(join(tempDir, "pairing"), "", "utf8");
+    mkdirSync(join(tempDir, "pairing.lock"));
+
+    const result = await run(["auth", "link"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "pairing_in_progress" }
+    });
+    expect(statSync(join(tempDir, "pairing.lock")).isDirectory()).toBe(true);
+  });
+
+  it("releases the lock once pairing succeeds", async () => {
+    await run(["auth", "unlink"]);
+    const urlFile = join(tempDir, "pairing-url.txt");
+    process.env.ENSO_CLI_PAIRING_URL_FILE = urlFile;
+
+    const pending = run(["auth", "link"]);
+    const parsed = new URL(await readPairingUrl(urlFile));
+    expect(existsSync(join(tempDir, "pairing.lock"))).toBe(true);
+
+    await nativeFetch(parsed.searchParams.get("callback")!, {
+      method: "POST",
+      body: JSON.stringify({ token: "paired-token", nonce: parsed.searchParams.get("nonce") })
+    });
+    expect((await pending).code).toBe(0);
+    expect(existsSync(join(tempDir, "pairing.lock"))).toBe(false);
+  });
+
+  it("heartbeats the held lock on an unref'd timer", async () => {
+    process.env.ENSO_CLI_PAIRING_LOCK_STALE_MS = "2000";
+    const lockDir = join(tempDir, "pairing.lock");
+    const refTimersBefore = process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+    const release = acquirePairingLock(() => {});
+    try {
+      const firstMtime = statSync(lockDir).mtimeMs;
+      // The heartbeat runs on an unref'd timer, so it refreshes the lock without holding the CLI open.
+      expect(process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length).toBe(refTimersBefore);
+      await sleep(1500);
+      expect(statSync(lockDir).mtimeMs).toBeGreaterThan(firstMtime);
+    } finally {
+      release();
+    }
+    expect(existsSync(lockDir)).toBe(false);
+  }, 15_000);
+
+  it("rejects a second attempt against a live lock held past the stale window", async () => {
+    await run(["auth", "unlink"]);
+    process.env.ENSO_CLI_PAIRING_LOCK_STALE_MS = "2000";
+    const release = acquirePairingLock(() => {});
+    try {
+      await sleep(2600);
+      const result = await run(["auth", "link"]);
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        ok: false,
+        error: { code: "pairing_in_progress" }
+      });
+    } finally {
+      release();
+    }
+  }, 15_000);
+
+  it("aborts the pairing wait when the lock is compromised", async () => {
+    await run(["auth", "unlink"]);
+    const urlFile = join(tempDir, "pairing-url.txt");
+    process.env.ENSO_CLI_PAIRING_URL_FILE = urlFile;
+    process.env.ENSO_CLI_PAIRING_LOCK_STALE_MS = "2000";
+
+    const pending = run(["auth", "link"]);
+    await readPairingUrl(urlFile);
+    // Another process reclaimed the lock directory, so the heartbeat finds an mtime that is not ours.
+    rmSync(join(tempDir, "pairing.lock"), { recursive: true, force: true });
+
+    const result = await pending;
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr.trim().split("\n").pop()!)).toMatchObject({
+      ok: false,
+      error: { code: "pairing_lock_lost", details: { hint: expect.any(String) } }
+    });
+    expect(existsSync(join(tempDir, "config.json"))).toBe(false);
   });
 
   it("continues waiting after a wrong-nonce callback", async () => {
