@@ -38,6 +38,27 @@ describe("canvas apply", () => {
     expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
   });
 
+  it("rejects a color the app would refuse before contacting the bridge", async () => {
+    const region = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      primitives: [{ kind: "region", mode: "create", title: "Identity", x: 0, y: 0, width: 400, height: 240, color: "slate-ish" }]
+    }), "--dry-run"]);
+    expect(region.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(region.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input", message: expect.stringContaining("#RRGGBB"), details: { path: "primitives.0.color" } }
+    });
+
+    const link = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      links: [{ mode: "create", source: "A", target: "B", color: "#12" }]
+    }), "--dry-run"]);
+    expect(link.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(link.stderr).error.details.path).toBe("links.0.color");
+  });
+
   it("omits compact result entries with no auditable fields", async () => {
     let inspections = 0;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -279,6 +300,26 @@ describe("canvas apply", () => {
     }), "--dry-run"]);
     expect(result.code).toBe(0);
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/context", "/v1/search", "/v1/apply"]);
+  });
+
+  it("accepts a Link endpoint that a reuse node places in an earlier phase", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const parsed = new URL(String(url));
+      if (parsed.pathname === "/v1/context") return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
+      if (parsed.pathname === "/v1/search") return Response.json({ ok: true, data: { results: [{ type: "file", path: "Files/API Gateway.md" }] } });
+      return Response.json({ ok: true, data: { valid: true } });
+    });
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      nodes: [
+        { kind: "note", mode: "reuse", selector: "API Gateway", x: 1, y: 2 },
+        { kind: "note", mode: "create", title: "Client", x: 3, y: 4 }
+      ],
+      links: [{ mode: "create", source: "Client", target: "API Gateway" }]
+    }), "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data.planned).toMatchObject({ nodePortalWrites: 2, linkWrites: 1 });
   });
 
   it("rejects a create Note whose title already exists in the vault", async () => {

@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
-import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../canvas-intent.js";
+import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
@@ -84,122 +84,127 @@ export function registerCanvas(program: Command): void {
           hint: error instanceof Error ? error.message : "Check the JSON syntax"
         });
       }
-      const intent = parseCanvasIntent(decoded);
-      const client = new BridgeClient();
-      const inspect = () => intent.canvas === "current"
-        ? client.request("/v1/context", { method: "POST", body: { depth: 1, includeContent: false } })
-        : client.request(`/v1/canvases/${encodeURIComponent(intent.canvas)}/inspect`);
-      const context = await inspect();
-      if (!context.ok) return context;
-      const availableNotes: string[] = [];
-      const vaultQueries = new Set(intent.nodes.flatMap((node) => {
-        if (node.kind !== "note") return [];
-        if (node.mode === "reuse") return [node.selector];
-        if (node.mode === "create") return [node.title];
-        return [];
-      }));
-      for (const query of vaultQueries) {
-        const search = await client.request("/v1/search", { query: { q: query } });
-        if (!search.ok) return search;
-        availableNotes.push(...noteNames(search.data));
-      }
-      const contextData = context.data && typeof context.data === "object"
-        ? { ...(context.data as Record<string, unknown>), availableNotes: [...new Set(availableNotes)] }
-        : { availableNotes: [...new Set(availableNotes)] };
-      const compiled = compileCanvasApply(intent, contextData);
-      const dryRun = Boolean(options.dryRun);
-      if (dryRun) {
-        const first = compiled.phases[0];
-        const bridgePhase = intent.canvas === "current" ? first : undefined;
-        if (bridgePhase) {
-          const bridgeResult = await client.request("/v1/apply", { method: "POST", body: { operations: first.operations, dryRun: true }, dryRun: true });
-          if (!bridgeResult.ok) return bridgeResult;
-        }
-        return {
-          ok: true,
-          data: {
-            dryRun: true,
-            preflightPassed: true,
-            validation: {
-              local: "complete",
-              bridgeValidated: bridgePhase ? [bridgePhase.name] : [],
-              deferredUntilApply: compiled.phases.slice(bridgePhase ? 1 : 0).map((phase) => phase.name)
-            },
-            planned: Object.fromEntries(compiled.phases.map((phase) => [phase.name, phase.operations.length])),
-            sharedNoteWrites: intent.nodes.flatMap((node) =>
-              node.kind === "note" && node.mode === "update" && node.content !== undefined ? [node.selector] : []),
-            phases: compiled.phases.map((phase) => ({ name: phase.name, operations: phase.operations }))
-          }
-        };
-      }
+      return applyCanvasIntent(parseCanvasIntent(decoded), Boolean(options.dryRun));
+    });
+}
 
-      if (compiled.phases.length === 0) {
-        return {
-          ok: true,
-          data: {
-            appliedBatches: [],
-            results: [],
-            verification: { status: "verified", target: intent.canvas, requested: compiled.verification, source: "preflight" }
-          }
-        };
+/** Run a validated canvas intent through the dependency-aware apply pipeline. */
+export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean): Promise<EnsoEnvelope> {
+  const client = new BridgeClient();
+  const inspect = () => intent.canvas === "current"
+    ? client.request("/v1/context", { method: "POST", body: { depth: 1, includeContent: false } })
+    : client.request(`/v1/canvases/${encodeURIComponent(intent.canvas)}/inspect`);
+  const context = await inspect();
+  if (!context.ok) return context;
+  const availableNotes: string[] = [];
+  const vaultQueries = new Set(intent.nodes.flatMap((node) => {
+    if (node.kind !== "note") return [];
+    if (node.mode === "reuse") return [node.selector];
+    if (node.mode === "create") return [node.title];
+    return [];
+  }));
+  // Vault lookups are independent, so they run together; results accumulate in query
+  // order to keep availableNotes deterministic, and the first failure in that order wins.
+  const searches = await Promise.all([...vaultQueries].map((query) => client.request("/v1/search", { query: { q: query } })));
+  for (const search of searches) {
+    if (!search.ok) return search;
+    availableNotes.push(...noteNames(search.data));
+  }
+  const contextData = context.data && typeof context.data === "object"
+    ? { ...(context.data as Record<string, unknown>), availableNotes: [...new Set(availableNotes)] }
+    : { availableNotes: [...new Set(availableNotes)] };
+  const compiled = compileCanvasApply(intent, contextData);
+  if (dryRun) {
+    const first = compiled.phases[0];
+    const bridgePhase = intent.canvas === "current" ? first : undefined;
+    if (bridgePhase) {
+      const bridgeResult = await client.request("/v1/apply", { method: "POST", body: { operations: first.operations, dryRun: true }, dryRun: true });
+      if (!bridgeResult.ok) return bridgeResult;
+    }
+    return {
+      ok: true,
+      data: {
+        dryRun: true,
+        preflightPassed: true,
+        validation: {
+          local: "complete",
+          bridgeValidated: bridgePhase ? [bridgePhase.name] : [],
+          deferredUntilApply: compiled.phases.slice(bridgePhase ? 1 : 0).map((phase) => phase.name)
+        },
+        planned: Object.fromEntries(compiled.phases.map((phase) => [phase.name, phase.operations.length])),
+        sharedNoteWrites: intent.nodes.flatMap((node) =>
+          node.kind === "note" && node.mode === "update" && node.content !== undefined ? [node.selector] : []),
+        phases: compiled.phases.map((phase) => ({ name: phase.name, operations: phase.operations }))
       }
+    };
+  }
 
-      if (intent.canvas !== "current") {
-        const opened = await client.request(`/v1/canvases/${encodeURIComponent(intent.canvas)}/open`, { method: "POST", body: { dryRun: false }, dryRun: false });
-        if (!opened.ok) return opened;
+  if (compiled.phases.length === 0) {
+    return {
+      ok: true,
+      data: {
+        appliedBatches: [],
+        results: [],
+        verification: { status: "verified", target: intent.canvas, requested: compiled.verification, source: "preflight" }
       }
-      const appliedBatches: Array<{ name: string; count: number }> = [];
-      const results: Record<string, unknown>[] = [];
-      for (const phase of compiled.phases) {
-        const result = await client.request("/v1/apply", {
-          method: "POST",
-          body: { operations: phase.operations, dryRun: false },
-          dryRun: false
-        });
-        if (!result.ok) {
-          return {
-            ok: false,
-            error: {
-              ...result.error,
-              details: {
-                ...result.error.details,
-                appliedBatches,
-                failedBatch: phase.name,
-                returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
-                retrySections: phase.retrySections
-              }
-            }
-          };
-        }
-        appliedBatches.push({ name: phase.name, count: phase.operations.length });
-        results.push(...projectResults(result.data));
-      }
-      const verification = await inspect();
-      const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data) : { ok: false, mismatches: ["target unavailable"] };
-      if (!verification.ok || !verificationResult.ok) {
-        return {
-          ok: false,
-          error: {
-            code: "verification_failed",
-            message: "Canvas mutations succeeded, but targeted verification failed",
-            details: {
-              appliedBatches,
-              returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
-              mismatches: verificationResult.mismatches,
-              retrySections: []
-            }
-          }
-        };
-      }
+    };
+  }
+
+  if (intent.canvas !== "current") {
+    const opened = await client.request(`/v1/canvases/${encodeURIComponent(intent.canvas)}/open`, { method: "POST", body: { dryRun: false }, dryRun: false });
+    if (!opened.ok) return opened;
+  }
+  const appliedBatches: Array<{ name: string; count: number }> = [];
+  const results: Record<string, unknown>[] = [];
+  for (const phase of compiled.phases) {
+    const result = await client.request("/v1/apply", {
+      method: "POST",
+      body: { operations: phase.operations, dryRun: false },
+      dryRun: false
+    });
+    if (!result.ok) {
       return {
-        ok: true,
-        data: {
-          appliedBatches,
-          results,
-          verification: { status: "verified", target: intent.canvas, requested: compiled.verification }
+        ok: false,
+        error: {
+          ...result.error,
+          details: {
+            ...result.error.details,
+            appliedBatches,
+            failedBatch: phase.name,
+            returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
+            retrySections: phase.retrySections
+          }
         }
       };
-    });
+    }
+    appliedBatches.push({ name: phase.name, count: phase.operations.length });
+    results.push(...projectResults(result.data));
+  }
+  const verification = await inspect();
+  const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data) : { ok: false, mismatches: ["target unavailable"] };
+  if (!verification.ok || !verificationResult.ok) {
+    return {
+      ok: false,
+      error: {
+        code: "verification_failed",
+        message: "Canvas mutations succeeded, but targeted verification failed",
+        details: {
+          appliedBatches,
+          returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
+          mismatches: verificationResult.mismatches,
+          retrySections: []
+        }
+      }
+    };
+  }
+  return {
+    ok: true,
+    data: {
+      appliedBatches,
+      results,
+      verification: { status: "verified", target: intent.canvas, requested: compiled.verification }
+    }
+  };
 }
 
 function transportError(message: string): EnsoCliError {

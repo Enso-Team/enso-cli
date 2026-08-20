@@ -7,6 +7,7 @@ import { registerCanvas } from "./commands/canvas.js";
 import { registerContext } from "./commands/context.js";
 import { registerPrimitive } from "./commands/primitive.js";
 import { registerGraph } from "./commands/graph.js";
+import { registerLayout } from "./commands/layout.js";
 import { registerLink } from "./commands/link.js";
 import { registerNode } from "./commands/node.js";
 import { registerPortal } from "./commands/portal.js";
@@ -29,6 +30,7 @@ export function buildProgram(): Command {
   registerVault(program);
   registerSearch(program);
   registerCanvas(program);
+  registerLayout(program);
   registerNode(program);
   registerPortal(program);
   registerLink(program);
