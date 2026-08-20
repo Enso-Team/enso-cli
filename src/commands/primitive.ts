@@ -89,8 +89,8 @@ export function registerPrimitive(program: Command): void {
   primitive
     .command("region")
     .description("Create a labeled region boundary")
-    .requiredOption("--x <number>", "world-space center x (ADR-0003)")
-    .requiredOption("--y <number>", "world-space center y (ADR-0003)")
+    .requiredOption("--x <number>", "world-space center x")
+    .requiredOption("--y <number>", "world-space center y")
     .requiredOption("--width <number>", "region width in world units")
     .requiredOption("--height <number>", "region height in world units")
     .option("--title <title>")

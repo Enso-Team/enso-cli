@@ -5,11 +5,10 @@ import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
-// Frozen from the released app's AgentBridge.validateOperation switch (v1.2.2,
-// Enso/AgentBridge/AgentBridge.swift). That switch rejects anything else through its
-// default case as "Unsupported patch operation", so an operation the compiler learns to
-// emit outside this set fails on a paired app. Widen this list only after reading the
-// released bridge and confirming it accepts the new type.
+// Frozen from the operation set the released Enso app (1.2.2) accepts on /v1/apply.
+// The app rejects anything else as an unsupported patch operation, so an operation the
+// compiler learns to emit outside this set fails on a paired app. Widen this list only
+// after confirming the released app accepts the new type.
 const RELEASED_BRIDGE_OPS = new Set([
   "node.create", "node.write", "node.move", "node.delete",
   "portal.create", "portal.open", "portal.delete", "portal.changeSubcanvas",

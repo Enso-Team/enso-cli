@@ -3,7 +3,7 @@ import { z } from "zod";
 export const linkDirectionSchema = z.enum(["directed", "undirected", "bidirectional"]);
 export type LinkDirection = z.infer<typeof linkDirectionSchema>;
 
-// Mirrors Link.visualUIColor in the app (Enso/Models/Data Models/Link.swift): a #RGB,
+// Mirrors the released Enso app's visual color grammar: a #RGB,
 // #RRGGBB, or #RRGGBBAA hex value, or one of these names, matched case-insensitively.
 export const VISUAL_COLOR_NAMES = [
   "black", "blue", "cyan", "gray", "green", "grey", "orange", "pink", "purple", "red", "teal", "white", "yellow"
