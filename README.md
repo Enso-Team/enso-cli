@@ -55,6 +55,7 @@ Three layers. Compile a whole diagram from a spec, batch a hand-written patch, o
 | **Compile** | Building a diagram from a graph       | `enso layout <spec.canvas.md>`                            |
 | **Batch**   | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
 | **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
+| **Verify**  | Linting an authoring folder           | `enso check [folder]`                                     |
 
 
 `canvas apply` runs complete local preflight, then applies dependency phases. Each phase is app-atomic; successful earlier phases remain when a later phase fails. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
@@ -105,6 +106,39 @@ Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of 
 `--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply.
 
 `layout` builds a canvas once. Compiling the same spec onto a canvas that already holds its members returns `canvas_already_laid_out`. Re-layout and update mode are tracked in issue #25.
+
+## check
+
+`enso check [folder]` lints an authoring folder, `enso/` by default, and exits non-zero when it finds a violation. It reads files and nothing else. No writes, no bridge calls, so it runs after every edit like a test suite.
+
+```sh
+enso check
+enso check docs/enso --pretty
+```
+
+The folder holds Notes as markdown files and canvases as `*.canvas.md` manifests. A Note's title is its filename stem, the identity `enso layout` resolves manifest members against. A file whose frontmatter sets `generated: true` is a generated outline, a read-only projection. Outlines keep their UUIDs unique like any other file, their bodies stay out of the wikilink rule, and no manifest may list one as a member.
+
+Each violation carries a `code` in the envelope:
+
+| Code                            | Rule                                                        |
+| ------------------------------- | ----------------------------------------------------------- |
+| `frontmatter_invalid`           | Note or manifest frontmatter parses                         |
+| `duplicate_uuid`                | Each `uuid` is claimed by one file                          |
+| `duplicate_title`               | Each title is claimed by one file                           |
+| `unresolved_wikilink`           | Every wikilink resolves to a Note in the folder             |
+| `missing_canvas_member`         | Every manifest member matches a Note                        |
+| `generated_outline_referenced`  | No manifest references a generated outline                  |
+| `duplicate_member`              | Each manifest declares a member once                        |
+| `duplicate_edge`                | Each manifest declares an edge once                         |
+| `self_edge`                     | No edge points at its own endpoint                          |
+| `edge_endpoint_not_member`      | Both endpoints of an edge are canvas members                |
+| `duplicate_cluster`             | Each manifest declares a cluster name once                  |
+| `cluster_member_outside_canvas` | Every cluster member is also a canvas member                |
+| `member_in_two_clusters`        | Each member belongs to at most one cluster                  |
+
+Wikilinks resolve in Note bodies and in a manifest's prose body alike, and a wikilink inside a fenced code block is a sample rather than a link. A `duplicate_uuid` or `duplicate_title` violation lands on every file sharing the value and names the whole set, since a collision has no original.
+
+A Note without a `uuid` reports as a warning and the folder still passes. Stable UUIDs become expected when the app reads folders directly. Duplicate UUIDs always fail. A clean run prints `ok: true` with the file counts and any warnings. A failing run prints a `check_failed` envelope whose `details.violations` names every violation in the folder, each with its file, message, and, where one applies, its line. One broken file never hides the rest.
 
 ## canvas apply
 

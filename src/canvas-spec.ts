@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { safeTitle } from "./canvas-intent.js";
 import { EnsoCliError } from "./errors.js";
+import { FrontmatterError, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
 import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
 
 // A canvas spec is one markdown manifest per canvas: frontmatter declares the graph,
@@ -42,47 +43,114 @@ export const canvasSpecSchema = z.object({
 
 export type CanvasSpec = z.infer<typeof canvasSpecSchema>;
 
+/**
+ * Every structural rule carries its own code, so a caller acts on the rule itself rather than
+ * on a display path that two rules happen to share.
+ */
+export type SpecIssueCode =
+  | "duplicate_member"
+  | "edge_endpoint_not_member"
+  | "self_edge"
+  | "duplicate_edge"
+  | "duplicate_cluster"
+  | "cluster_member_outside_canvas"
+  | "member_in_two_clusters";
+
+export type SpecIssue = { code: SpecIssueCode; message: string; path: string };
+
 export function parseCanvasSpec(source: string): CanvasSpec {
-  const frontmatter = readFrontmatter(source);
-  const parsed = canvasSpecSchema.safeParse(frontmatter);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const path = issue?.path.join(".") || "frontmatter";
-    throw specError(
-      issue?.message ?? "Canvas spec frontmatter is invalid",
-      path,
-      path.endsWith("color") ? VISUAL_COLOR_GRAMMAR : undefined
-    );
+  const spec = canvasSpecFromFrontmatter(readSpecFrontmatter(source).value);
+  const issue = canvasSpecIssues(spec)[0];
+  if (issue) throw specError(issue.message, issue.path);
+  return spec;
+}
+
+/** The shared frontmatter reader in canvas spec dressing. */
+export function readSpecFrontmatter(source: string): ParsedFrontmatter {
+  try {
+    return parseFrontmatter(source);
+  } catch (error) {
+    if (!(error instanceof FrontmatterError)) throw error;
+    throw frontmatterError(error);
   }
-  const spec = parsed.data;
-  const titles = spec.members.map((member) => member.title);
-  const seen = new Set<string>();
-  for (const title of titles) {
-    if (seen.has(title)) throw specError(`Member '${title}' is declared more than once`, "members");
-    seen.add(title);
+}
+
+export function frontmatterError(error: FrontmatterError): EnsoCliError {
+  if (error.line === undefined) return specError(error.message, "frontmatter");
+  const dressed = specError(`${error.message} (line ${error.line})`, `frontmatter:${error.line}`);
+  dressed.body.details = { ...dressed.body.details, line: error.line };
+  return dressed;
+}
+
+export function canvasSpecFromFrontmatter(frontmatter: unknown): CanvasSpec {
+  const parsed = canvasSpecSchema.safeParse(frontmatter);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const path = issue?.path.join(".") || "frontmatter";
+  throw specError(
+    issue?.message ?? "Canvas spec frontmatter is invalid",
+    path,
+    path.endsWith("color") ? VISUAL_COLOR_GRAMMAR : undefined
+  );
+}
+
+/** Every structural violation, in declaration order, so a linter reports the whole file. */
+export function canvasSpecIssues(spec: CanvasSpec): SpecIssue[] {
+  const issues: SpecIssue[] = [];
+  const members = new Set<string>();
+  for (const member of spec.members) {
+    if (members.has(member.title)) {
+      issues.push({ code: "duplicate_member", message: `Member '${member.title}' is declared more than once`, path: "members" });
+      continue;
+    }
+    members.add(member.title);
   }
   const pairs = new Set<string>();
   for (const edge of spec.edges) {
-    if (!seen.has(edge.from)) throw specError(`Edge endpoint '${edge.from}' is not a canvas member`, "edges.from");
-    if (!seen.has(edge.to)) throw specError(`Edge endpoint '${edge.to}' is not a canvas member`, "edges.to");
-    if (edge.from === edge.to) throw specError(`Edge '${edge.from}' points at itself`, "edges");
+    for (const [end, title] of [["from", edge.from], ["to", edge.to]] as const) {
+      if (!members.has(title)) {
+        issues.push({ code: "edge_endpoint_not_member", message: `Edge endpoint '${title}' is not a canvas member`, path: `edges.${end}` });
+      }
+    }
+    if (edge.from === edge.to) {
+      issues.push({ code: "self_edge", message: `Edge '${edge.from}' points at itself`, path: "edges" });
+      continue;
+    }
     const pair = [edge.from, edge.to].sort(compareStrings).join("\u0000");
-    if (pairs.has(pair)) throw specError(`Edge '${edge.from}' ↔ '${edge.to}' is declared more than once`, "edges");
+    if (pairs.has(pair)) {
+      issues.push({ code: "duplicate_edge", message: `Edge '${edge.from}' ↔ '${edge.to}' is declared more than once`, path: "edges" });
+    }
     pairs.add(pair);
   }
   const clusterNames = new Set<string>();
-  const grouped = new Map<string, string>();
+  const owners = new Map<string, string>();
   for (const cluster of spec.clusters) {
-    if (clusterNames.has(cluster.name)) throw specError(`Cluster '${cluster.name}' is declared more than once`, "clusters");
+    if (clusterNames.has(cluster.name)) {
+      issues.push({ code: "duplicate_cluster", message: `Cluster '${cluster.name}' is declared more than once`, path: "clusters" });
+    }
     clusterNames.add(cluster.name);
     for (const member of cluster.members) {
-      if (!seen.has(member)) throw specError(`Cluster '${cluster.name}' lists '${member}', which is not a canvas member`, "clusters.members");
-      const owner = grouped.get(member);
-      if (owner !== undefined) throw specError(`Member '${member}' belongs to both '${owner}' and '${cluster.name}'`, "clusters.members");
-      grouped.set(member, cluster.name);
+      if (!members.has(member)) {
+        issues.push({
+          code: "cluster_member_outside_canvas",
+          message: `Cluster '${cluster.name}' lists '${member}', which is not a canvas member`,
+          path: "clusters.members"
+        });
+        continue;
+      }
+      const owner = owners.get(member);
+      if (owner !== undefined) {
+        issues.push({
+          code: "member_in_two_clusters",
+          message: `Member '${member}' belongs to both '${owner}' and '${cluster.name}'`,
+          path: "clusters.members"
+        });
+        continue;
+      }
+      owners.set(member, cluster.name);
     }
   }
-  return spec;
+  return issues;
 }
 
 export function specError(message: string, path: string, expected?: string): EnsoCliError {
@@ -127,112 +195,6 @@ export const canvasSpecContract = {
     "How a request reaches the router."
   ].join("\n")
 } as const;
-
-type SpecLine = { indent: number; text: string; line: number };
-
-function readFrontmatter(source: string): unknown {
-  const lines = source.replace(/\r\n/g, "\n").split("\n");
-  if (lines[0]?.trim() !== "---") {
-    throw specError("Canvas spec must open with a `---` frontmatter fence", "frontmatter");
-  }
-  const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
-  if (closing === -1) throw specError("Canvas spec frontmatter is never closed with `---`", "frontmatter");
-  const block = toSpecLines(lines.slice(1, closing), 2);
-  if (block.length === 0) throw specError("Canvas spec frontmatter is empty", "frontmatter");
-  return parseBlock(block);
-}
-
-function toSpecLines(raw: string[], firstLineNumber: number): SpecLine[] {
-  const lines: SpecLine[] = [];
-  raw.forEach((value, index) => {
-    const line = index + firstLineNumber;
-    if (value.includes("\t")) throw lineError("Tabs are not allowed in canvas spec frontmatter", line);
-    const text = value.trim();
-    if (text === "" || text.startsWith("#")) return;
-    lines.push({ indent: value.length - value.trimStart().length, text, line });
-  });
-  return lines;
-}
-
-function parseBlock(lines: SpecLine[]): unknown {
-  return isSequenceItem(lines[0].text) ? parseSequence(lines) : parseMapping(lines);
-}
-
-function parseMapping(lines: SpecLine[]): Record<string, unknown> {
-  const result = new Map<string, unknown>();
-  const indent = lines[0].indent;
-  let cursor = 0;
-  while (cursor < lines.length) {
-    const line = lines[cursor];
-    if (line.indent !== indent) throw lineError("Inconsistent indentation", line.line);
-    const match = /^([A-Za-z][A-Za-z0-9_-]*):(?:\s+(.*))?$/.exec(line.text);
-    if (!match) throw lineError("Expected a `key: value` entry", line.line);
-    const key = match[1];
-    if (result.has(key)) throw lineError(`Duplicate key '${key}'`, line.line);
-    const inline = (match[2] ?? "").trim();
-    const children: SpecLine[] = [];
-    cursor += 1;
-    while (cursor < lines.length && lines[cursor].indent > indent) {
-      children.push(lines[cursor]);
-      cursor += 1;
-    }
-    if (inline === "") {
-      if (children.length === 0) throw lineError(`Key '${key}' has no value; indent its block underneath`, line.line);
-      result.set(key, parseBlock(children));
-    } else {
-      if (children.length > 0) throw lineError(`Key '${key}' has both an inline value and an indented block`, line.line);
-      result.set(key, parseScalar(inline, line.line));
-    }
-  }
-  return Object.fromEntries(result);
-}
-
-function parseSequence(lines: SpecLine[]): unknown[] {
-  const items: unknown[] = [];
-  const indent = lines[0].indent;
-  let cursor = 0;
-  while (cursor < lines.length) {
-    const line = lines[cursor];
-    if (line.indent !== indent) throw lineError("Inconsistent indentation", line.line);
-    if (!isSequenceItem(line.text)) throw lineError("Expected a `- ` sequence item", line.line);
-    const inline = line.text.slice(1).trim();
-    const children: SpecLine[] = [];
-    cursor += 1;
-    while (cursor < lines.length && lines[cursor].indent > indent) {
-      children.push(lines[cursor]);
-      cursor += 1;
-    }
-    const base = children.length > 0 ? Math.min(...children.map((child) => child.indent)) : indent + 2;
-    if (inline === "") {
-      if (children.length === 0) throw lineError("Sequence item has no value", line.line);
-      items.push(parseBlock(children));
-    } else if (/^[A-Za-z][A-Za-z0-9_-]*:(\s|$)/.test(inline)) {
-      items.push(parseMapping([{ indent: base, text: inline, line: line.line }, ...children]));
-    } else {
-      if (children.length > 0) throw lineError("Sequence item has both an inline value and an indented block", line.line);
-      items.push(parseScalar(inline, line.line));
-    }
-  }
-  return items;
-}
-
-function parseScalar(value: string, line: number): unknown {
-  const quoted = /^"(.*)"$/.exec(value) ?? /^'(.*)'$/.exec(value);
-  if (quoted) return quoted[1];
-  if (/^[[{]/.test(value)) throw lineError("Inline collections are not supported; write an indented block", line);
-  if (value === "true") return true;
-  if (value === "false") return false;
-  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
-  return value;
-}
-
-function isSequenceItem(text: string): boolean {
-  return text === "-" || text.startsWith("- ");
-}
-
-function lineError(message: string, line: number): EnsoCliError {
-  return specError(`${message} (line ${line})`, `frontmatter:${line}`);
-}
 
 export function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;

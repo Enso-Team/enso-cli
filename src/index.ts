@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { registerAuth } from "./commands/auth.js";
 import { registerCanvas } from "./commands/canvas.js";
+import { registerCheck } from "./commands/check.js";
 import { registerContext } from "./commands/context.js";
 import { registerPrimitive } from "./commands/primitive.js";
 import { registerGraph } from "./commands/graph.js";
@@ -31,6 +32,7 @@ export function buildProgram(): Command {
   registerSearch(program);
   registerCanvas(program);
   registerLayout(program);
+  registerCheck(program);
   registerNode(program);
   registerPortal(program);
   registerLink(program);
