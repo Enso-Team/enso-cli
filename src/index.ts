@@ -16,12 +16,14 @@ import { registerSkill } from "./commands/skill.js";
 import { registerStatus } from "./commands/status.js";
 import { registerVault } from "./commands/vault.js";
 import { errorEnvelope, printEnvelope, type EnsoEnvelope } from "./errors.js";
+import { cliVersion } from "./version.js";
 
 export function buildProgram(): Command {
   const program = new Command();
   program
     .name("enso")
     .description("Local CLI for the Enso Mac app")
+    .version(cliVersion, "-v, --version", "print the installed CLI version")
     .option("--pretty", "format JSON output")
     .exitOverride();
 
@@ -86,7 +88,7 @@ export async function run(argv = process.argv): Promise<void> {
   try {
     await program.parseAsync(argv);
   } catch (error) {
-    if (isCommanderHelp(error)) {
+    if (isCommanderInfoExit(error)) {
       process.exitCode = 0;
       return;
     }
@@ -96,10 +98,14 @@ export async function run(argv = process.argv): Promise<void> {
   }
 }
 
-function isCommanderHelp(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && (error as { code?: string }).code === "commander.helpDisplayed";
+/**
+ * Commander's `.exitOverride()` turns help and version output into thrown errors even though
+ * both printed exactly what was asked for. Callers treat these two codes as a clean exit.
+ */
+export function isCommanderInfoExit(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: string }).code;
+  return code === "commander.helpDisplayed" || code === "commander.version";
 }
 
 function isCliEntrypoint(): boolean {

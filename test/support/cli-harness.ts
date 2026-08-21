@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, vi } from "vitest";
 import { writeConfig } from "../../src/config.js";
-import { buildProgram } from "../../src/index.js";
+import { buildProgram, isCommanderInfoExit } from "../../src/index.js";
 
 export type FetchCall = {
   url: string;
@@ -61,7 +61,12 @@ export async function run(args: string[]): Promise<{ stdout: string; stderr: str
   }) as typeof process.stderr.write;
 
   try {
-    await buildProgram().parseAsync(["node", "enso", ...args], { from: "node" });
+    try {
+      await buildProgram().parseAsync(["node", "enso", ...args], { from: "node" });
+    } catch (error) {
+      if (!isCommanderInfoExit(error)) throw error;
+      process.exitCode = 0;
+    }
     return { stdout: stdout.join(""), stderr: stderr.join(""), code: process.exitCode };
   } finally {
     process.stdout.write = originalStdout;
