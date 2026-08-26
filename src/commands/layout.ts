@@ -14,10 +14,11 @@ export function registerLayout(program: Command): void {
     .option("--schema", "print the machine-readable canvas spec contract")
     .option("--apply", "send the compiled patch through the canvas apply pipeline")
     .option("--dry-run", "with --apply, validate without mutating")
+    .option("--spacing <factor>", "scale the distance between node centers (node sizes stay fixed), e.g. 1.5 when link labels need room")
     .description("Compile a canvas spec into an apply patch with deterministic geometry")
-    .action(async (specPath: string | undefined, options: { schema?: boolean; apply?: boolean; dryRun?: boolean }): Promise<EnsoEnvelope> => {
+    .action(async (specPath: string | undefined, options: { schema?: boolean; apply?: boolean; dryRun?: boolean; spacing?: string }): Promise<EnsoEnvelope> => {
       if (options.schema) {
-        if (specPath || options.apply || options.dryRun) {
+        if (specPath || options.apply || options.dryRun || options.spacing) {
           throw usageError("--schema prints the contract on its own");
         }
         return { ok: true, data: canvasSpecContract };
@@ -33,7 +34,7 @@ export function registerLayout(program: Command): void {
         throw specError(`Canvas spec '${specPath}' cannot be read: ${error instanceof Error ? error.message : "unknown error"}`, "spec");
       }
       const spec = parseCanvasSpec(source);
-      const compiled = compileCanvasSpec(spec);
+      const compiled = compileCanvasSpec(spec, spacingFactor(options.spacing));
       // Compiled geometry is relative to the origin. Applying it reads the target Canvas
       // first and moves the whole cluster to where the app looks; --dry-run reports the
       // same translated coordinates the apply would write.
@@ -75,6 +76,19 @@ async function canvasContext(canvas: string): Promise<EnsoEnvelope | undefined> 
   } catch {
     return undefined;
   }
+}
+
+function spacingFactor(raw: string | undefined): number {
+  if (raw === undefined) return 1;
+  const factor = Number(raw);
+  if (!Number.isFinite(factor) || factor < 1 || factor > 10) {
+    throw new EnsoCliError("invalid_input", `Spacing factor '${raw}' is out of range`, {
+      path: "spacing",
+      expected: "a number from 1 to 10",
+      hint: "1 is the standard grid; 1.5 or 2 opens the gaps between nodes so link labels have room"
+    });
+  }
+  return factor;
 }
 
 function usageError(message: string): EnsoCliError {

@@ -25,13 +25,13 @@ export type CanvasLayout = { nodes: LayoutNode[]; regions: LayoutRegion[] };
  * rank to reduce crossings, then coordinates on the shared spacing steps. Pure and
  * deterministic — every tie breaks on declaration order and then title.
  */
-export function computeCanvasLayout(spec: CanvasSpec): CanvasLayout {
+export function computeCanvasLayout(spec: CanvasSpec, spacing = 1): CanvasLayout {
   const titles = spec.members.map((member) => member.title);
   const position = new Map(titles.map((title, index) => [title, index]));
   const edges = spec.edges.map((edge) => ({ from: position.get(edge.from)!, to: position.get(edge.to)! }));
   const ranks = assignRanks(titles.length, edges);
   const layers = orderLayers(titles, edges, ranks, clusterIndexes(spec, position));
-  const nodes = placeNodes(spec, layers);
+  const nodes = placeNodes(spec, layers, spacing);
   const byTitle = new Map(nodes.map((node) => [node.title, node]));
   const regions = spec.clusters.map((cluster) => {
     const members = cluster.members.map((member) => byTitle.get(member)!);
@@ -52,8 +52,10 @@ export function computeCanvasLayout(spec: CanvasSpec): CanvasLayout {
 }
 
 /** Compile a canvas spec into an apply patch with final create geometry. */
-export function compileCanvasSpec(spec: CanvasSpec): CanvasIntent {
-  const layout = computeCanvasLayout(spec);
+// Spacing scales the distance between node centers and nothing else, so every extra
+// point goes into the gaps where link labels render. Node and region sizes stay fixed.
+export function compileCanvasSpec(spec: CanvasSpec, spacing = 1): CanvasIntent {
+  const layout = computeCanvasLayout(spec, spacing);
   return parseCanvasIntent({
     canvas: spec.canvas,
     nodes: layout.nodes.map((node) => node.mode === "reuse"
@@ -160,12 +162,12 @@ function orderLayers(titles: string[], edges: Edge[], ranks: number[], clusters:
   return layers;
 }
 
-function placeNodes(spec: CanvasSpec, layers: number[][]): LayoutNode[] {
+function placeNodes(spec: CanvasSpec, layers: number[][], spacing: number): LayoutNode[] {
   const nodes: LayoutNode[] = [];
   layers.forEach((layer, rank) => {
     layer.forEach((node, order) => {
-      const along = (order - (layer.length - 1) / 2) * (spec.direction === "TB" ? LAYOUT_GEOMETRY.colStep : LAYOUT_GEOMETRY.rowStep);
-      const across = (rank - (layers.length - 1) / 2) * (spec.direction === "TB" ? LAYOUT_GEOMETRY.rowStep : LAYOUT_GEOMETRY.colStep);
+      const along = (order - (layer.length - 1) / 2) * spacing * (spec.direction === "TB" ? LAYOUT_GEOMETRY.colStep : LAYOUT_GEOMETRY.rowStep);
+      const across = (rank - (layers.length - 1) / 2) * spacing * (spec.direction === "TB" ? LAYOUT_GEOMETRY.rowStep : LAYOUT_GEOMETRY.colStep);
       const member = spec.members[node];
       nodes.push({
         title: member.title,

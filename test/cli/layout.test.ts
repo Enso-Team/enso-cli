@@ -147,6 +147,23 @@ describe("layout", () => {
     expect(patch.links[0]).toMatchObject({ mode: "create", source: "Existing Note", target: "New Note", label: "feeds", direction: "bidirectional", color: "#2563EB" });
   });
 
+  it("scales node-center distances by --spacing and leaves sizes fixed", async () => {
+    const standard = patchOf((await run(["layout", writeSpec(FLOW_SPEC)])).stdout);
+    const spaced = patchOf((await run(["layout", writeSpec(FLOW_SPEC), "--spacing", "2"])).stdout);
+    const gateway = standard.nodes.find((node) => node.title === "Gateway")!;
+    const router = standard.nodes.find((node) => node.title === "Router")!;
+    const spacedGateway = spaced.nodes.find((node) => node.title === "Gateway")!;
+    const spacedRouter = spaced.nodes.find((node) => node.title === "Router")!;
+    expect(spacedRouter.x - spacedGateway.x).toBe((router.x - gateway.x) * 2);
+    expect(spaced.primitives[0].width - standard.primitives[0].width).toBe((spacedRouter.x - spacedGateway.x) - (router.x - gateway.x));
+  });
+
+  it("rejects a spacing factor outside 1 to 10", async () => {
+    const result = await run(["layout", writeSpec(FLOW_SPEC), "--spacing", "0.5"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", details: { path: "spacing" } });
+  });
+
   it("emits a patch that canvas apply --dry-run accepts unmodified", async () => {
     const out = join(tempDir, "patch.json");
     const compiled = await run(["layout", writeSpec(FLOW_SPEC)]);
