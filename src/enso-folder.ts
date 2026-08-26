@@ -100,8 +100,8 @@ function readEntries(root: string) {
   } catch (error) {
     throw new EnsoCliError("invalid_input", `Folder '${root}' cannot be read: ${error instanceof Error ? error.message : "unknown error"}`, {
       path: "folder",
-      expected: "a readable enso/ folder",
-      hint: "Run `enso check <folder>` against the authoring root"
+      expected: "a readable folder of authoring files",
+      hint: "check lints files on disk; it does not inspect live canvases. After bridge authoring (layout --apply), verify with `enso context --vision` instead."
     });
   }
 }
