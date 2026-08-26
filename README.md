@@ -94,12 +94,12 @@ How a request reaches the store.
 ```
 
 ```sh
-enso layout request-flow.canvas.md --out request-flow.json
+enso layout request-flow.canvas.md --apply
 enso canvas apply request-flow.json --dry-run
 enso layout request-flow.canvas.md --apply
 ```
 
-Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry, so the emitted patch is reviewable in a diff. `--out` writes the patch, `--apply` sends it through the `canvas apply` pipeline with its preflight and verification, and `--apply --dry-run` validates without mutating. Run `enso layout --schema` for the machine-readable spec contract.
+Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry. `--apply` sends the compiled patch through the `canvas apply` pipeline with its preflight and verification, `--apply --dry-run` validates without mutating, and running without `--apply` prints the compiled patch for inspection. Run `enso layout --schema` for the machine-readable spec contract.
 
 Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of `black`, `blue`, `cyan`, `gray`, `grey`, `green`, `orange`, `pink`, `purple`, `red`, `teal`, `white`, `yellow`. Every path enforces it, so a color outside the grammar fails locally in `layout`, `canvas apply`, `apply`, `link`, and `primitive` alike, before any element reaches the canvas.
 

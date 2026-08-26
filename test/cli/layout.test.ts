@@ -1,7 +1,8 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { LAYOUT_GEOMETRY } from "../../src/layout.js";
+import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -74,15 +75,12 @@ describe("layout", () => {
 
   it("emits byte-identical geometry for identical spec input", async () => {
     const spec = writeSpec(FLOW_SPEC);
-    const out = join(tempDir, "patch.json");
-    const first = await run(["layout", spec, "--out", out]);
-    const firstPatch = readFileSync(out, "utf8");
-    const second = await run(["layout", spec, "--out", out]);
+    const first = await run(["layout", spec]);
+    const second = await run(["layout", spec]);
     expect(first.code).toBe(0);
     expect(second.code).toBe(0);
     expect(calls).toHaveLength(0);
     expect(second.stdout).toBe(first.stdout);
-    expect(readFileSync(out, "utf8")).toBe(firstPatch);
     expect(JSON.parse(first.stdout).data.compiled).toEqual({ nodes: 5, links: 4, regions: 2 });
   });
 
@@ -151,8 +149,9 @@ describe("layout", () => {
 
   it("emits a patch that canvas apply --dry-run accepts unmodified", async () => {
     const out = join(tempDir, "patch.json");
-    const compiled = await run(["layout", writeSpec(FLOW_SPEC), "--out", out]);
+    const compiled = await run(["layout", writeSpec(FLOW_SPEC)]);
     expect(compiled.code).toBe(0);
+    writeFileSync(out, JSON.stringify(JSON.parse(compiled.stdout).data.patch));
     const applied = await run(["canvas", "apply", out, "--dry-run"]);
     expect(applied.code).toBe(0);
     expect(JSON.parse(applied.stdout)).toMatchObject({
@@ -204,6 +203,23 @@ describe("layout", () => {
         }
       }
     });
+  });
+
+  it("moves the compiled cluster onto the app's empty-canvas home before applying", async () => {
+    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    const phases = JSON.parse(result.stdout).data.applied.phases as Array<{ name: string; operations: Array<{ x: number; y: number; width?: number; height?: number }> }>;
+    const boxes = phases.flatMap((phase) => phase.name === "nodePortalWrites" || phase.name === "primitives"
+      ? phase.operations.map((operation) => ({
+          x: operation.x,
+          y: operation.y,
+          width: operation.width ?? LAYOUT_GEOMETRY.nodeWidth,
+          height: operation.height ?? LAYOUT_GEOMETRY.nodeHeight
+        }))
+      : []);
+    const midpoint = (low: number[], high: number[]) => (Math.min(...low) + Math.max(...high)) / 2;
+    expect(midpoint(boxes.map((box) => box.x - box.width / 2), boxes.map((box) => box.x + box.width / 2))).toBe(CANVAS_WORLD_HOME.x);
+    expect(midpoint(boxes.map((box) => box.y - box.height / 2), boxes.map((box) => box.y + box.height / 2))).toBe(CANVAS_WORLD_HOME.y);
   });
 
   it("validates through the pipeline without mutating for --apply --dry-run", async () => {
