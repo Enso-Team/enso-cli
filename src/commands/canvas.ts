@@ -88,13 +88,21 @@ export function registerCanvas(program: Command): void {
     });
 }
 
-/** Run a validated canvas intent through the dependency-aware apply pipeline. */
-export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean): Promise<EnsoEnvelope> {
-  const client = new BridgeClient();
-  const inspect = () => intent.canvas === "current"
+/** Read what a Canvas currently holds: the app's context for `current`, inspect for a named one. */
+export function requestCanvasContext(client: BridgeClient, canvas: string): Promise<EnsoEnvelope> {
+  return canvas === "current"
     ? client.request("/v1/context", { method: "POST", body: { depth: 1, includeContent: false } })
-    : client.request(`/v1/canvases/${encodeURIComponent(intent.canvas)}/inspect`);
-  const context = await inspect();
+    : client.request(`/v1/canvases/${encodeURIComponent(canvas)}/inspect`);
+}
+
+/**
+ * Run a validated canvas intent through the dependency-aware apply pipeline. A caller that
+ * already read the target Canvas passes that context in so the preflight reads it once.
+ */
+export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, preflightContext?: EnsoEnvelope): Promise<EnsoEnvelope> {
+  const client = new BridgeClient();
+  const inspect = () => requestCanvasContext(client, intent.canvas);
+  const context = preflightContext ?? await inspect();
   if (!context.ok) return context;
   const availableNotes: string[] = [];
   const vaultQueries = new Set(intent.nodes.flatMap((node) => {

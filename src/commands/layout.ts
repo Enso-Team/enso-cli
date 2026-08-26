@@ -1,22 +1,23 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { canvasSpecContract, parseCanvasSpec, specError } from "../canvas-spec.js";
 import { compileCanvasSpec } from "../layout.js";
+import { centerPatchOnCanvas } from "../layout-centering.js";
+import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
-import { applyCanvasIntent } from "./canvas.js";
+import { applyCanvasIntent, requestCanvasContext } from "./canvas.js";
 
 export function registerLayout(program: Command): void {
   program
     .command("layout")
     .argument("[spec.canvas.md]", "canvas spec manifest")
     .option("--schema", "print the machine-readable canvas spec contract")
-    .option("--out <path>", "write the compiled apply patch to a file")
     .option("--apply", "send the compiled patch through the canvas apply pipeline")
     .option("--dry-run", "with --apply, validate without mutating")
     .description("Compile a canvas spec into an apply patch with deterministic geometry")
-    .action(async (specPath: string | undefined, options: { schema?: boolean; out?: string; apply?: boolean; dryRun?: boolean }): Promise<EnsoEnvelope> => {
+    .action(async (specPath: string | undefined, options: { schema?: boolean; apply?: boolean; dryRun?: boolean }): Promise<EnsoEnvelope> => {
       if (options.schema) {
-        if (specPath || options.out || options.apply || options.dryRun) {
+        if (specPath || options.apply || options.dryRun) {
           throw usageError("--schema prints the contract on its own");
         }
         return { ok: true, data: canvasSpecContract };
@@ -32,12 +33,16 @@ export function registerLayout(program: Command): void {
         throw specError(`Canvas spec '${specPath}' cannot be read: ${error instanceof Error ? error.message : "unknown error"}`, "spec");
       }
       const spec = parseCanvasSpec(source);
-      const patch = compileCanvasSpec(spec);
-      if (options.out) writeFileSync(options.out, `${JSON.stringify(patch, null, 2)}\n`);
+      const compiled = compileCanvasSpec(spec);
+      // Compiled geometry is relative to the origin. Applying it reads the target Canvas
+      // first and moves the whole cluster to where the app looks; --dry-run reports the
+      // same translated coordinates the apply would write.
+      const context = options.apply ? await canvasContext(spec.canvas) : undefined;
+      const patch = options.apply ? centerPatchOnCanvas(compiled, context?.ok ? context.data : undefined) : compiled;
       if (options.apply) {
         let applied: EnsoEnvelope;
         try {
-          applied = await applyCanvasIntent(patch, Boolean(options.dryRun));
+          applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context);
         } catch (error) {
           throw relayoutError(error) ?? error;
         }
@@ -49,20 +54,33 @@ export function registerLayout(program: Command): void {
         return {
           ok: true,
           data: {
-            ...summary(spec.canvas, spec.direction, patch, options.out),
+            ...summary(spec.canvas, spec.direction, patch),
             ...validationSummary(applied.data),
             applied: applied.data
           }
         };
       }
-      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch, options.out), patch } };
+      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch), patch } };
     });
+}
+
+/**
+ * What the target Canvas holds, or nothing when the bridge cannot say. An unreachable
+ * bridge leaves placement on the empty-Canvas home and lets the apply pipeline report the
+ * transport failure on its own terms.
+ */
+async function canvasContext(canvas: string): Promise<EnsoEnvelope | undefined> {
+  try {
+    return await requestCanvasContext(new BridgeClient(), canvas);
+  } catch {
+    return undefined;
+  }
 }
 
 function usageError(message: string): EnsoCliError {
   return new EnsoCliError("invalid_input", message, {
     path: "usage",
-    expected: "enso layout <spec.canvas.md> [--out <path>] [--apply [--dry-run]], or enso layout --schema",
+    expected: "enso layout <spec.canvas.md> [--apply [--dry-run]], or enso layout --schema",
     hint: "Run `enso layout --help` for the flag list"
   });
 }
@@ -101,11 +119,10 @@ function validationSummary(data: unknown): Record<string, unknown> {
   return { validation: { bridgeValidated, locallyValidatedOnly: deferredUntilApply } };
 }
 
-function summary(canvas: string, direction: string, patch: { nodes: unknown[]; links: unknown[]; primitives: unknown[] }, out?: string): Record<string, unknown> {
+function summary(canvas: string, direction: string, patch: { nodes: unknown[]; links: unknown[]; primitives: unknown[] }): Record<string, unknown> {
   return {
     canvas,
     direction,
-    compiled: { nodes: patch.nodes.length, links: patch.links.length, regions: patch.primitives.length },
-    ...(out === undefined ? {} : { out })
+    compiled: { nodes: patch.nodes.length, links: patch.links.length, regions: patch.primitives.length }
   };
 }
