@@ -1,0 +1,45 @@
+name: Release version
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-version
+  cancel-in-progress: false
+
+jobs:
+  tag-or-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Every version that reaches main gets a v<version> tag. When main moves
+      # past a tagged version without a manual bump, this bumps the patch
+      # version so a global npm install always sees a real upgrade.
+      - name: Tag the current version or bump past it
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VERSION=$(node -p "require('./package.json').version")
+          if ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            git tag "v$VERSION"
+            git push origin "v$VERSION"
+            echo "Tagged v$VERSION"
+            exit 0
+          fi
+          if git diff --quiet "v$VERSION"..HEAD -- src skills package.json; then
+            echo "Nothing shippable since v$VERSION"
+            exit 0
+          fi
+          npm version patch -m "chore(release): v%s"
+          git push origin HEAD:main --follow-tags
