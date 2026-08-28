@@ -99,6 +99,16 @@ export function centerPatchOnCanvas(patch: CanvasIntent, context: unknown): Canv
   return translatePatch(patch, centeringOffset(patchBounds(patch), existingContent(context)));
 }
 
+/**
+ * An intent that only creates: every node, portal, and primitive is `mode: "create"`.
+ * Only such an intent can be translated as one cluster — an update or reuse names a
+ * position the author chose against inspected geometry, which a translation would break.
+ */
+export function isPureCreation(intent: CanvasIntent): boolean {
+  return intent.nodes.every((node) => node.mode === "create")
+    && intent.primitives.every((primitive) => primitive.mode === "create");
+}
+
 function coordinate(value: unknown, key: string): number | undefined {
   if (!value || typeof value !== "object") return undefined;
   const current = (value as Record<string, unknown>)[key];
