@@ -6,6 +6,7 @@ import {
   centerPatchOnCanvas,
   centeringOffset,
   existingContent,
+  isPureCreation,
   patchBounds,
   translatePatch
 } from "../src/layout-centering.js";
@@ -110,5 +111,34 @@ describe("layout centering", () => {
     });
     const placed = translatePatch(compiled, { dx: 10, dy: -5 });
     expect(placed.primitives[0]).toMatchObject({ x1: 10, y1: -5, x2: 110, y2: 45 });
+  });
+
+  it("calls an all-create intent pure creation", () => {
+    expect(isPureCreation(patch())).toBe(true);
+    const withPortal = patch({
+      nodes: [{ kind: "portal", mode: "create", title: "Detail", subcanvasRef: "Canvases/Detail.json", x: 0, y: 0 }]
+    });
+    expect(isPureCreation(withPortal)).toBe(true);
+  });
+
+  it("keeps hands off an intent that updates or reuses", () => {
+    const withUpdate = patch({
+      nodes: [
+        { kind: "note", mode: "create", title: "A", x: 0, y: 0 },
+        { kind: "note", mode: "update", selector: "B", x: 100, y: 100 }
+      ]
+    });
+    expect(isPureCreation(withUpdate)).toBe(false);
+    const withPrimitiveUpdate = patch({
+      primitives: [{ kind: "region", mode: "update", id: "6EF21B6B-1F4E-4E4F-AA90-55766D230420", x: 0, y: 0, width: 10, height: 10 }]
+    });
+    expect(isPureCreation(withPrimitiveUpdate)).toBe(false);
+  });
+
+  it("centers a pure-create cluster on the empty-Canvas home point", () => {
+    const placed = centerPatchOnCanvas(patch(), undefined);
+    const bounds = patchBounds(placed)!;
+    expect((bounds.minX + bounds.maxX) / 2).toBeCloseTo(CANVAS_WORLD_HOME.x);
+    expect((bounds.minY + bounds.maxY) / 2).toBeCloseTo(CANVAS_WORLD_HOME.y);
   });
 });

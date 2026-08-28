@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
+import { centerPatchOnCanvas, existingContent, isPureCreation } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
@@ -84,7 +85,18 @@ export function registerCanvas(program: Command): void {
           hint: error instanceof Error ? error.message : "Check the JSON syntax"
         });
       }
-      return applyCanvasIntent(parseCanvasIntent(decoded), Boolean(options.dryRun));
+      const intent = parseCanvasIntent(decoded);
+      const client = new BridgeClient();
+      const context = await requestCanvasContext(client, intent.canvas);
+      if (!context.ok) return context;
+      // A pure-creation intent on an empty Canvas lands on the app's empty-Canvas home
+      // point, where the first load focuses, instead of wherever the author's coordinates
+      // happen to sit. Existing content or any update/reuse means the author placed
+      // against inspected geometry, so the coordinates pass through untouched.
+      const patch = isPureCreation(intent) && existingContent(context.data) === undefined
+        ? centerPatchOnCanvas(intent, context.data)
+        : intent;
+      return applyCanvasIntent(patch, Boolean(options.dryRun), context);
     });
 }
 
