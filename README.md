@@ -258,3 +258,13 @@ npm test
 npm run build
 npm run dev -- status --pretty
 ```
+
+To run the local build as the global `enso` command, link it once:
+
+```sh
+npm run dev:install
+```
+
+This symlinks the global bin into the repo, so every `npm run build` is live
+immediately. `npm install -g .` compares only name and version, so it keeps a
+stale build whenever the version is unchanged.

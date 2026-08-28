@@ -17,6 +17,7 @@
     "prepublishOnly": "npm run build",
     "build": "tsup src/index.ts --format esm --dts --clean",
     "dev": "tsx src/index.ts",
+    "dev:install": "npm run build && npm link",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
