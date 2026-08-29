@@ -4,13 +4,23 @@ import { readContentValue } from "../content.js";
 import {
   buildLinkCreateBody,
   buildLinkUpdateBody,
+  parseWorldPoint,
   type LinkDirection,
-  type LinkUpdateOptions
+  type LinkUpdateOptions,
+  type WorldPoint
 } from "../link-model.js";
 
 function parseLinkDirection(value: string): LinkDirection {
   if (value === "directed" || value === "undirected" || value === "bidirectional") return value;
   throw new InvalidArgumentError("expected directed, undirected, or bidirectional");
+}
+
+function parseTargetPosition(value: string): WorldPoint {
+  try {
+    return parseWorldPoint(value);
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : "Invalid target position");
+  }
 }
 
 export function registerLink(program: Command): void {
@@ -44,9 +54,13 @@ export function registerLink(program: Command): void {
   link
     .command("update")
     .description(
-      "Update a link. --label is canvas-only. Use --bound-line to replace the owned relation line in the source note (must include [[Target]]). Use --sync-prose only when note text should mirror the canvas label."
+      "Update a link. --label is canvas-only. Use --bound-line to replace the owned relation line in the source note (must include [[Target]]). Use --sync-prose only when note text should mirror the canvas label. --source, --target, and --delink move one endpoint and rewrite the bound line themselves."
     )
     .argument("<link-id>")
+    .option("--source <node>", "move the tail to this Node; the bound relation line moves to the new source Note")
+    .option("--target <node>", "move the head to this Node; the [[wikilink]] in the bound line is rewritten")
+    .option("--delink", "detach the head into open space; the wikilink token is removed and the prose stays")
+    .option("--target-position <x,y>", "with --delink, where the dangling head points in World space", parseTargetPosition)
     .option("--label <label>", "set canvas label only (does not rewrite note markdown)")
     .option("--clear-label", "clear canvas label (binding and note line unchanged)")
     .option(

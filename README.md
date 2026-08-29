@@ -220,11 +220,16 @@ enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-
 enso link update "<id>" --label syncs --dry-run
 enso link update "<id>" --bound-line "Streams events to [[Target]]"
 enso link update "<id>" --sync-prose
+enso link update "<id>" --source "Cache" --dry-run
+enso link update "<id>" --target "Database"
+enso link update "<id>" --delink --target-position 320,-180
 enso link remove "<id>" --dry-run
 enso link delete "<id>" --dry-run
 ```
 
 `link remove` removes the Canvas-local Link and preserves relation prose. `link delete` removes the bound relation line from the source Note across canvases. `--label` changes the canvas label only; `--bound-line` rewrites Note prose; `--sync-prose` copies the label into the bound line.
+
+One update moves one endpoint. `--source` re-sources the tail and moves the bound relation line to the new source Note, appended at its end. `--target` re-targets the head and rewrites the `[[wikilink]]` token in the bound line. `--delink` detaches the head into open space: the Link goes dangling and unbound, the wikilink token is removed, and the prose stays. `--target-position x,y` picks where the dangling head points in World space and applies only with `--delink`. Endpoints resolve like every other selector, with the same `not_found` and `ambiguous_selector` errors. A move that would make a Link start and end at the same Node fails with `invalid_link_endpoint`. An endpoint move never travels with `--bound-line` or `--sync-prose`, since the line would validate against the stale target, and the CLI refuses those combinations before sending. The returned link carries `targetPosition` after a delink, so the change is observable.
 
 ### DiagramPrimitives
 

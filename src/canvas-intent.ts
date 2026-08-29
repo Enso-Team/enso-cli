@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { EnsoCliError } from "./errors.js";
-import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
+import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
 
 const finite = z.number().finite();
 const positiveFinite = finite.positive();
@@ -41,7 +41,13 @@ const intentNode = z.union([noteCreate, noteReuse, noteUpdate, noteRemove, porta
 
 const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional() };
 const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
-const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, boundLine: z.string().optional(), syncProse: z.boolean().optional() }).strict();
+const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, boundLine: z.string().optional(), syncProse: z.boolean().optional(), source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
+  try {
+    validateLinkEndpointMove(value);
+  } catch (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: error instanceof Error ? error.message : "invalid link endpoint move" });
+  }
+});
 const linkRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid(), fromNote: z.boolean().optional() }).strict();
 const intentLink = z.union([linkCreate, linkUpdate, linkRemove]);
 
@@ -135,6 +141,11 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
       }
     } else {
       resolveId(links, link.id, "Link");
+      // A moved endpoint lands on a Node that exists or is created in this intent.
+      if (link.mode === "update") {
+        if (link.source !== undefined) resolveEndpoint(link.source, nodes, declaredTitles);
+        if (typeof link.target === "string") resolveEndpoint(link.target, nodes, declaredTitles);
+      }
     }
   }
   for (const primitive of intent.primitives) if (primitive.mode !== "create") resolveId(primitives, primitive.id, "DiagramPrimitive");
@@ -147,7 +158,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
     if (link.mode === "create" && !matchingExistingLink(link, nodes, links)) {
       linkWrites.push({ type: "link.create", source: link.source, target: link.target, ...defined(linkVisualValues(link)) });
     }
-    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ boundLine: link.boundLine, syncProse: link.syncProse }) });
+    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ boundLine: link.boundLine, syncProse: link.syncProse, source: link.source, target: link.target, targetPosition: link.targetPosition }) });
   }
   const primitiveOps = intent.primitives.map((primitive) => primitiveOperation(primitive));
   const phases: CanvasPhase[] = [

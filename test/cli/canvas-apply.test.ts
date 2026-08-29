@@ -166,6 +166,36 @@ describe("canvas apply", () => {
     });
   });
 
+  it("compiles a link endpoint move into the link phase after resolving the new endpoint", async () => {
+    const a = "00000000-0000-4000-8000-000000000001";
+    const b = "00000000-0000-4000-8000-000000000002";
+    const link = "00000000-0000-4000-8000-000000000003";
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") return Response.json({ ok: true, data: {
+        nodes: [{ id: a, title: "A" }, { id: b, title: "B" }],
+        links: [{ id: link, sourceNodeID: a, targetNodeID: b }],
+        diagramPrimitives: []
+      } });
+      return Response.json({ ok: true, data: { results: [] } });
+    });
+    const intent = (links: unknown[]) => JSON.stringify({ canvas: "current", nodes: [], links, primitives: [] });
+
+    const missing = await run(["canvas", "apply", "--json", intent([{ mode: "update", id: link, target: "Nowhere" }]), "--dry-run"]);
+    expect(missing.code).toBe(1);
+    expect(JSON.parse(missing.stderr).error.code).toBe("missing_selector");
+
+    const refused = await run(["canvas", "apply", "--json", intent([{ mode: "update", id: link, source: "B", syncProse: true }]), "--dry-run"]);
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stderr).error.code).toBe("invalid_input");
+
+    calls.length = 0;
+    const applied = await run(["canvas", "apply", "--json", intent([{ mode: "update", id: link, target: null, targetPosition: { x: 320, y: -180 } }])]);
+    expect(applied.code).toBe(0);
+    const applies = calls.filter((call) => new URL(call.url).pathname === "/v1/apply").map((call) => JSON.parse(String(call.init.body)));
+    expect(applies.flatMap((body) => body.operations)).toContainEqual({ type: "link.update", id: link, target: null, targetPosition: { x: 320, y: -180 } });
+  });
+
   it("reports truthful staged partial application when a later phase fails", async () => {
     const a = "00000000-0000-4000-8000-000000000001";
     const b = "00000000-0000-4000-8000-000000000002";
