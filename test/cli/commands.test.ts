@@ -287,6 +287,63 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("re-sources a link with --source", async () => {
+    await run(["link", "update", "abc", "--source", "Cache"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ source: "Cache", dryRun: false });
+  });
+
+  it("re-targets a link with --target", async () => {
+    await run(["link", "update", "abc", "--target", "Database", "--dry-run"]);
+    expect(new URL(calls[0].url).search).toBe("?dryRun=true");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: "Database", dryRun: true });
+  });
+
+  it("delinks with a null target and carries the dangling head position", async () => {
+    await run(["link", "update", "abc", "--delink"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: null, dryRun: false });
+    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("targetPosition");
+
+    await run(["link", "update", "abc", "--delink", "--target-position", "320,-180"]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ target: null, targetPosition: { x: 320, y: -180 }, dryRun: false });
+  });
+
+  it("keeps a style change on the same request as an endpoint move", async () => {
+    await run(["link", "update", "abc", "--target", "Database", "--label", "reads", "--color", "blue"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: "Database", label: "reads", color: "blue", dryRun: false });
+  });
+
+  it("rejects a malformed --target-position before sending", async () => {
+    await expect(run(["link", "update", "abc", "--delink", "--target-position", "320"])).rejects.toThrow("x,y");
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    [["--source", "Cache", "--target", "Database"], "Choose one of --source, --target, or --delink"],
+    [["--source", "Cache", "--delink"], "Choose one of --source, --target, or --delink"],
+    [["--target-position", "1,2"], "--target-position only applies with --delink"],
+    [["--target", "Database", "--target-position", "1,2"], "--target-position only applies with --delink"],
+    [["--source", "Cache", "--bound-line", "x [[T]]"], "An endpoint move cannot be combined with --bound-line or --sync-prose"],
+    [["--delink", "--sync-prose"], "An endpoint move cannot be combined with --bound-line or --sync-prose"]
+  ])("refuses the endpoint combination %j locally", async (flags, message) => {
+    const result = await run(["link", "update", "abc", ...flags]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, error: { code: "invalid_input", message } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("passes invalid_link_endpoint through from the bridge untouched", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ ok: false, error: { code: "invalid_link_endpoint", message: "A Link cannot start and end at the same Node" } }, { status: 400 }))
+    );
+    const result = await run(["link", "update", "abc", "--target", "Cache"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({
+      ok: false,
+      error: { code: "invalid_link_endpoint", message: "A Link cannot start and end at the same Node" }
+    });
+  });
+
   it("rejects --sync-prose and --bound-line together", async () => {
     const result = await run(["link", "update", "abc", "--sync-prose", "--bound-line", "x [[T]]"]);
     expect(result.code).toBe(1);
