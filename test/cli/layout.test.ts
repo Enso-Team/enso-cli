@@ -1,8 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { LAYOUT_GEOMETRY } from "../../src/layout.js";
-import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
+import { parseCanvasSpec } from "../../src/canvas-spec.js";
+import { LAYOUT_GEOMETRY, compileCanvasSpec } from "../../src/layout.js";
+import { CANVAS_WORLD_HOME, centerPatchOnCanvas } from "../../src/layout-centering.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -308,58 +309,6 @@ describe("layout", () => {
     expect(patchOf(result.stdout).primitives[0]).toMatchObject({ title: "Core", color });
   });
 
-  it("reports a canvas that already holds the spec's members as one structured error", async () => {
-    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      if (new URL(String(url)).pathname === "/v1/context") {
-        return Response.json({ ok: true, data: { nodes: [{ id: "node-0", title: "Gateway", position: { x: 0, y: 0 } }], links: [], diagramPrimitives: [] } });
-      }
-      return Response.json({ ok: true, data: {} });
-    });
-    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply"]);
-    expect(result.code).toBe(1);
-    expect(calls.some((call) => new URL(call.url).pathname === "/v1/apply")).toBe(false);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: {
-        code: "canvas_already_laid_out",
-        message: expect.stringContaining("already contains"),
-        details: { hint: expect.stringContaining("#25"), cause: { code: "title_collision" } }
-      }
-    });
-  });
-
-  it("reports a reuse member the app rejects as already placed as the same structured error", async () => {
-    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/context") return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
-      if (pathname === "/v1/search") return Response.json({ ok: true, data: { results: [{ node: { title: "Existing Note" } }] } });
-      if (pathname === "/v1/apply") {
-        return Response.json({ ok: false, error: { code: "already_on_canvas", message: "Note is already on the current Canvas", details: {} } }, { status: 409 });
-      }
-      return Response.json({ ok: true, data: {} });
-    });
-    const spec = writeSpec([
-      "---",
-      "canvas: current",
-      "members:",
-      "  - title: Existing Note",
-      "    mode: reuse",
-      "---",
-      ""
-    ].join("\n"), "reuse-apply.canvas.md");
-    const result = await run(["layout", spec, "--apply"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: {
-        code: "canvas_already_laid_out",
-        details: { hint: expect.stringContaining("#25"), failedBatch: "nodePortalWrites" }
-      }
-    });
-  });
-
   it("rejects --dry-run without --apply before reading the spec", async () => {
     const result = await run(["layout", join(tempDir, "missing.canvas.md"), "--dry-run"]);
     expect(result.code).toBe(1);
@@ -395,5 +344,181 @@ describe("layout", () => {
       ok: false,
       error: { code: "invalid_input", message: expect.any(String), details: { path, hint: expect.any(String) } }
     });
+  });
+});
+
+// What the Canvas holds after a first `layout --apply` of a spec, as /v1/context reports it.
+type CanvasContext = {
+  nodes: Array<{ id: string; title: string; position: { x: number; y: number } }>;
+  links: Array<{ id: string; sourceNodeID: string; targetNodeID: string; label: string | null; direction: string }>;
+  diagramPrimitives: Array<Record<string, unknown>>;
+};
+
+const CURRENT_SPEC = FLOW_SPEC.replace("canvas: Request Flow", "canvas: current");
+
+function laidOut(spec = CURRENT_SPEC, shift = { dx: 0, dy: 0 }): CanvasContext {
+  const centered = centerPatchOnCanvas(compileCanvasSpec(parseCanvasSpec(spec)), undefined);
+  const nodes = centered.nodes.map((node, index) => {
+    const placed = node as { title?: string; selector?: string; x: number; y: number };
+    return { id: `node-${index}`, title: placed.title ?? placed.selector ?? "", position: { x: placed.x + shift.dx, y: placed.y + shift.dy } };
+  });
+  const idOf = (title: string) => nodes.find((node) => node.title === title)!.id;
+  const links = centered.links.map((link, index) => {
+    const edge = link as { source: string; target: string; label?: string; direction?: string };
+    return { id: `link-${index}`, sourceNodeID: idOf(edge.source), targetNodeID: idOf(edge.target), label: edge.label ?? null, direction: edge.direction ?? "directed" };
+  });
+  const diagramPrimitives = centered.primitives.map((primitive, index) => {
+    const region = primitive as { title?: string; color?: string; x: number; y: number; width: number; height: number };
+    return { id: `region-${index}`, kind: "group", title: region.title, color: region.color ?? null, x: region.x + shift.dx, y: region.y + shift.dy, width: region.width, height: region.height };
+  });
+  return { nodes, links, diagramPrimitives };
+}
+
+function canvasHolding(context: CanvasContext): void {
+  vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/v1/context") return Response.json({ ok: true, data: context });
+    if (pathname === "/v1/search") return Response.json({ ok: true, data: { results: [] } });
+    return Response.json({ ok: true, data: { results: [] } });
+  });
+}
+
+type Operation = Record<string, unknown> & { type: string };
+
+function operationsOf(stdout: string): Operation[] {
+  const phases = JSON.parse(stdout).data.applied.phases as Array<{ operations: Operation[] }>;
+  return phases.flatMap((phase) => phase.operations);
+}
+
+function applyCalls(): number {
+  return calls.filter((call) => new URL(call.url).pathname === "/v1/apply").length;
+}
+
+describe("layout re-run", () => {
+  it("sends nothing when the Canvas already matches the spec", async () => {
+    canvasHolding(laidOut());
+    const result = await run(["layout", writeSpec(CURRENT_SPEC), "--apply"]);
+    expect(result.code).toBe(0);
+    expect(applyCalls()).toBe(0);
+    expect(JSON.parse(result.stdout).data).toMatchObject({
+      reconciled: {
+        anchor: "existing-members",
+        nodes: { created: 0, placed: 0, moved: 0, unchanged: 5, removed: 0 },
+        links: { created: 0, updated: 0, unchanged: 4, removed: 0 },
+        regions: { created: 0, updated: 0, unchanged: 2, removed: 0 }
+      },
+      applied: { appliedBatches: [], verification: { status: "verified" } }
+    });
+  });
+
+  it("leaves a diagram where it was dragged as a whole", async () => {
+    canvasHolding(laidOut(CURRENT_SPEC, { dx: 1200, dy: -400 }));
+    const result = await run(["layout", writeSpec(CURRENT_SPEC), "--apply"]);
+    expect(result.code).toBe(0);
+    expect(applyCalls()).toBe(0);
+    expect(JSON.parse(result.stdout).data.reconciled.nodes).toMatchObject({ moved: 0, unchanged: 5 });
+  });
+
+  it("creates a new member and moves the rest into the new arrangement", async () => {
+    canvasHolding(laidOut());
+    const grown = CURRENT_SPEC
+      .replace("  - Metrics\n", "  - Metrics\n  - Cache\n")
+      .replace("clusters:", "  - from: Router\n    to: Cache\nclusters:");
+    const result = await run(["layout", writeSpec(grown, "grown.canvas.md"), "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    const operations = operationsOf(result.stdout);
+    expect(operations.filter((operation) => operation.type === "node.create").map((operation) => operation.title)).toEqual(["Cache"]);
+    expect(operations.filter((operation) => operation.type === "link.create")).toEqual([{ type: "link.create", source: "Router", target: "Cache" }]);
+    const moves = operations.filter((operation) => operation.type === "node.move");
+    expect(moves.length).toBeGreaterThan(0);
+    for (const move of moves) expect(String(move.selector)).toMatch(/^node-\d$/);
+    expect(operations.every((operation) => operation.type !== "group.create")).toBe(true);
+    expect(JSON.parse(result.stdout).data.reconciled).toMatchObject({ anchor: "existing-members", nodes: { created: 1, placed: 0 }, links: { created: 1, unchanged: 4 } });
+  });
+
+  it("keeps the diagram's centroid when members move", async () => {
+    const before = laidOut(CURRENT_SPEC, { dx: 900, dy: 300 });
+    canvasHolding(before);
+    const result = await run(["layout", writeSpec(CURRENT_SPEC), "--apply", "--dry-run", "--spacing", "1.5"]);
+    expect(result.code).toBe(0);
+    const operations = operationsOf(result.stdout);
+    expect([...new Set(operations.map((operation) => operation.type))].sort()).toEqual(["diagramPrimitive.update", "node.move"]);
+    const after = new Map(before.nodes.map((node) => [node.id, { ...node.position }]));
+    for (const move of operations.filter((operation) => operation.type === "node.move")) after.set(String(move.selector), { x: Number(move.x), y: Number(move.y) });
+    const mean = (values: number[]) => values.reduce((total, value) => total + value, 0) / values.length;
+    expect(mean([...after.values()].map((point) => point.x))).toBeCloseTo(mean(before.nodes.map((node) => node.position.x)), 6);
+    expect(mean([...after.values()].map((point) => point.y))).toBeCloseTo(mean(before.nodes.map((node) => node.position.y)), 6);
+  });
+
+  it("updates an existing Link in place when its label changes", async () => {
+    canvasHolding(laidOut());
+    const relabelled = CURRENT_SPEC.replace("label: routes", "label: forwards");
+    const result = await run(["layout", writeSpec(relabelled, "relabel.canvas.md"), "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    const operations = operationsOf(result.stdout);
+    expect(operations).toEqual([{ type: "link.update", id: "link-0", label: "forwards" }]);
+    expect(JSON.parse(result.stdout).data.reconciled.links).toMatchObject({ created: 0, updated: 1, unchanged: 3 });
+  });
+
+  it("moves a reuse member that is already on the Canvas instead of placing it again", async () => {
+    const context = laidOut();
+    context.nodes.push({ id: "node-existing", title: "Existing Note", position: { x: 0, y: 0 } });
+    canvasHolding(context);
+    const spec = writeSpec(["---", "canvas: current", "members:", "  - title: Existing Note", "    mode: reuse", "---", ""].join("\n"), "reuse-again.canvas.md");
+    const result = await run(["layout", spec, "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(operationsOf(result.stdout).every((operation) => !("placeExisting" in operation))).toBe(true);
+    expect(JSON.parse(result.stdout).data.reconciled.nodes).toMatchObject({ placed: 0, moved: 0, unchanged: 1 });
+  });
+
+  it("removes only what the spec no longer names with --prune", async () => {
+    const context = laidOut();
+    const router = context.nodes.find((node) => node.title === "Router")!;
+    context.nodes.push({ id: "node-legacy", title: "Legacy", position: { x: 100, y: 100 } });
+    context.links.push({ id: "link-legacy", sourceNodeID: "node-legacy", targetNodeID: router.id, label: null, direction: "directed" });
+    context.links.push({ id: "link-stray", sourceNodeID: context.nodes[0].id, targetNodeID: context.nodes[4].id, label: null, direction: "directed" });
+    context.diagramPrimitives.push({ id: "region-old", kind: "group", title: "Old", x: 0, y: 0, width: 10, height: 10 });
+    context.diagramPrimitives.push({ id: "line-1", kind: "line", x1: 0, y1: 0, x2: 10, y2: 10 });
+    canvasHolding(context);
+
+    const kept = await run(["layout", writeSpec(CURRENT_SPEC), "--apply", "--dry-run"]);
+    expect(kept.code).toBe(0);
+    expect(operationsOf(kept.stdout)).toEqual([]);
+
+    const pruned = await run(["layout", writeSpec(CURRENT_SPEC), "--apply", "--dry-run", "--prune"]);
+    expect(pruned.code).toBe(0);
+    expect(operationsOf(pruned.stdout)).toEqual([
+      { type: "link.delete", id: "link-stray", fromNote: false },
+      { type: "node.delete", selector: "node-legacy" },
+      { type: "diagramPrimitive.delete", id: "region-old" }
+    ]);
+    expect(JSON.parse(pruned.stdout).data.reconciled).toMatchObject({ nodes: { removed: 1 }, links: { removed: 1 }, regions: { removed: 1 } });
+  });
+
+  it("refuses a Canvas that holds two Nodes for one member", async () => {
+    const context = laidOut();
+    context.nodes.push({ id: "node-dup", title: "Router", position: { x: 5, y: 5 } });
+    canvasHolding(context);
+    const result = await run(["layout", writeSpec(CURRENT_SPEC), "--apply"]);
+    expect(result.code).toBe(1);
+    expect(applyCalls()).toBe(0);
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, error: { code: "ambiguous_selector", details: { path: "members.Router" } } });
+  });
+
+  it("emits identical operations for identical spec and Canvas", async () => {
+    canvasHolding(laidOut(CURRENT_SPEC, { dx: 300, dy: 0 }));
+    const spec = writeSpec(CURRENT_SPEC);
+    const first = await run(["layout", spec, "--apply", "--dry-run", "--spacing", "2"]);
+    const second = await run(["layout", spec, "--apply", "--dry-run", "--spacing", "2"]);
+    expect(first.code).toBe(0);
+    expect(second.stdout).toBe(first.stdout);
+  });
+
+  it("takes --prune only with --apply", async () => {
+    const result = await run(["layout", writeSpec(CURRENT_SPEC), "--prune"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.message).toContain("--prune");
   });
 });
