@@ -63,6 +63,8 @@ export class BridgeClient {
       body = JSON.stringify(options.body);
     }
 
+    traceRequest(method, url, options.body);
+
     let response: Response;
     try {
       response = await fetch(url, { method, headers, body });
@@ -91,6 +93,23 @@ export class BridgeClient {
 
     return parsed.data as EnsoEnvelope;
   }
+}
+
+/**
+ * With ENSO_CLI_TRACE set, every bridge request lands on stderr as one JSON line: method,
+ * path with query, and the body as sent. Stdout keeps the envelope untouched, so a trace
+ * pipes through the same tooling as a normal run. The token never appears: it travels in a
+ * header, and headers are not part of the trace.
+ */
+export function traceRequest(method: string, url: URL, body: unknown): void {
+  if (!traceEnabled()) return;
+  const line = { trace: "bridge", method, path: `${url.pathname}${url.search}`, ...(body === undefined ? {} : { body }) };
+  process.stderr.write(`${JSON.stringify(line)}\n`);
+}
+
+function traceEnabled(): boolean {
+  const value = process.env.ENSO_CLI_TRACE?.trim().toLowerCase();
+  return value !== undefined && value !== "" && value !== "0" && value !== "false";
 }
 
 function assertLoopbackBridge(url: URL): void {
