@@ -273,3 +273,10 @@ npm run dev:install
 This symlinks the global bin into the repo, so every `npm run build` is live
 immediately. `npm install -g .` compares only name and version, so it keeps a
 stale build whenever the version is unchanged.
+
+## Releases
+
+Feature PRs target `staging`. After a shippable merge, the release workflow
+commits the next unused patch version to `staging` and runs CI on that commit.
+The release PR from `staging` to `main` carries the version bump through review.
+Merging it tags that package version on `main`.
