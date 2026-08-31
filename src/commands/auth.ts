@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { Command } from "commander";
 import { acquirePairingLock, defaultBridgeUrl, readConfig, removeConfig, writeConfig } from "../config.js";
 import { BridgeClient, isLoopbackBridgeUrl } from "../client.js";
+import { discoverAndLink } from "../discovery.js";
 import { EnsoCliError, printEnvelope, type EnsoEnvelope } from "../errors.js";
 
 type PairingResult = {
@@ -176,6 +177,23 @@ export function registerAuth(program: Command): void {
       } catch {
         // An unavailable or invalid existing configuration does not block a fresh pairing attempt.
       }
+    }
+    // The app provisions a token file and names it on /v1/health. Reading it is
+    // the whole link. The prompt-and-callback dance below is the fallback for
+    // app versions that provision no file.
+    const discovered = await discoverAndLink();
+    if (discovered) {
+      return {
+        ok: true,
+        data: {
+          status: "linked",
+          message: "Enso CLI is linked to the Enso app",
+          alreadyLinked: false,
+          linked: true,
+          bridgeUrl: discovered.bridgeUrl,
+          linkedAt: discovered.linkedAt
+        }
+      };
     }
     // The lock heartbeat can find the lock directory taken over by another process, which means this
     // attempt no longer owns pairing and has to abandon the callback server it is waiting on.

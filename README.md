@@ -8,9 +8,11 @@ Requirements: macOS, Enso app running, Node.js 20+.
 
 ```sh
 npm install -g @enso-app/cli
-enso auth link
 enso status --pretty
 ```
+
+With the Enso app open, the first command links itself by reading the token
+file the app provisions. `enso auth link` stays available for relinking.
 
 Install the bundled agent skill:
 
@@ -28,7 +30,7 @@ Use the Enso CLI to work with canvases in the Enso Mac app.
 
 Setup:
 1. npm install -g @enso-app/cli
-2. Launch Enso, then: enso auth link
+2. Launch Enso
 3. enso skill install
 
 Default workflow for diagram or canvas work:

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defaultBridgeUrl, readConfig } from "./config.js";
+import { discoverAndLink } from "./discovery.js";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 
 const errorSchema = z.object({
@@ -49,10 +50,22 @@ export class BridgeClient {
 
     const headers: Record<string, string> = { Accept: "application/json" };
     const wantsAuth = options.auth !== false;
+    let requestUrl = url;
     if (wantsAuth) {
-      const token = this.tokenOverride ?? readConfig()?.token;
+      let token = this.tokenOverride ?? readConfig()?.token;
       if (!token) {
-        throw new EnsoCliError("auth_required", "Run `enso auth link` before using the Enso bridge");
+        // The app names its token file on /v1/health, so a missing config links
+        // itself here instead of sending the user to a separate auth step. The
+        // discovered bridge can sit on the debug port, so the request follows it.
+        const discovered = await discoverAndLink();
+        if (discovered) {
+          token = discovered.token;
+          requestUrl = new URL(url.pathname + url.search, discovered.bridgeUrl);
+          assertLoopbackBridge(requestUrl);
+        }
+      }
+      if (!token) {
+        throw new EnsoCliError("auth_required", "Launch the Enso app, then run this command again to link the CLI");
       }
       headers.Authorization = `Bearer ${token}`;
     }
@@ -65,7 +78,7 @@ export class BridgeClient {
 
     let response: Response;
     try {
-      response = await fetch(url, { method, headers, body });
+      response = await fetch(requestUrl, { method, headers, body });
     } catch {
       throw new EnsoCliError("app_unavailable", "The configured Enso app bridge is not available", {
         bridgeUrl: this.baseUrl,
