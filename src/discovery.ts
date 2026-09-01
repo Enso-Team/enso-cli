@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { isLoopbackBridgeUrl } from "./client.js";
 import { writeConfig, type EnsoConfig } from "./config.js";
+import { EnsoCliError } from "./errors.js";
 
 const tokenFileSchema = z.object({
   token: z.string().min(1),
@@ -32,7 +33,14 @@ function candidateBridgeUrls(): string[] {
 
 async function tryLink(bridgeUrl: string): Promise<EnsoConfig | null> {
   const health = await fetchEnvelope(new URL("/v1/health", bridgeUrl));
-  const tokenPath = health?.ok === true ? (health.data as { tokenPath?: unknown })?.tokenPath : undefined;
+  const data = health?.ok === true ? (health.data as { tokenPath?: unknown; agentAccess?: unknown }) : undefined;
+  if (data?.agentAccess === "disabled") {
+    throw new EnsoCliError("access_disabled", "Local agent access is turned off in Enso's Settings", {
+      bridgeUrl,
+      hint: "Turn on Local agent access in Enso's Settings, then retry"
+    });
+  }
+  const tokenPath = data?.tokenPath;
   if (typeof tokenPath !== "string" || tokenPath.length === 0) return null;
 
   let tokenFile: z.infer<typeof tokenFileSchema>;
