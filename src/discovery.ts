@@ -33,7 +33,10 @@ function candidateBridgeUrls(): string[] {
 
 async function tryLink(bridgeUrl: string): Promise<EnsoConfig | null> {
   const health = await fetchEnvelope(new URL("/v1/health", bridgeUrl));
-  const data = health?.ok === true ? (health.data as { tokenPath?: unknown; agentAccess?: unknown }) : undefined;
+  const data =
+    health?.ok === true
+      ? (health.data as { tokenPath?: unknown; agentAccess?: unknown; bridgeUrl?: unknown })
+      : undefined;
   if (data?.agentAccess === "disabled") {
     throw new EnsoCliError("access_disabled", "Local agent access is turned off in Enso's Settings", {
       bridgeUrl,
@@ -50,11 +53,18 @@ async function tryLink(bridgeUrl: string): Promise<EnsoConfig | null> {
     return null;
   }
 
-  const status = await fetchEnvelope(new URL("/v1/status", bridgeUrl), tokenFile.token);
+  const discoveredBridgeUrl =
+    typeof tokenFile.bridgeUrl === "string" && isLoopbackBridgeUrl(tokenFile.bridgeUrl)
+      ? tokenFile.bridgeUrl
+      : typeof data?.bridgeUrl === "string" && isLoopbackBridgeUrl(data.bridgeUrl)
+        ? data.bridgeUrl
+        : bridgeUrl;
+
+  const status = await fetchEnvelope(new URL("/v1/status", discoveredBridgeUrl), tokenFile.token);
   if (status?.ok !== true) return null;
 
   const config: EnsoConfig = {
-    bridgeUrl,
+    bridgeUrl: discoveredBridgeUrl,
     token: tokenFile.token,
     linkedAt: new Date().toISOString()
   };
