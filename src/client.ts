@@ -50,9 +50,13 @@ export class BridgeClient {
 
     const headers: Record<string, string> = { Accept: "application/json" };
     const wantsAuth = options.auth !== false;
-    let requestUrl = url;
+    const currentConfig = this.tokenOverride ? null : readConfig();
+    let requestUrl = currentConfig?.bridgeUrl
+      ? new URL(url.pathname + url.search, currentConfig.bridgeUrl)
+      : url;
+    assertLoopbackBridge(requestUrl);
     if (wantsAuth) {
-      let token = this.tokenOverride ?? readConfig()?.token;
+      let token = this.tokenOverride ?? currentConfig?.token;
       if (!token) {
         // The app names its token file on /v1/health, so a missing config links
         // itself here instead of sending the user to a separate auth step. The
