@@ -98,9 +98,10 @@ describe("auth", () => {
     const nonce = parsed.searchParams.get("nonce");
     expect(callback).toBeTruthy();
     expect(nonce).toBeTruthy();
-    expect(calls).toHaveLength(1);
-    const request = calls[0];
-    expect(new URL(request.url).pathname).toBe("/v1/pair/request");
+    // Discovery probes /v1/health first; the pairing request is the fallback.
+    const pairRequests = calls.filter((call) => new URL(call.url).pathname === "/v1/pair/request");
+    expect(pairRequests).toHaveLength(1);
+    const request = pairRequests[0];
     expect(JSON.parse(String(request.init.body))).toMatchObject({ callback, nonce });
 
     await sleep(20);

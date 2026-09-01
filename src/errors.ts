@@ -1,6 +1,9 @@
 export type EnsoErrorCode =
   | "app_unavailable"
   | "auth_required"
+  | "access_disabled"
+  | "bridge_busy"
+  | "canvas_changed"
   | "invalid_response"
   | "invalid_input"
   | "pairing_failed"

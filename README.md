@@ -8,9 +8,11 @@ Requirements: macOS, Enso app running, Node.js 20+.
 
 ```sh
 npm install -g @enso-app/cli
-enso auth link
 enso status --pretty
 ```
+
+With the Enso app open, the first command links itself by reading the token
+file the app provisions. `enso auth link` stays available for relinking.
 
 Install the bundled agent skill:
 
@@ -28,7 +30,7 @@ Use the Enso CLI to work with canvases in the Enso Mac app.
 
 Setup:
 1. npm install -g @enso-app/cli
-2. Launch Enso, then: enso auth link
+2. Launch Enso
 3. enso skill install
 
 Default workflow for diagram or canvas work:
@@ -249,6 +251,9 @@ enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 | ---------------------- | --------------------------------------------------- |
 | `app_unavailable`      | Launch the configured app, or run `enso auth link` to relink |
 | `invalid_token`        | Run `enso auth link` to replace the stale pairing    |
+| `access_disabled`      | Turn on Local agent access in Enso's Settings        |
+| `bridge_busy`          | Wait for the agent change in flight, then retry      |
+| `canvas_changed`       | The user changed the open Canvas; inspect `appliedBatches`, reopen the target, and resume |
 | `pairing_in_progress`  | Wait for the active pairing attempt                  |
 | `ambiguous_selector`   | Use the candidate list from the error; do not guess |
 | Unreadable JSON output | Add `--pretty`                                      |
