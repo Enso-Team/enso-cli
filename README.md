@@ -244,6 +244,14 @@ enso primitive list --pretty
 enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 ```
 
+## Tracing the wire
+
+`ENSO_CLI_TRACE=1` prints every bridge request to stderr as one JSON line carrying `method`, `path` with its query, and the `body` as sent. Stdout keeps the envelope, so a traced run pipes through the same tooling as a plain one. The token travels in a header and never appears in the trace.
+
+```sh
+ENSO_CLI_TRACE=1 enso layout request-flow.canvas.md --apply --dry-run 2>trace.jsonl
+```
+
 ## Troubleshooting
 
 
