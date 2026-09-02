@@ -12,7 +12,13 @@ enso status --pretty
 ```
 
 With the Enso app open, the first command links itself by reading the token
-file the app provisions. `enso auth link` stays available for relinking.
+file the app provisions. `enso auth link` stays available for relinking, and on
+an app that provisions no token file it pairs through the app's prompt.
+
+The app names its bridge contract on `/v1/health`, and every CLI request
+carries its own in the `Enso-Contract-Version` header. The number moves only on
+a breaking change. A mismatch fails with `cli_outdated` or `app_outdated`, each
+naming the side to update.
 
 Install the bundled agent skill:
 

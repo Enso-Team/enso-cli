@@ -17,7 +17,7 @@ Use one temporary JSON file for a multi-element Canvas build or reshape. The fil
    enso status --pretty
    ```
 
-   Continue on `ok: true`. On `auth_required`, launch the Enso app and retry; the CLI links itself. On `app_unavailable`, inspect `error.details.bridgeUrl`; launch that instance or run `enso auth link` to replace the stale pairing. On `pairing_in_progress`, wait for that attempt to finish. Continue when status succeeds for the intended instance.
+   Continue on `ok: true`. On `auth_required`, launch the Enso app and retry; the CLI links itself, and `error.details.hint` names `enso auth link` for an app that provisions no token file. On `cli_outdated` or `app_outdated`, stop. Tell the user which side is behind, quoting `error.details.hint`, and wait for them to update it. On `app_unavailable`, inspect `error.details.bridgeUrl`; launch that instance or run `enso auth link` to replace the stale pairing. On `pairing_in_progress`, wait for that attempt to finish. Continue when status succeeds for the intended instance.
 
 2. Select one exact Canvas:
 
