@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { acquirePairingLock, writeConfig } from "../../src/config.js";
+import { acquirePairingLock, readConfig, writeConfig } from "../../src/config.js";
 import { calls, nativeFetch, run, setupCliTest, sleep, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -344,5 +344,57 @@ describe("auth", () => {
     });
     expect(approved.status).toBe(200);
     expect((await pending).code).toBe(0);
+  });
+
+  it("auth link relinks a stale token through the token file and says so", async () => {
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "fresh-token", bridgeUrl: "http://127.0.0.1:17650" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const parsed = new URL(String(url));
+      if (parsed.pathname === "/v1/health") {
+        return Response.json({ ok: true, data: { status: "ok", bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
+      }
+      const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
+      if (auth === "Bearer fresh-token") return Response.json({ ok: true, data: { app: "Enso" } });
+      return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
+    }));
+
+    const result = await run(["auth", "link"]);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.data).toMatchObject({ status: "linked", alreadyLinked: false, linked: true, bridgeUrl: "http://127.0.0.1:17650" });
+    expect(readConfig()?.token).toBe("fresh-token");
+  });
+
+  it("auth status reports a stale token the app could not replace as invalid and keeps the config", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const parsed = new URL(String(url));
+      if (parsed.pathname === "/v1/health") {
+        return Response.json({ ok: true, data: { status: "ok", bridgeUrl: "http://127.0.0.1:17650" } });
+      }
+      return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
+    }));
+
+    const result = await run(["--pretty", "auth", "status"]);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.data).toMatchObject({ status: "invalid", linked: false, bridgeUrl: "http://127.0.0.1:17650" });
+    expect(readConfig()?.token).toBe("test-token");
+  });
+
+  it("auth status passes access_disabled through instead of calling the app unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const parsed = new URL(String(url));
+      if (parsed.pathname === "/v1/health") {
+        return Response.json({ ok: true, data: { status: "ok", bridgeUrl: "http://127.0.0.1:17650", agentAccess: "disabled" } });
+      }
+      return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
+    }));
+
+    const result = await run(["--pretty", "auth", "status"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, error: { code: "access_disabled" } });
+    expect(readConfig()?.token).toBe("test-token");
   });
 });

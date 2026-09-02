@@ -163,14 +163,19 @@ export function registerAuth(program: Command): void {
       try {
         const status = await new BridgeClient(existing.bridgeUrl).request("/v1/status");
         if (status.ok) {
+          // A stale stored token relinks inside that request, so the config on
+          // disk is the pairing this status came from.
+          const current = readConfig() ?? existing;
+          const relinked = current.token !== existing.token || current.linkedAt !== existing.linkedAt;
           return {
             ok: true,
             data: {
               status: "linked",
-              alreadyLinked: true,
+              ...(relinked ? { message: "Enso CLI is linked to the Enso app" } : {}),
+              alreadyLinked: !relinked,
               linked: true,
-              bridgeUrl: existing.bridgeUrl,
-              linkedAt: existing.linkedAt
+              bridgeUrl: current.bridgeUrl,
+              linkedAt: current.linkedAt
             }
           };
         }
@@ -282,8 +287,11 @@ export function registerAuth(program: Command): void {
     try {
       const response = await new BridgeClient(config.bridgeUrl).request("/v1/status");
       status = response.ok ? "linked" : "invalid";
-    } catch {
-      status = "configured";
+    } catch (error) {
+      // A stale token the app could not replace through its token file is invalid, not
+      // unreachable, and an app that refuses agent access says so itself.
+      if (error instanceof EnsoCliError && error.body.code === "access_disabled") throw error;
+      status = error instanceof EnsoCliError && error.body.code === "invalid_token" ? "invalid" : "configured";
     }
     const data = {
       status,

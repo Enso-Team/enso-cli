@@ -14,9 +14,16 @@ const tokenFileSchema = z.object({
 // the path on /v1/health, which needs no auth. Linking is reading that file and
 // verifying the token against /v1/status. The per-user container is the trust
 // boundary, so there is no prompt and no callback server.
-export async function discoverAndLink(): Promise<EnsoConfig | null> {
-  for (const bridgeUrl of candidateBridgeUrls()) {
-    const config = await tryLink(bridgeUrl);
+// With `stay`, a candidate links only to itself: a token file or health payload
+// that names another origin is not followed. The heal in the client uses it so a
+// stale pairing is replaced on the same app and never moves on its own.
+export async function discoverAndLink(
+  candidates: string[] = candidateBridgeUrls(),
+  { stay = false }: { stay?: boolean } = {}
+): Promise<EnsoConfig | null> {
+  for (const bridgeUrl of candidates) {
+    if (!isLoopbackBridgeUrl(bridgeUrl)) continue;
+    const config = await tryLink(bridgeUrl, stay);
     if (config) return config;
   }
   return null;
@@ -32,7 +39,7 @@ function candidateBridgeUrls(): string[] {
   return urls;
 }
 
-async function tryLink(bridgeUrl: string): Promise<EnsoConfig | null> {
+async function tryLink(bridgeUrl: string, stay: boolean): Promise<EnsoConfig | null> {
   const health = await fetchEnvelope(new URL("/v1/health", bridgeUrl));
   const data =
     health?.ok === true
@@ -61,6 +68,7 @@ async function tryLink(bridgeUrl: string): Promise<EnsoConfig | null> {
       : typeof data?.bridgeUrl === "string" && isLoopbackBridgeUrl(data.bridgeUrl)
         ? data.bridgeUrl
         : bridgeUrl;
+  if (stay && new URL(discoveredBridgeUrl).origin !== new URL(bridgeUrl).origin) return null;
 
   const status = await fetchEnvelope(new URL("/v1/status", discoveredBridgeUrl), tokenFile.token);
   if (status?.ok !== true) return null;
