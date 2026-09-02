@@ -33,5 +33,13 @@
     "tsx": "^4.16.2",
     "typescript": "^5.5.3",
     "vitest": "^2.0.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Enso-Team/enso-cli.git"
+  },
+  "homepage": "https://github.com/Enso-Team/enso-cli#readme",
+  "bugs": {
+    "url": "https://github.com/Enso-Team/enso-cli/issues"
   }
 }
