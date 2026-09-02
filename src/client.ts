@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defaultBridgeUrl, readConfig } from "./config.js";
+import { contractHeader, contractVersion } from "./contract.js";
 import { discoverAndLink } from "./discovery.js";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 
@@ -48,7 +49,7 @@ export class BridgeClient {
       url.search = queryString;
     }
 
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = { Accept: "application/json", [contractHeader]: String(contractVersion) };
     const wantsAuth = options.auth !== false;
     const currentConfig = this.tokenOverride ? null : readConfig();
     let requestUrl = currentConfig?.bridgeUrl
@@ -69,7 +70,9 @@ export class BridgeClient {
         }
       }
       if (!token) {
-        throw new EnsoCliError("auth_required", "Launch the Enso app, then run this command again to link the CLI");
+        throw new EnsoCliError("auth_required", "Launch the Enso app, then run this command again to link the CLI", {
+          hint: "An app that provisions no token file pairs through its prompt. Run `enso auth link`"
+        });
       }
       headers.Authorization = `Bearer ${token}`;
     }

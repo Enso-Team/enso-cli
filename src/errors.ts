@@ -2,6 +2,8 @@ export type EnsoErrorCode =
   | "app_unavailable"
   | "auth_required"
   | "access_disabled"
+  | "cli_outdated"
+  | "app_outdated"
   | "bridge_busy"
   | "canvas_changed"
   | "invalid_response"
