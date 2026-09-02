@@ -32,7 +32,7 @@ jobs:
       # npm trusts this workflow as the package's publisher and mints a
       # per-run credential from the job's OIDC token. No secret, nothing expires.
       # Node 24 bundles an npm that speaks it.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
