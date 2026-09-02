@@ -281,7 +281,11 @@ stale build whenever the version is unchanged.
 
 ## Releases
 
-Feature PRs target `staging`. After a shippable merge, the release workflow
-commits the next unused patch version to `staging` and runs CI on that commit.
-The release PR from `staging` to `main` carries the version bump through review.
-Merging it tags that package version on `main`.
+PRs target `main` and use conventional commit titles. `fix:` bumps the patch
+digit, `feat:` the minor, and a `!` or `BREAKING CHANGE:` footer the minor as
+well while the package is below 1.0. On every push to `main`, release-please
+keeps one release PR open with the next version and its changelog. Merging that
+PR tags the version, creates the GitHub release, and publishes to npm with the
+`NPM_TOKEN` secret. The release PR is opened with the `RELEASE_PLEASE_TOKEN`
+secret, a fine-grained personal access token with contents and pull requests
+write on this repo, since the org keeps `GITHUB_TOKEN` from opening PRs.
