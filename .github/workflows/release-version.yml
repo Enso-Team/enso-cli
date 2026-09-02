@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
   pull-requests: write
 
 concurrency:
@@ -34,11 +35,14 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
+      # npm trusts this workflow as the package's publisher and mints a
+      # per-run credential from the job's OIDC token. No secret, nothing expires.
+      - name: Use an npm that speaks trusted publishing
+        if: steps.release.outputs.release_created
+        run: npm install -g npm@latest
       - name: Install dependencies
         if: steps.release.outputs.release_created
         run: npm ci
       - name: Publish to npm
         if: steps.release.outputs.release_created
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public

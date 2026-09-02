@@ -285,7 +285,9 @@ PRs target `main` and use conventional commit titles. `fix:` bumps the patch
 digit, `feat:` the minor, and a `!` or `BREAKING CHANGE:` footer the minor as
 well while the package is below 1.0. On every push to `main`, release-please
 keeps one release PR open with the next version and its changelog. Merging that
-PR tags the version, creates the GitHub release, and publishes to npm with the
-`NPM_TOKEN` secret. The release PR is opened with the `RELEASE_PLEASE_TOKEN`
-secret, a fine-grained personal access token with contents and pull requests
-write on this repo, since the org keeps `GITHUB_TOKEN` from opening PRs.
+PR tags the version, creates the GitHub release, and publishes to npm through
+trusted publishing. npm lists this repo's `release-version.yml` as the package's
+publisher, so the job authenticates with its OIDC token and no npm secret
+exists. The release PR is opened with the `RELEASE_PLEASE_TOKEN` secret, a
+fine-grained personal access token with contents and pull requests write on
+this repo, since the org keeps `GITHUB_TOKEN` from opening PRs.
