@@ -21,18 +21,18 @@ jobs:
       # release PR open with the bump and changelog. Merging it tags and publishes.
       # The org keeps GITHUB_TOKEN from opening PRs, so a fine-grained PAT with
       # contents and pull-requests write does it. Its pushes also fire CI on the PR.
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071  # v4.4.1
         id: release
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       # npm trusts this workflow as the package's publisher and mints a
       # per-run credential from the job's OIDC token. No secret, nothing expires.
       # Node 24 bundles an npm that speaks it.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
