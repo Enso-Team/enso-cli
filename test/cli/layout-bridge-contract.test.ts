@@ -72,4 +72,42 @@ describe("layout bridge contract", () => {
     expect(emitted).toEqual(["group.create", "link.create", "node.create"]);
     expect(phases.flatMap((phase) => phase.operations).some((operation) => "placeExisting" in operation)).toBe(true);
   });
+
+  it("re-layout emits only update and removal types the released bridge implements", async () => {
+    const context = {
+      nodes: [
+        { id: "n-gateway", title: "Gateway", position: { x: 0, y: 0 } },
+        { id: "n-router", title: "Router", position: { x: 10, y: 0 } },
+        { id: "n-store", title: "Object Store", position: { x: 20, y: 0 } },
+        { id: "n-stray", title: "Stray", position: { x: 30, y: 0 } }
+      ],
+      links: [
+        { id: "l-edge", sourceNodeID: "n-gateway", targetNodeID: "n-router", label: "old", direction: "directed" },
+        { id: "l-store", sourceNodeID: "n-router", targetNodeID: "n-store", label: null, direction: "directed" },
+        { id: "l-stray", sourceNodeID: "n-gateway", targetNodeID: "n-store", label: null, direction: "directed" }
+      ],
+      diagramPrimitives: [
+        { id: "r-edge", kind: "group", title: "Edge", x: 0, y: 0, width: 10, height: 10 },
+        { id: "r-legacy", kind: "group", title: "Legacy", x: 0, y: 0, width: 10, height: 10 }
+      ]
+    };
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const target = new URL(String(url));
+      if (target.pathname === "/v1/context") return Response.json({ ok: true, data: context });
+      if (target.pathname === "/v1/search") return Response.json({ ok: true, data: { results: [] } });
+      return Response.json({ ok: true, data: {} });
+    });
+    const spec = join(tempDir, "relayout.canvas.md");
+    writeFileSync(spec, CONTRACT_SPEC);
+
+    const result = await run(["layout", spec, "--apply", "--dry-run", "--prune"]);
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    const phases = JSON.parse(result.stdout).data.applied.phases as Array<{ operations: Array<{ type: string }> }>;
+    const emitted = [...new Set(phases.flatMap((phase) => phase.operations.map((operation) => operation.type)))].sort();
+
+    expect(emitted.filter((type) => !RELEASED_BRIDGE_OPS.has(type))).toEqual([]);
+    expect(emitted).toEqual(["diagramPrimitive.delete", "diagramPrimitive.update", "link.delete", "link.update", "node.delete", "node.move"]);
+  });
 });

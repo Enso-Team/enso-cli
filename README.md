@@ -107,7 +107,12 @@ Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of 
 
 `--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply.
 
-`layout` builds a canvas once. Compiling the same spec onto a canvas that already holds its members returns `canvas_already_laid_out`. Re-layout and update mode are tracked in issue #25.
+`layout --apply` is re-runnable. It reads the target Canvas first and reconciles it to the spec: members already on the Canvas move to their compiled positions, anchored so the diagram's centroid stays where it is, new members are created or placed, existing Links and regions update in place, and anything already in place emits nothing. Re-running an unchanged spec sends no operations. The envelope reports the outcome under `reconciled` with counts per kind and the `anchor` used. `--prune` makes the spec the whole truth of the Canvas: Notes, Links, and regions it no longer names are removed from the Canvas. Note files stay in the vault, `link remove` semantics keep relation prose, and Portals and lines are never touched.
+
+```sh
+enso layout request-flow.canvas.md --apply --spacing 1.5
+enso layout request-flow.canvas.md --apply --prune --dry-run
+```
 
 ## check
 

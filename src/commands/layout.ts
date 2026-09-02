@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { canvasSpecContract, parseCanvasSpec, specError } from "../canvas-spec.js";
 import { compileCanvasSpec } from "../layout.js";
-import { centerPatchOnCanvas } from "../layout-centering.js";
+import { reconcileLayout } from "../layout-reconcile.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 import { applyCanvasIntent, requestCanvasContext } from "./canvas.js";
@@ -15,10 +15,11 @@ export function registerLayout(program: Command): void {
     .option("--apply", "send the compiled patch through the canvas apply pipeline")
     .option("--dry-run", "with --apply, validate without mutating")
     .option("--spacing <factor>", "scale the distance between node centers (node sizes stay fixed), e.g. 1.5 when link labels need room")
+    .option("--prune", "with --apply, remove Notes, Links, and regions the spec no longer names (Note files stay)")
     .description("Compile a canvas spec into an apply patch with deterministic geometry")
-    .action(async (specPath: string | undefined, options: { schema?: boolean; apply?: boolean; dryRun?: boolean; spacing?: string }): Promise<EnsoEnvelope> => {
+    .action(async (specPath: string | undefined, options: { schema?: boolean; apply?: boolean; dryRun?: boolean; spacing?: string; prune?: boolean }): Promise<EnsoEnvelope> => {
       if (options.schema) {
-        if (specPath || options.apply || options.dryRun || options.spacing) {
+        if (specPath || options.apply || options.dryRun || options.spacing || options.prune) {
           throw usageError("--schema prints the contract on its own");
         }
         return { ok: true, data: canvasSpecContract };
@@ -26,6 +27,9 @@ export function registerLayout(program: Command): void {
       if (!specPath) throw usageError("Canvas layout requires a canvas spec path");
       if (options.dryRun && !options.apply) {
         throw usageError("--dry-run validates the apply pipeline, so it takes --apply");
+      }
+      if (options.prune && !options.apply) {
+        throw usageError("--prune reconciles the live Canvas, so it takes --apply");
       }
       let source: string;
       try {
@@ -35,33 +39,24 @@ export function registerLayout(program: Command): void {
       }
       const spec = parseCanvasSpec(source);
       const compiled = compileCanvasSpec(spec, spacingFactor(options.spacing));
+      if (!options.apply) return { ok: true, data: { ...summary(spec.canvas, spec.direction, compiled), patch: compiled } };
       // Compiled geometry is relative to the origin. Applying it reads the target Canvas
-      // first and moves the whole cluster to where the app looks; --dry-run reports the
-      // same translated coordinates the apply would write.
-      const context = options.apply ? await canvasContext(spec.canvas) : undefined;
-      const patch = options.apply ? centerPatchOnCanvas(compiled, context?.ok ? context.data : undefined) : compiled;
-      if (options.apply) {
-        let applied: EnsoEnvelope;
-        try {
-          applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context);
-        } catch (error) {
-          throw relayoutError(error) ?? error;
+      // first and reconciles: members already on the Canvas move in place, anchored on
+      // where they are, and everything else lands where the app looks. --dry-run reports
+      // the same operations the apply would send.
+      const context = await canvasContext(spec.canvas);
+      const { patch, summary: reconciled } = reconcileLayout(compiled, context?.ok ? context.data : undefined, { prune: Boolean(options.prune) });
+      const applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context);
+      if (!applied.ok) return applied;
+      return {
+        ok: true,
+        data: {
+          ...summary(spec.canvas, spec.direction, compiled),
+          reconciled,
+          ...validationSummary(applied.data),
+          applied: applied.data
         }
-        if (!applied.ok) {
-          const relayout = relayoutError(applied.error);
-          if (relayout) return { ok: false, error: { ...relayout.body, details: { ...applied.error.details, ...relayout.body.details } } };
-          return applied;
-        }
-        return {
-          ok: true,
-          data: {
-            ...summary(spec.canvas, spec.direction, patch),
-            ...validationSummary(applied.data),
-            applied: applied.data
-          }
-        };
-      }
-      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch), patch } };
+      };
     });
 }
 
@@ -94,29 +89,8 @@ function spacingFactor(raw: string | undefined): number {
 function usageError(message: string): EnsoCliError {
   return new EnsoCliError("invalid_input", message, {
     path: "usage",
-    expected: "enso layout <spec.canvas.md> [--apply [--dry-run]], or enso layout --schema",
+    expected: "enso layout <spec.canvas.md> [--spacing <factor>] [--apply [--dry-run] [--prune]], or enso layout --schema",
     hint: "Run `enso layout --help` for the flag list"
-  });
-}
-
-const RELAYOUT_CODES = new Set(["title_collision", "already_on_canvas"]);
-
-/**
- * Layout compiles a Canvas once. This folds the preflight title collision and the app's
- * already_on_canvas into one error that names the re-layout ticket.
- */
-function relayoutError(error: unknown): EnsoCliError | undefined {
-  const code = error instanceof EnsoCliError
-    ? error.body.code
-    : typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string"
-      ? (error as { code: string }).code
-      : undefined;
-  if (code === undefined || !RELAYOUT_CODES.has(code)) return undefined;
-  return new EnsoCliError("canvas_already_laid_out", "The target Canvas already contains members of this spec", {
-    path: "canvas",
-    expected: "a target Canvas free of the spec's members",
-    hint: "Compile onto an empty Canvas, or remove the existing elements first. Re-layout and update mode are tracked in issue #25.",
-    cause: error instanceof EnsoCliError ? error.body : error
   });
 }
 
