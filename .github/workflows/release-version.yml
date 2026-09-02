@@ -29,20 +29,29 @@ jobs:
           manifest-file: .release-please-manifest.json
 
       - uses: actions/checkout@v4
-        if: steps.release.outputs.release_created
-      - uses: actions/setup-node@v4
-        if: steps.release.outputs.release_created
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
       # npm trusts this workflow as the package's publisher and mints a
       # per-run credential from the job's OIDC token. No secret, nothing expires.
-      - name: Use an npm that speaks trusted publishing
-        if: steps.release.outputs.release_created
-        run: npm install -g npm@latest
+      # Node 24 bundles an npm that speaks it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # main's package.json names the version the last release PR set, so it is
+      # either on npm or owed to it. Asking the registry, not release-please, makes
+      # a failed publish retryable by the next push to main or a dispatch.
+      - name: Ask npm whether this version is owed
+        id: owed
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
+            echo "$PKG@$VERSION is on npm"
+          else
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install dependencies
-        if: steps.release.outputs.release_created
+        if: steps.owed.outputs.version
         run: npm ci
       - name: Publish to npm
-        if: steps.release.outputs.release_created
+        if: steps.owed.outputs.version
         run: npm publish --access public
