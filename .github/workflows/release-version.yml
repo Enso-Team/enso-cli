@@ -2,72 +2,47 @@ name: Release version
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
+  id-token: write
+  pull-requests: write
 
 concurrency:
   group: release-version
-  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Conventional commits on main decide the next version. release-please keeps a
+      # release PR open with the bump and changelog. Merging it tags and publishes.
+      # The org keeps GITHUB_TOKEN from opening PRs, so a fine-grained PAT with
+      # contents and pull-requests write does it. Its pushes also fire CI on the PR.
+      - uses: googleapis/release-please-action@v4
+        id: release
         with:
-          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
+      - uses: actions/checkout@v4
+        if: steps.release.outputs.release_created
       - uses: actions/setup-node@v4
+        if: steps.release.outputs.release_created
         with:
           node-version: 20
-
-      # Staging carries the next package version into its release PR. Main tags that version.
-      - name: Prepare or tag the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          VERSION=$(node -p "require('./package.json').version")
-          if [ "$GITHUB_REF_NAME" = "main" ]; then
-            if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-              echo "v$VERSION is already tagged"
-              exit 0
-            fi
-            git tag "v$VERSION"
-            git push origin "v$VERSION"
-            echo "Tagged v$VERSION"
-            exit 0
-          fi
-
-          if ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "v$VERSION is waiting in the staging release PR"
-            exit 0
-          fi
-
-          if git diff --quiet "v$VERSION"..HEAD -- src skills package.json; then
-            echo "Nothing shippable since v$VERSION"
-            exit 0
-          fi
-
-          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
-          while true; do
-            PATCH=$((PATCH + 1))
-            NEXT_VERSION="$MAJOR.$MINOR.$PATCH"
-            if ! git rev-parse -q --verify "refs/tags/v$NEXT_VERSION" >/dev/null; then
-              break
-            fi
-          done
-
-          npm version "$NEXT_VERSION" --no-git-tag-version
-          git add package.json package-lock.json
-          git commit -m "chore(release): v$NEXT_VERSION"
-          git push origin HEAD:staging
-
-          # A GITHUB_TOKEN push does not emit another workflow event. Dispatch CI so the
-          # staging release PR receives the required test check on its new head commit.
-          gh workflow run ci.yml --ref staging
+          registry-url: https://registry.npmjs.org
+      # npm trusts this workflow as the package's publisher and mints a
+      # per-run credential from the job's OIDC token. No secret, nothing expires.
+      - name: Use an npm that speaks trusted publishing
+        if: steps.release.outputs.release_created
+        run: npm install -g npm@latest
+      - name: Install dependencies
+        if: steps.release.outputs.release_created
+        run: npm ci
+      - name: Publish to npm
+        if: steps.release.outputs.release_created
+        run: npm publish --access public
