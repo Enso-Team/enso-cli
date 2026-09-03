@@ -269,8 +269,15 @@ describe("auth", () => {
       const firstMtime = statSync(lockDir).mtimeMs;
       // The heartbeat runs on an unref'd timer, so it refreshes the lock without holding the CLI open.
       expect(process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length).toBe(refTimersBefore);
-      await sleep(1500);
-      expect(statSync(lockDir).mtimeMs).toBeGreaterThan(firstMtime);
+      // The first heartbeat lands one second in. A loaded runner can push it later, so wait
+      // for the touch itself rather than for a fixed interval.
+      const deadline = Date.now() + 8000;
+      let mtime = firstMtime;
+      while (mtime <= firstMtime && Date.now() < deadline) {
+        await sleep(100);
+        mtime = statSync(lockDir).mtimeMs;
+      }
+      expect(mtime).toBeGreaterThan(firstMtime);
     } finally {
       release();
     }
