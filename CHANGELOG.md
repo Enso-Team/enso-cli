@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/Enso-Team/enso-cli/compare/v0.7.0...v0.7.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **auth:** a stale stored token relinks through the app's token file ([#66](https://github.com/Enso-Team/enso-cli/issues/66)) ([c3b2aca](https://github.com/Enso-Team/enso-cli/commit/c3b2aca9f199abc24712c8a872bce61e50be773d))
+
 ## [0.7.0](https://github.com/Enso-Team/enso-cli/compare/v0.6.2...v0.7.0) (2026-09-02)
 
 
