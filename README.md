@@ -256,7 +256,7 @@ enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 | Error                  | Fix                                                 |
 | ---------------------- | --------------------------------------------------- |
 | `app_unavailable`      | Launch the configured app, or run `enso auth link` to relink |
-| `invalid_token`        | Run `enso auth link` to replace the stale pairing    |
+| `invalid_token`        | The CLI relinks through the app's token file on its own. When the app provisions none, update Enso, or run `enso auth link` to pair through its prompt |
 | `access_disabled`      | Turn on Local agent access in Enso's Settings        |
 | `bridge_busy`          | Wait for the agent change in flight, then retry      |
 | `canvas_changed`       | The user changed the open Canvas; inspect `appliedBatches`, reopen the target, and resume |

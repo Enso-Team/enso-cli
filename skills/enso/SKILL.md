@@ -17,7 +17,16 @@ Use one temporary JSON file for a multi-element Canvas build or reshape. The fil
    enso status --pretty
    ```
 
-   Continue on `ok: true`. On `auth_required`, launch the Enso app and retry; the CLI links itself, and `error.details.hint` names `enso auth link` for an app that provisions no token file. On `cli_outdated` or `app_outdated`, stop. Tell the user which side is behind, quoting `error.details.hint`, and wait for them to update it. On `app_unavailable`, inspect `error.details.bridgeUrl`; launch that instance or run `enso auth link` to replace the stale pairing. On `pairing_in_progress`, wait for that attempt to finish. Continue when status succeeds for the intended instance.
+   Continue on `ok: true`. Otherwise route on `error.code`. Never run `enso auth link` from this skill. The CLI links itself inside any command, with no prompt, whenever the app provisions a token file. `enso auth link` is the prompt path for older apps.
+
+   - `auth_required`: no pairing exists. Launch the Enso app, then run `enso status` again. It links itself.
+   - `invalid_token`: the stored pairing is stale and the configured app provisions no token file to replace it. Stop. Tell the user to update Enso, quoting `error.details.hint`.
+   - `app_unavailable`: nothing answers at `error.details.bridgeUrl`. Launch that instance, or run `enso auth unlink` and then `enso status` to link to the instance that is running.
+   - `access_disabled`: Local agent access is off in Enso's Settings. Stop and tell the user.
+   - `cli_outdated` or `app_outdated`: stop. Tell the user which side is behind, quoting `error.details.hint`, and wait for them to update it.
+   - `pairing_in_progress`: another `enso auth link` owns the app's dialog. Wait for it, then run `enso status` again.
+
+   Continue when status succeeds for the intended instance.
 
 2. Select one exact Canvas:
 

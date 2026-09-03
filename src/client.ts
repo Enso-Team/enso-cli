@@ -71,7 +71,7 @@ export class BridgeClient {
       }
       if (!token) {
         throw new EnsoCliError("auth_required", "Launch the Enso app, then run this command again to link the CLI", {
-          hint: "An app that provisions no token file pairs through its prompt. Run `enso auth link`"
+          hint: "Update Enso so it provisions a token file, or run `enso auth link` to pair through its prompt"
         });
       }
       headers.Authorization = `Bearer ${token}`;
@@ -83,12 +83,35 @@ export class BridgeClient {
       body = JSON.stringify(options.body);
     }
 
+    const response = await this.send(requestUrl, method, headers, body);
+    // A stored token the bridge no longer accepts is a stale pairing, left by an
+    // app reinstall or a token rotation. The app names its token file on
+    // /v1/health, so the CLI relinks and resends once instead of surfacing it.
+    // Only the configured bridge is a candidate and it links only to itself:
+    // moving to another instance is a deliberate `enso auth link`. The config
+    // stays until a replacement is written, so a concurrent link is never erased.
+    if (wantsAuth && !this.tokenOverride && currentConfig && !response.ok && response.error.code === "invalid_token") {
+      const discovered = await discoverAndLink([currentConfig.bridgeUrl], { stay: true });
+      if (!discovered) {
+        throw new EnsoCliError("invalid_token", "The stored Enso pairing is stale", {
+          bridgeUrl: currentConfig.bridgeUrl,
+          hint: "The configured app provisions no token file. Update Enso, or run `enso auth link` to pair through its prompt"
+        });
+      }
+      const relinkedUrl = new URL(url.pathname + url.search, discovered.bridgeUrl);
+      assertLoopbackBridge(relinkedUrl);
+      return this.send(relinkedUrl, method, { ...headers, Authorization: `Bearer ${discovered.token}` }, body);
+    }
+    return response;
+  }
+
+  private async send(requestUrl: URL, method: string, headers: Record<string, string>, body?: string): Promise<EnsoEnvelope> {
     let response: Response;
     try {
       response = await fetch(requestUrl, { method, headers, body });
     } catch {
       throw new EnsoCliError("app_unavailable", "The configured Enso app bridge is not available", {
-        bridgeUrl: this.baseUrl,
+        bridgeUrl: requestUrl.origin,
         hint: "Run `enso auth link` to relink, or launch the configured Enso app"
       });
     }
