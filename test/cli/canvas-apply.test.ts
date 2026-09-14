@@ -1,11 +1,41 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
 import { describe, expect, it, vi } from "vitest";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
 describe("canvas apply", () => {
+  it("carries Appearance through place, update, and verification", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "place", note: "API", appearance: "api", x: 0, y: 0 },
+      { kind: "note", mode: "update", selector: "Existing", appearance: "card" }
+    ] });
+    const context = { nodes: [{ id: "existing", title: "Existing", appearance: "database" }] };
+    const operations = compileCanvasApply(intent, context).phases.flatMap((phase) => phase.operations);
+    expect(operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "node.create", title: "API", placeExisting: true, appearance: "api" }),
+      { type: "node.update", selector: "Existing", appearance: "card" }
+    ]));
+    expect(verifyCanvasIntent(intent, context).mismatches).toContain("nodes:Existing:appearance");
+  });
+
+  it("passes an Appearance update through canvas apply dry-run", async () => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: { nodes: [{ id: "api", title: "API", appearance: "api" }] } });
+    });
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({ canvas: "current",
+      nodes: [{ kind: "note", mode: "update", selector: "API", appearance: "card" }]
+    }), "--dry-run"]);
+    expect(result.code).toBe(0);
+    const request = calls.find((call) => new URL(call.url).pathname === "/v1/apply")!;
+    expect(JSON.parse(String(request.init.body))).toEqual({
+      operations: [{ type: "node.update", selector: "API", appearance: "card" }], dryRun: true
+    });
+  });
+
   it("prints the machine-readable canvas apply contract without contacting the bridge", async () => {
     const result = await run(["canvas", "apply", "--schema"]);
     expect(result.code).toBe(0);

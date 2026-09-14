@@ -1,4 +1,5 @@
 import { Command, InvalidArgumentError } from "commander";
+import { parseNodeAppearance } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
@@ -21,11 +22,12 @@ export function registerNode(program: Command): void {
     .command("place")
     .description("Place a Note that exists in the Vault on a Canvas. Write the markdown file first.")
     .argument("<note>", "the Note's title or Vault-relative path, e.g. docs/Service.md")
+    .option("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
     .option("--canvas <selector|current>", "target canvas", "current")
     .option("--x <number>", "world-space center x (omit to auto-place at viewport center)")
     .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
     .option("--dry-run", "validate without mutating")
-    .action(async (note: string, options: { canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
+    .action(async (note: string, options: { appearance?: string; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
       const x = parseCoord(options.x, "x");
       const y = parseCoord(options.y, "y");
       return new BridgeClient().request("/v1/nodes", {
@@ -33,6 +35,7 @@ export function registerNode(program: Command): void {
         body: {
           kind: "note",
           title: note,
+          ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
           canvas: options.canvas ?? "current",
           placeExisting: true,
           ...(x !== undefined ? { x } : {}),
@@ -42,6 +45,18 @@ export function registerNode(program: Command): void {
         dryRun: Boolean(options.dryRun)
       });
     });
+  node
+    .command("update")
+    .argument("<selector>")
+    .requiredOption("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
+    .option("--dry-run", "validate without mutating")
+    .action(async (selector: string, options: { appearance: string; dryRun?: boolean }) =>
+      new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {
+        method: "PUT",
+        body: { appearance: options.appearance, dryRun: Boolean(options.dryRun) },
+        dryRun: Boolean(options.dryRun)
+      })
+    );
   node
     .command("move")
     .description("Move a Node on the current Canvas. There is no --canvas flag: the Canvas the app has open is the one edited.")

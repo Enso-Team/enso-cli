@@ -70,6 +70,24 @@ describe("commands", () => {
     expect((request.init.headers as Record<string, string>).Authorization).toBe("Bearer test-token");
   });
 
+  it("passes Appearance on node place", async () => {
+    const result = await run(["node", "place", "API", "--appearance", "api", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ title: "API", placeExisting: true, appearance: "api", dryRun: true });
+  });
+
+  it("resets Appearance through node update", async () => {
+    const result = await run(["node", "update", "API", "--appearance", "card", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(calls[0].init.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ appearance: "card", dryRun: true });
+  });
+
+  it("rejects unsupported Appearance before contacting the bridge", async () => {
+    await expect(run(["node", "place", "API", "--appearance", "bogus"])).rejects.toThrow("Appearance must be one of");
+    expect(calls).toHaveLength(0);
+  });
+
   it("passes dry-run in query and body", async () => {
     await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];

@@ -188,6 +188,12 @@ enso portal remove "Detail" --dry-run
 
 Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write` and no `node read`; open the file.
 
+`enso node place "API" --appearance api` places a Note as a symbol Node.
+`enso node update "API" --appearance database` changes its visual form.
+Use `--appearance card` to reset it, and `--dry-run` to validate a request.
+`enso canvas apply` accepts `appearance` on Note place and update intents and Portal create and update intents.
+`enso canvas apply --schema` lists the supported values.
+
 ### Links
 
 

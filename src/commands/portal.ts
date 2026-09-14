@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { parseNodeAppearance } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
 
 export function registerPortal(program: Command): void {
@@ -7,15 +8,17 @@ export function registerPortal(program: Command): void {
   portal
     .command("create")
     .requiredOption("--title <title>")
+    .option("--appearance <value>", "Node visual form", parseNodeAppearance)
     .requiredOption("--subcanvas-ref <canvas-ref>")
     .option("--canvas <selector|current>", "target canvas", "current")
     .option("--dry-run", "validate without mutating")
-    .action(async (options: { title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) =>
+    .action(async (options: { appearance?: string; title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) =>
       new BridgeClient().request("/v1/nodes", {
         method: "POST",
         body: {
           kind: "portal",
           title: options.title,
+          ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
           subcanvasRef: options.subcanvasRef,
           canvas: options.canvas ?? "current",
           dryRun: Boolean(options.dryRun)
