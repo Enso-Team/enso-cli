@@ -36,6 +36,20 @@ describe("canvas apply", () => {
     });
   });
 
+  it("compiles title-only and icon-only updates and verifies their stored values", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "update", selector: "API", glyphSize: 72 },
+      { kind: "portal", mode: "update", selector: "Detail", fontSize: 28 }
+    ] });
+    const context = { nodes: [{ id: "api", title: "API", kind: "note", glyphSize: 80 },
+      { id: "detail", title: "Detail", kind: "portal", fontSize: 17 }] };
+    expect(compileCanvasApply(intent, context).phases.flatMap((phase) => phase.operations)).toEqual([
+      { type: "node.update", selector: "API", glyphSize: 72 },
+      { type: "node.update", selector: "Detail", fontSize: 28 }
+    ]);
+    expect(verifyCanvasIntent(intent, context).mismatches).toEqual(["nodes:API:glyphSize", "nodes:Detail:fontSize"]);
+  });
+
   it("prints the machine-readable canvas apply contract without contacting the bridge", async () => {
     const result = await run(["canvas", "apply", "--schema"]);
     expect(result.code).toBe(0);

@@ -88,6 +88,23 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("sets icon and title sizes separately and clears the explicit icon size", async () => {
+    await run(["node", "update", "API", "--glyph-size", "72", "--font-size", "24", "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ glyphSize: 72, fontSize: 24, dryRun: true });
+    await run(["node", "update", "API", "--clear-glyph-size"]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ glyphSize: null, dryRun: false });
+  });
+
+  it("passes size fields on placement", async () => {
+    await run(["node", "place", "API", "--appearance", "api", "--glyph-size", "80", "--font-size", "20"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });
+  });
+
+  it.each(["0", "161", "NaN"])("rejects invalid glyph size %s", async (value) => {
+    await expect(run(["node", "update", "API", "--glyph-size", value])).rejects.toThrow("Glyph size must");
+    expect(calls).toHaveLength(0);
+  });
+
   it("passes dry-run in query and body", async () => {
     await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];

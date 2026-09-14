@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { nodeAppearanceSchema } from "./node-appearance.js";
+import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema } from "./node-appearance.js";
 import { EnsoCliError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
 
@@ -27,16 +27,16 @@ function pairedCoordinates(value: { x?: number; y?: number }, ctx: z.RefinementC
 
 // A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
 // the Vault, named by its title or its Vault-relative path. The intent carries no content.
-const notePlace = z.object({ appearance: nodeAppearanceSchema.optional(), kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...coordinates }).strict();
-const noteUpdate = z.object({ appearance: nodeAppearanceSchema.optional(), kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
+const notePlace = z.object({ appearance: nodeAppearanceSchema.optional(), glyphSize: nodeGlyphSizeSchema.optional(), fontSize: nodeFontSizeSchema.optional(), kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...coordinates }).strict();
+const noteUpdate = z.object({ appearance: nodeAppearanceSchema.optional(), glyphSize: nodeGlyphSizeSchema.optional(), fontSize: nodeFontSizeSchema.optional(), kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
-  if (value.appearance === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, or x and y" });
+  if (value.glyphSize === undefined && value.fontSize === undefined && value.appearance === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, glyphSize, fontSize, or x and y" });
 });
 const noteRemove = z.object({ kind: z.literal("note"), mode: z.literal("remove"), selector }).strict();
-const portalCreate = z.object({ appearance: nodeAppearanceSchema.optional(), kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
-const portalUpdate = z.object({ appearance: nodeAppearanceSchema.optional(), kind: z.literal("portal"), mode: z.literal("update"), selector, subcanvasRef: safeString.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
+const portalCreate = z.object({ appearance: nodeAppearanceSchema.optional(), glyphSize: nodeGlyphSizeSchema.optional(), fontSize: nodeFontSizeSchema.optional(), kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
+const portalUpdate = z.object({ appearance: nodeAppearanceSchema.optional(), glyphSize: nodeGlyphSizeSchema.optional(), fontSize: nodeFontSizeSchema.optional(), kind: z.literal("portal"), mode: z.literal("update"), selector, subcanvasRef: safeString.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
-  if (value.appearance === undefined && value.subcanvasRef === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "portal update requires appearance, subcanvasRef, or x and y" });
+  if (value.glyphSize === undefined && value.fontSize === undefined && value.appearance === undefined && value.subcanvasRef === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "portal update requires appearance, glyphSize, fontSize, subcanvasRef, or x and y" });
 });
 const portalRemove = z.object({ kind: z.literal("portal"), mode: z.literal("remove"), selector }).strict();
 const intentNode = z.union([notePlace, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
@@ -90,7 +90,7 @@ export type CanvasPhaseName = "linkRemovals" | "nodePortalRemovals" | "nodePorta
 export type CanvasPhase = { name: CanvasPhaseName; operations: Record<string, unknown>[]; retrySections: string[] };
 export type CompiledCanvasApply = { phases: CanvasPhase[]; verification: { nodes: string[]; links: string[]; primitives: string[] } };
 
-type ContextNode = { appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } };
+type ContextNode = { glyphSize?: number | null; fontSize?: number; appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } };
 type ContextLink = { id?: string; sourceNodeID?: string; targetNodeID?: string; label?: string | null; color?: string | null; direction?: string };
 type ContextPrimitive = { id?: string; kind?: string };
 
@@ -196,6 +196,11 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown): { ok
     const target = nodeTarget(node);
     const exists = matches(nodes, target).length === 1;
     if (node.mode === "remove" ? exists : !exists) mismatches.push(`nodes:${target}`);
+    if (node.mode !== "remove") {
+      const actual = matches(nodes, target)[0];
+      if (node.glyphSize !== undefined && (actual?.glyphSize ?? null) !== node.glyphSize) mismatches.push(`nodes:${target}:glyphSize`);
+      if (node.fontSize !== undefined && (actual?.fontSize ?? 17) !== node.fontSize) mismatches.push(`nodes:${target}:fontSize`);
+    }
     if (node.mode !== "remove" && node.appearance !== undefined && matches(nodes, target)[0]?.appearance !== node.appearance) {
       mismatches.push(`nodes:${target}:appearance`);
     }
@@ -228,7 +233,7 @@ function nodeTarget(node: CanvasIntent["nodes"][number]): string {
 
 function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: ContextNode[]): Record<string, unknown>[] {
   if (node.mode === "remove") return [];
-  const appearance = node.appearance === undefined ? {} : { appearance: node.appearance };
+  const appearance = defined({ appearance: node.appearance, glyphSize: node.glyphSize, fontSize: node.fontSize });
   if (node.mode === "create") {
     if (matches(nodes, node.title).length > 0) return [];
     return [{ type: "portal.create", ...appearance, title: node.title, subcanvasRef: node.subcanvasRef, x: node.x, y: node.y }];
@@ -238,11 +243,11 @@ function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: Context
     if (!existing) return [{ type: "node.create", ...appearance, title: node.note, placeExisting: true, x: node.x, y: node.y }];
     return [
       ...moveIfDisplaced(existing, node.note, node.x, node.y),
-      ...(node.appearance !== undefined ? [{ type: "node.update", selector: node.note, appearance: node.appearance }] : [])
+      ...(Object.keys(appearance).length > 0 ? [{ type: "node.update", selector: node.note, ...appearance }] : [])
     ];
   }
   const operations: Record<string, unknown>[] = [];
-  if (node.appearance !== undefined) operations.push({ type: "node.update", selector: node.selector, appearance: node.appearance });
+  if (Object.keys(appearance).length > 0) operations.push({ type: "node.update", selector: node.selector, ...appearance });
   if (node.kind === "portal" && node.subcanvasRef !== undefined) operations.push({ type: "portal.changeSubcanvas", selector: node.selector, subcanvasRef: node.subcanvasRef });
   if (node.x !== undefined && node.y !== undefined) operations.push(...moveIfDisplaced(matches(nodes, node.selector)[0], node.selector, node.x, node.y));
   return operations;
@@ -303,14 +308,16 @@ export const canvasApplyContract = {
     color: VISUAL_COLOR_GRAMMAR,
     nodes: {
       appearance: nodeAppearanceSchema.options,
+      glyphSize: { minimum: 24, maximum: 160, null: "derive from block width" },
+      fontSize: { minimum: 8, maximum: 96 },
       note: {
-        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], optional: ["appearance"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault" },
-        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["appearance", "x", "y"] },
+        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], optional: ["appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault" },
+        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["glyphSize", "fontSize", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
       portal: {
-        create: { identity: "title", required: ["kind", "mode", "title", "subcanvasRef", "x", "y"], optional: ["appearance"] },
-        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["subcanvasRef", "appearance", "x", "y"] },
+        create: { identity: "title", required: ["kind", "mode", "title", "subcanvasRef", "x", "y"], optional: ["appearance", "glyphSize", "fontSize"] },
+        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["glyphSize", "fontSize", "subcanvasRef", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       }
     },

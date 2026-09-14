@@ -194,6 +194,12 @@ Use `--appearance card` to reset it, and `--dry-run` to validate a request.
 `enso canvas apply` accepts `appearance` on Note place and update intents and Portal create and update intents.
 `enso canvas apply --schema` lists the supported values.
 
+`enso node update "API" --glyph-size 72` sets the icon width in World points.
+`enso node update "API" --font-size 24` sets the title size.
+`enso node update "API" --clear-glyph-size` derives the icon size from the block width.
+Canvas intents accept optional `glyphSize` and `fontSize` fields on place, create, and update.
+`glyphSize: null` clears an explicit icon size. Icon sizes range from 24 to 160; title sizes range from 8 to 96.
+
 ### Links
 
 

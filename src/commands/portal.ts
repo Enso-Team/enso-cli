@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { parseNodeAppearance } from "../node-appearance.js";
+import { parseNodeAppearance, parseGlyphSize, parseFontSize } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
 
 export function registerPortal(program: Command): void {
@@ -8,17 +8,21 @@ export function registerPortal(program: Command): void {
   portal
     .command("create")
     .requiredOption("--title <title>")
+    .option("--glyph-size <points>", "Icon width in World points", parseGlyphSize)
+    .option("--font-size <points>", "Title size in World points", parseFontSize)
     .option("--appearance <value>", "Node visual form", parseNodeAppearance)
     .requiredOption("--subcanvas-ref <canvas-ref>")
     .option("--canvas <selector|current>", "target canvas", "current")
     .option("--dry-run", "validate without mutating")
-    .action(async (options: { appearance?: string; title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) =>
+    .action(async (options: { appearance?: string; glyphSize?: number; fontSize?: number; title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) =>
       new BridgeClient().request("/v1/nodes", {
         method: "POST",
         body: {
           kind: "portal",
           title: options.title,
           ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
+          ...(options.glyphSize !== undefined ? { glyphSize: options.glyphSize } : {}),
+          ...(options.fontSize !== undefined ? { fontSize: options.fontSize } : {}),
           subcanvasRef: options.subcanvasRef,
           canvas: options.canvas ?? "current",
           dryRun: Boolean(options.dryRun)

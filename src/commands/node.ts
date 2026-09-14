@@ -1,5 +1,5 @@
 import { Command, InvalidArgumentError } from "commander";
-import { parseNodeAppearance } from "../node-appearance.js";
+import { parseNodeAppearance, parseGlyphSize, parseFontSize } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
@@ -22,12 +22,14 @@ export function registerNode(program: Command): void {
     .command("place")
     .description("Place a Note that exists in the Vault on a Canvas. Write the markdown file first.")
     .argument("<note>", "the Note's title or Vault-relative path, e.g. docs/Service.md")
+    .option("--glyph-size <points>", "Icon width in World points", parseGlyphSize)
+    .option("--font-size <points>", "Title size in World points", parseFontSize)
     .option("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
     .option("--canvas <selector|current>", "target canvas", "current")
     .option("--x <number>", "world-space center x (omit to auto-place at viewport center)")
     .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
     .option("--dry-run", "validate without mutating")
-    .action(async (note: string, options: { appearance?: string; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
+    .action(async (note: string, options: { appearance?: string; glyphSize?: number; fontSize?: number; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
       const x = parseCoord(options.x, "x");
       const y = parseCoord(options.y, "y");
       return new BridgeClient().request("/v1/nodes", {
@@ -36,6 +38,8 @@ export function registerNode(program: Command): void {
           kind: "note",
           title: note,
           ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
+          ...(options.glyphSize !== undefined ? { glyphSize: options.glyphSize } : {}),
+          ...(options.fontSize !== undefined ? { fontSize: options.fontSize } : {}),
           canvas: options.canvas ?? "current",
           placeExisting: true,
           ...(x !== undefined ? { x } : {}),
@@ -48,15 +52,27 @@ export function registerNode(program: Command): void {
   node
     .command("update")
     .argument("<selector>")
-    .requiredOption("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
+    .option("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
+    .option("--glyph-size <points>", "Icon width in World points", parseGlyphSize)
+    .option("--clear-glyph-size", "Derive icon size from block width")
+    .option("--font-size <points>", "Title size in World points", parseFontSize)
     .option("--dry-run", "validate without mutating")
-    .action(async (selector: string, options: { appearance: string; dryRun?: boolean }) =>
-      new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {
+    .action(async (selector: string, options: { appearance?: string; glyphSize?: number; clearGlyphSize?: boolean; fontSize?: number; dryRun?: boolean }) => {
+      if (options.clearGlyphSize && options.glyphSize !== undefined) throw new InvalidArgumentError("Choose glyph-size or clear-glyph-size");
+      if (options.appearance === undefined && options.glyphSize === undefined && !options.clearGlyphSize && options.fontSize === undefined) {
+        throw new InvalidArgumentError("Provide appearance, glyph-size, clear-glyph-size, or font-size");
+      }
+      return new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {
         method: "PUT",
-        body: { appearance: options.appearance, dryRun: Boolean(options.dryRun) },
+        body: {
+          ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
+          ...(options.clearGlyphSize ? { glyphSize: null } : options.glyphSize !== undefined ? { glyphSize: options.glyphSize } : {}),
+          ...(options.fontSize !== undefined ? { fontSize: options.fontSize } : {}),
+          dryRun: Boolean(options.dryRun)
+        },
         dryRun: Boolean(options.dryRun)
-      })
-    );
+      });
+    });
   node
     .command("move")
     .description("Move a Node on the current Canvas. There is no --canvas flag: the Canvas the app has open is the one edited.")
