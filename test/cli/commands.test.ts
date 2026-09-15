@@ -95,6 +95,19 @@ describe("commands", () => {
     expect(JSON.parse(String(calls[1].init.body))).toEqual({ glyphSize: null, dryRun: false });
   });
 
+  it("sets and clears the whole-Node ratio lock", async () => {
+    await run(["node", "update", "API", "--lock-ratio", "true", "--title-gap", "12", "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ isResizeLocked: true, titleGap: 12, dryRun: true });
+    await run(["node", "update", "API", "--lock-ratio", "false"]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ isResizeLocked: false, dryRun: false });
+  });
+
+  it("rejects malformed ratio settings before sending a request", async () => {
+    await expect(run(["node", "update", "API", "--lock-ratio", "yes"])).rejects.toThrow("Lock ratio must");
+    await expect(run(["node", "update", "API", "--title-gap", "0"])).rejects.toThrow("Title gap must");
+    expect(calls).toHaveLength(0);
+  });
+
   it("passes size fields on placement", async () => {
     await run(["node", "place", "API", "--appearance", "api", "--glyph-size", "80", "--font-size", "20"]);
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });

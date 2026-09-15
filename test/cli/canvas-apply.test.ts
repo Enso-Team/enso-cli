@@ -21,6 +21,16 @@ describe("canvas apply", () => {
     expect(verifyCanvasIntent(intent, context).mismatches).toContain("nodes:Existing:appearance");
   });
 
+  it("counts a requested visual field the app left out as unapplied", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "update", selector: "API", fontSize: 17, titleGap: 8, isResizeLocked: false, glyphSize: null }
+    ] });
+    const context = { nodes: [{ id: "api", title: "API", kind: "note" }] };
+    expect(verifyCanvasIntent(intent, context).mismatches).toEqual([
+      "nodes:API:glyphSize", "nodes:API:titleGap", "nodes:API:isResizeLocked", "nodes:API:fontSize"
+    ]);
+  });
+
   it("passes an Appearance update through canvas apply dry-run", async () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
@@ -48,6 +58,18 @@ describe("canvas apply", () => {
       { type: "node.update", selector: "Detail", fontSize: 28 }
     ]);
     expect(verifyCanvasIntent(intent, context).mismatches).toEqual(["nodes:API:glyphSize", "nodes:Detail:fontSize"]);
+  });
+
+  it("compiles and verifies lock and gap changes including an explicit unlock", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "update", selector: "API", isResizeLocked: false, titleGap: 12 }
+    ] });
+    const context = { nodes: [{ id: "api", title: "API", kind: "note", isResizeLocked: true, titleGap: 8 }] };
+    expect(compileCanvasApply(intent, context).phases.flatMap((phase) => phase.operations)).toEqual([
+      { type: "node.update", selector: "API", isResizeLocked: false, titleGap: 12 }
+    ]);
+    expect(verifyCanvasIntent(intent, context).mismatches).toEqual(["nodes:API:titleGap", "nodes:API:isResizeLocked"]);
+    expect(verifyCanvasIntent(intent, { nodes: [{ ...context.nodes[0], isResizeLocked: false, titleGap: 12 }] }).mismatches).toEqual([]);
   });
 
   it("prints the machine-readable canvas apply contract without contacting the bridge", async () => {

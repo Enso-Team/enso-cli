@@ -200,6 +200,8 @@ Use `--appearance card` to reset it, and `--dry-run` to validate a request.
 Canvas intents accept optional `glyphSize` and `fontSize` fields on place, create, and update.
 `glyphSize: null` clears an explicit icon size. Icon sizes range from 24 to 160; title sizes range from 8 to 96.
 
+`enso node update API --lock-ratio true` locks the proportions of the complete Node. Use `--lock-ratio false` to resize its parts independently. The setting survives Appearance changes. `--title-gap 12` sets the spacing between the icon and title in World points. Canvas intents accept `isResizeLocked` and `titleGap` for Node placement, creation, and updates.
+
 ### Links
 
 

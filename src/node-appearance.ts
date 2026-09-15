@@ -23,3 +23,16 @@ export function parseFontSize(value: string): number {
   if (!nodeFontSizeSchema.safeParse(size).success) throw new InvalidArgumentError("Font size must be 8–96 World points");
   return size;
 }
+
+export const nodeTitleGapSchema = z.number().finite().positive();
+
+export function parseTitleGap(value: string): number {
+  const gap = Number(value);
+  if (!nodeTitleGapSchema.safeParse(gap).success) throw new InvalidArgumentError("Title gap must be positive World points");
+  return gap;
+}
+
+export function parseRatioLock(value: string): boolean {
+  if (value !== "true" && value !== "false") throw new InvalidArgumentError("Lock ratio must be true or false");
+  return value === "true";
+}
