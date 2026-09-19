@@ -1,6 +1,6 @@
 # Enso Diagram Design
 
-Read this reference after the verified Canvas pass reaches visual context and before choosing or repairing geometry.
+Read this reference before choosing or repairing geometry on an existing Canvas. First builds go through `enso layout`, which owns coordinates. This file is for place, move, and repair against inspected geometry.
 
 ## Choose a Pattern
 
@@ -28,7 +28,7 @@ Prefer content inside a Note when a relationship is explanatory rather than stru
 
 All `x` and `y` values are world-space element centers. Read `data.vision.viewport.visibleRect` and the element geometry in the context `nodes` and `diagramPrimitives` sections; anchor the new arrangement to the viewport center or to nearby inspected elements. Preserve readable whitespace and allow a coherent diagram to extend beyond one viewport.
 
-Align the dominant path, then place secondary branches. Keep related elements closer to one another than to neighboring clusters. Derive region bounds from the actual outer bounds of their contents plus visible padding. Put final geometry on creates so the applied state never depends on a follow-up move.
+Align the dominant path, then place secondary branches. Keep related elements closer to one another than to neighboring clusters. Derive region bounds from the actual outer bounds of their contents plus visible padding. Agent-picked `x`/`y` is a nudge against inspected neighbors, not a first-build layout.
 
 Placement is complete when every new object has final geometry, clusters have distinct gaps, region bounds contain their members, and the intended viewport has no accidental clipping.
 

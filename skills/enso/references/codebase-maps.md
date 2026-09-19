@@ -23,7 +23,9 @@ These are prompts, not a taxonomy. A file, function, type, package, process, or 
 
 ## Write Evidence-Rich Notes
 
-Write enough evidence in each Note for a maintainer to evaluate the claim without reopening the entire investigation. Depending on the map, useful material includes:
+Write those files in the folder `enso vault current` prints, then layout. Open the file to read it.
+
+Write enough evidence in each file for a maintainer to evaluate the claim without reopening the entire investigation. Depending on the map, useful material includes:
 
 - **Role:** the responsibility it owns;
 - **Evidence:** concrete repository paths;

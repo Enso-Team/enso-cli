@@ -1,6 +1,6 @@
 # Enso CLI
 
-Local CLI for the Enso app. Agents write Note markdown in the Vault folder, then use the CLI to place, link, and lay those Notes out on a Canvas.
+Local CLI for the Enso app. Markdown files live in the folder Enso has open. This CLI places them on a Canvas, draws links, and runs layout.
 
 ## Quick start
 
@@ -29,7 +29,7 @@ npx skills list -g
 
 ## For agents
 
-Paste this block when onboarding an agent:
+The skill is `skills/enso/SKILL.md`. Paste this when onboarding an agent:
 
 ```txt
 Use the Enso CLI to work with canvases in the Enso Mac app.
@@ -39,17 +39,19 @@ Setup:
 2. Launch Enso
 3. enso skill install
 
-Default workflow for diagram or canvas work:
+Default workflow:
 1. enso status --pretty
-2. Write Note markdown in the Vault folder
-3. enso layout /tmp/graph.json --apply --dry-run
-4. enso layout /tmp/graph.json --apply
+2. enso vault current --pretty
+3. Write markdown in the folder it prints (`path`)
+4. enso check "<path>" --pretty
+5. enso layout /tmp/graph.json --apply --dry-run
+6. enso layout /tmp/graph.json --apply
 
 Rules:
-- Write Notes as files. Do not send or read Note bodies through the CLI.
+- Write markdown in that folder. Open the file to read it.
 - Use enso layout for a first build so you do not invent coordinates.
 - Use --dry-run before mutations and read its bridge-validation limits.
-- Read skills/enso/SKILL.md (installed via enso skill install) for the full workflow.
+- Read skills/enso/SKILL.md for the full workflow.
 ```
 
 ## Command model

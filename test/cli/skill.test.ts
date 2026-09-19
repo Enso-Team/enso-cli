@@ -10,7 +10,7 @@ describe("skill", () => {
   it("does not expose the raw apply command", () => {
     expect(buildProgram().commands.map((command) => command.name())).not.toContain("apply");
   });
-  it("uses one temporary file for the default Canvas pass", () => {
+  it("encodes the files-first default pass", () => {
     const skill = readFileSync(join(process.cwd(), "skills/enso/SKILL.md"), "utf8");
     const metadata = readFileSync(join(process.cwd(), "skills/enso/agents/openai.yaml"), "utf8");
     const diagramDesign = readFileSync(join(process.cwd(), "skills/enso/references/diagram-design.md"), "utf8");
@@ -20,11 +20,15 @@ describe("skill", () => {
     expect(metadata).toContain('Treat "in Enso" as a destination and perform the work through the Enso app');
     expect(diagramDesign).toContain("Give each region an intentional color and low fill opacity");
     expect(diagramDesign).toContain("every region has a semantic color");
+    expect(skill).toContain("enso vault current --pretty");
+    expect(skill).toContain("enso check");
+    expect(skill).toContain("open the file");
     expect(skill).toContain("enso layout /tmp/enso-<task>-graph.json --apply --dry-run");
     expect(skill).toContain("enso layout /tmp/enso-<task>-graph.json --apply");
     expect(skill).toContain("Confirm `/tmp/enso-<task>-graph.json` no longer exists");
     expect(skill).not.toContain("rm -f /tmp/enso-<task>-graph.json");
-    expect(skill).toContain("Use diagnostics to focus screenshot review");
+    expect(skill).not.toContain("enso vault tree");
+    expect(skill).not.toContain("retrySections");
     expect(skill).not.toContain("canvas apply --json -");
     expect(skill).not.toContain("Compose one JSON intent in memory");
   });
