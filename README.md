@@ -46,7 +46,7 @@ Default workflow for diagram or canvas work:
 4. enso layout /tmp/graph.json --apply
 
 Rules:
-- Write Notes as files. Do not send Note content through the CLI.
+- Write Notes as files. Do not send or read Note bodies through the CLI.
 - Use enso layout for a first build so you do not invent coordinates.
 - Use --dry-run before mutations and read its bridge-validation limits.
 - Read skills/enso/SKILL.md (installed via enso skill install) for the full workflow.
@@ -184,7 +184,7 @@ enso portal open "Detail"
 enso portal remove "Detail" --dry-run
 ```
 
-Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write`.
+Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write` and no `node read`; open the file.
 
 ### Links
 

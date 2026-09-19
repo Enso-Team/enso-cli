@@ -26,7 +26,7 @@ Enso turns durable Notes and their relationships into navigable Canvases. Write 
 
    Continue when status succeeds for the intended instance.
 
-2. Ask the app which folder is the Vault, then write Notes as markdown files there. A Note's identity is its filename stem or vault-relative path (`docs/API.md`). Do not send Note `content` through the CLI. Do not write `Canvases/*.json` or sidecar state.
+2. Ask the app which folder is the Vault, then write Notes as markdown files there. A Note's identity is its filename stem or vault-relative path (`docs/API.md`). Do not send or read Note bodies through the CLI; open the file. Do not write `Canvases/*.json` or sidecar state.
 
    ```sh
    enso vault current --pretty
@@ -79,7 +79,7 @@ Enso turns durable Notes and their relationships into navigable Canvases. Write 
 
 ## Small Edits
 
-For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`, `enso primitive`, or `enso canvas` command. Run it with `--dry-run`, inspect success, then run the same command without `--dry-run`. `enso node place <path>` places a Note that already exists. There is no `node write` and no Note `content` on apply.
+For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`, `enso primitive`, or `enso canvas` command. Run it with `--dry-run`, inspect success, then run the same command without `--dry-run`. `enso node place <path>` places a Note that already exists. There is no `node write` and no `node read`.
 
 ## Guardrails
 

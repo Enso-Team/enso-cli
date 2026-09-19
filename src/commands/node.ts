@@ -18,10 +18,6 @@ export function registerNode(program: Command): void {
       new BridgeClient().request("/v1/nodes", { query: { canvas: options.canvas } })
     );
   node
-    .command("read")
-    .argument("<selector>")
-    .action(async (selector: string) => new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`));
-  node
     .command("place")
     .description("Place a Note that exists in the Vault on a Canvas. Write the markdown file first.")
     .argument("<note>", "the Note's title or Vault-relative path, e.g. docs/Service.md")

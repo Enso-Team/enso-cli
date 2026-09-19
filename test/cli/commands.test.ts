@@ -15,6 +15,8 @@ describe("commands", () => {
       expect(command.commands.map((candidate) => candidate.name())).toContain("remove");
       expect(command.commands.map((candidate) => candidate.name())).not.toContain("delete");
     }
+    const node = program.commands.find((candidate) => candidate.name() === "node")!;
+    expect(node.commands.map((candidate) => candidate.name())).not.toContain("read");
     const link = program.commands.find((candidate) => candidate.name() === "link")!;
     expect(link.commands.map((candidate) => candidate.name())).toEqual(expect.arrayContaining(["remove", "delete"]));
     const primitive = program.commands.find((candidate) => candidate.name() === "primitive")!;
@@ -33,7 +35,6 @@ describe("commands", () => {
     [["canvas", "open", "Roadmap"], "/v1/canvases/Roadmap/open?dryRun=false", "POST"],
     [["canvas", "inspect", "Roadmap"], "/v1/canvases/Roadmap/inspect", "GET"],
     [["node", "list", "--canvas", "current"], "/v1/nodes?canvas=current", "GET"],
-    [["node", "read", "Auth"], "/v1/nodes/Auth", "GET"],
     [["node", "place", "Auth"], "/v1/nodes?dryRun=false", "POST"],
     [["node", "move", "Auth", "--x", "1", "--y", "2"], "/v1/nodes/Auth?dryRun=false", "PUT"],
     [["node", "remove", "Auth"], "/v1/nodes/Auth?dryRun=false", "DELETE"],
@@ -646,7 +647,7 @@ describe("commands", () => {
         })
       )
     );
-    const result = await run(["node", "read", "Auth"]);
+    const result = await run(["node", "move", "Auth", "--x", "1", "--y", "2"]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({
       ok: false,
