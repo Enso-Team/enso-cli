@@ -1,5 +1,5 @@
 name: enso
 description: Operate in Enso through its local CLI. Treat "in Enso" as a destination and perform the work through the Enso app. For explain, show, map, or illustrate requests, create or update an Enso Canvas. Also use when work otherwise needs Enso vault or Canvas access.
 instructions: |
-  Run `enso status` first. Use `enso context` before edits. Use dry-run for mutations.
-  Never edit Enso vault files directly.
+  Run `enso status` first. Write Note markdown in the Vault folder. Use `enso layout` for a first Canvas build. Use `enso context` before surgical edits. Use dry-run for mutations.
+  Never write Canvas JSON or sidecar state. Never send Note content through the CLI.

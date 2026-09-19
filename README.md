@@ -1,6 +1,6 @@
 # Enso CLI
 
-Local CLI for the Enso app. It talks to Enso on your machine and allows agents to read vault context, mutate canvases, and capture viewport diagnostics without editing vault files directly.
+Local CLI for the Enso app. Agents write Note markdown in the Vault folder, then use the CLI to place, link, and lay those Notes out on a Canvas.
 
 ## Quick start
 
@@ -41,70 +41,56 @@ Setup:
 
 Default workflow for diagram or canvas work:
 1. enso status --pretty
-2. enso canvas apply --schema
-3. enso context --canvas "<Canvas Name>" --vision --pretty
-4. Pipe one explicit-mode intent to: enso canvas apply --json - --dry-run
-5. Pipe the same intent to: enso canvas apply --json -
+2. Write Note markdown in the Vault folder
+3. enso layout /tmp/graph.json --apply --dry-run
+4. enso layout /tmp/graph.json --apply
 
 Rules:
-- Never edit Canvases/*.json or other vault files directly.
+- Write Notes as files. Do not send Note content through the CLI.
+- Use enso layout for a first build so you do not invent coordinates.
 - Use --dry-run before mutations and read its bridge-validation limits.
-- Prefer enso canvas apply for multi-element work; use atomic commands for one-off edits.
 - Read skills/enso/SKILL.md (installed via enso skill install) for the full workflow.
 ```
 
 ## Command model
 
-Three layers. Compile a whole diagram from a spec, batch a hand-written patch, or edit one element.
+Three layers. Compile a whole diagram from a graph, batch a hand-written patch, or edit one element.
 
 
 | Layer       | When                                  | Commands                                                  |
 | ----------- | ------------------------------------- | --------------------------------------------------------- |
-| **Compile** | Building a diagram from a graph       | `enso layout <spec.canvas.md>`                            |
+| **Compile** | Building a diagram from a graph       | `enso layout <graph.json>`                                |
 | **Batch**   | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
 | **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
-| **Verify**  | Linting an authoring folder           | `enso check [folder]`                                     |
+| **Verify**  | Linting a Vault folder                | `enso check [folder]`                                     |
 
 
 `canvas apply` runs complete local preflight, then applies dependency phases. Each phase is app-atomic; successful earlier phases remain when a later phase fails. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
 
 ## layout
 
-`enso layout` compiles a canvas spec into a `canvas apply` patch. Declare the graph; the CLI owns every coordinate.
+`enso layout` compiles graph JSON into a `canvas apply` patch. Declare the graph; the CLI owns every coordinate.
 
-A canvas spec is one markdown manifest per canvas. Frontmatter carries members by Note title, visible edges, named clusters, and a direction hint of `TB` or `LR`. The body is the canvas's own prose and never compiles.
+The JSON is a command input, not a Vault file. Members are Notes that already exist, named by title or vault-relative path. Edges become Links. Clusters become regions. `direction` is `TB` or `LR`.
 
-```markdown
----
-canvas: Request Flow
-direction: LR
-members:
-  - Gateway
-  - Router
-  - title: Object Store
-    mode: reuse
-edges:
-  - from: Gateway
-    to: Router
-    label: routes
-    direction: directed
-  - from: Router
-    to: Object Store
-clusters:
-  - name: Edge
-    color: "#6B7280"
-    members:
-      - Gateway
-      - Router
----
-
-How a request reaches the store.
+```json
+{
+  "canvas": "Request Flow",
+  "direction": "LR",
+  "members": ["Gateway", "Router", { "title": "Object Store" }],
+  "edges": [
+    { "from": "Gateway", "to": "Router", "label": "routes", "direction": "directed" },
+    { "from": "Router", "to": "Object Store" }
+  ],
+  "clusters": [
+    { "name": "Edge", "color": "#6B7280", "members": ["Gateway", "Router"] }
+  ]
+}
 ```
 
 ```sh
-enso layout request-flow.canvas.md --apply
-enso canvas apply request-flow.json --dry-run
-enso layout request-flow.canvas.md --apply
+enso layout request-flow.json --apply
+enso layout request-flow.json --apply --dry-run
 ```
 
 Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry. `--apply` sends the compiled patch through the `canvas apply` pipeline with its preflight and verification, `--apply --dry-run` validates without mutating, and running without `--apply` prints the compiled patch for inspection. Run `enso layout --schema` for the machine-readable spec contract.
@@ -117,36 +103,24 @@ Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of 
 
 ## check
 
-`enso check [folder]` lints an authoring folder, `enso/` by default, and exits non-zero when it finds a violation. It reads files and nothing else. No writes, no bridge calls, so it runs after every edit like a test suite.
+`enso check [folder]` lints a Vault folder, `.` by default, and exits non-zero when it finds a violation. It reads files and nothing else. No writes, no bridge calls.
 
 ```sh
 enso check
-enso check docs/enso --pretty
+enso check /path/to/vault --pretty
 ```
 
-The folder holds Notes as markdown files and canvases as `*.canvas.md` manifests. A Note's title is its filename stem, the identity `enso layout` resolves manifest members against. A file whose frontmatter sets `generated: true` is a generated outline, a read-only projection. Outlines keep their UUIDs unique like any other file, their bodies stay out of the wikilink rule, and no manifest may list one as a member.
+A Note is any markdown file that is not a generated Canvas outline. A Note's title is its filename stem. Outlines start with Enso's generated header and stay out of the wikilink rule. Leftover `*.canvas.md` files are ignored. Graph JSON is a layout command input, not something check lints.
 
 Each violation carries a `code` in the envelope:
 
-| Code                            | Rule                                                        |
-| ------------------------------- | ----------------------------------------------------------- |
-| `frontmatter_invalid`           | Note or manifest frontmatter parses                         |
-| `duplicate_uuid`                | Each `uuid` is claimed by one file                          |
-| `duplicate_title`               | Each title is claimed by one file                           |
-| `unresolved_wikilink`           | Every wikilink resolves to a Note in the folder             |
-| `missing_canvas_member`         | Every manifest member matches a Note                        |
-| `generated_outline_referenced`  | No manifest references a generated outline                  |
-| `duplicate_member`              | Each manifest declares a member once                        |
-| `duplicate_edge`                | Each manifest declares an edge once                         |
-| `self_edge`                     | No edge points at its own endpoint                          |
-| `edge_endpoint_not_member`      | Both endpoints of an edge are canvas members                |
-| `duplicate_cluster`             | Each manifest declares a cluster name once                  |
-| `cluster_member_outside_canvas` | Every cluster member is also a canvas member                |
-| `member_in_two_clusters`        | Each member belongs to at most one cluster                  |
+| Code                   | Rule                                            |
+| ---------------------- | ----------------------------------------------- |
+| `frontmatter_invalid`  | Note frontmatter parses                         |
+| `duplicate_title`      | Each title is claimed by one file               |
+| `unresolved_wikilink`  | Every wikilink resolves to a Note in the folder |
 
-Wikilinks resolve in Note bodies and in a manifest's prose body alike, and a wikilink inside a fenced code block is a sample rather than a link. A `duplicate_uuid` or `duplicate_title` violation lands on every file sharing the value and names the whole set, since a collision has no original.
-
-A Note without a `uuid` reports as a warning and the folder still passes. Stable UUIDs become expected when the app reads folders directly. Duplicate UUIDs always fail. A clean run prints `ok: true` with the file counts and any warnings. A failing run prints a `check_failed` envelope whose `details.violations` names every violation in the folder, each with its file, message, and, where one applies, its line. One broken file never hides the rest.
+Wikilinks resolve in Note bodies, and a wikilink inside a fenced code block is a sample rather than a link. A `duplicate_title` violation lands on every file sharing the value and names the whole set. A clean run prints `ok: true` with the file counts. A failing run prints a `check_failed` envelope whose `details.violations` names every violation in the folder. One broken file never hides the rest.
 
 ## canvas apply
 
@@ -156,8 +130,8 @@ Run `enso canvas apply --schema` for the machine-readable source of truth. Input
 {
   "canvas": "current",
   "nodes": [
-    { "kind": "note", "mode": "create", "title": "Client", "content": "# Client\n", "x": 18300, "y": 18200 },
-    { "kind": "note", "mode": "reuse", "selector": "API Gateway", "x": 18600, "y": 18200 },
+    { "kind": "note", "mode": "place", "note": "Client.md", "x": 18300, "y": 18200 },
+    { "kind": "note", "mode": "place", "note": "docs/API Gateway.md", "x": 18600, "y": 18200 },
     { "kind": "portal", "mode": "create", "title": "Auth Detail", "subcanvasRef": "Canvases/Auth Detail.json", "x": 18900, "y": 18200 }
   ],
   "links": [
@@ -202,8 +176,7 @@ enso canvas inspect "Auth Flow" --pretty
 ### Nodes and portals
 
 ```sh
-enso node create --title "API" --content @note.md --x 18300 --y 18200 --dry-run
-enso node write "API" --content @note.md --dry-run
+enso node place "docs/API.md" --x 18300 --y 18200 --dry-run
 enso node move "API" --x 18600 --y 18200 --dry-run
 enso node remove "API" --dry-run
 enso portal create --title "Detail" --subcanvas-ref "Canvases/Detail.json" --dry-run
@@ -211,7 +184,7 @@ enso portal open "Detail"
 enso portal remove "Detail" --dry-run
 ```
 
-Portal nodes do not carry markdown — use `enso node write` only on note nodes.
+Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write`.
 
 ### Links
 

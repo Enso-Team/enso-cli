@@ -16,7 +16,7 @@ export const LAYOUT_GEOMETRY = {
 
 const ORDERING_SWEEPS = 4;
 
-export type LayoutNode = { title: string; mode: "create" | "reuse"; x: number; y: number };
+export type LayoutNode = { title: string; x: number; y: number };
 export type LayoutRegion = { name: string; color?: string; x: number; y: number; width: number; height: number };
 export type CanvasLayout = { nodes: LayoutNode[]; regions: LayoutRegion[] };
 
@@ -58,9 +58,7 @@ export function compileCanvasSpec(spec: CanvasSpec, spacing = 1): CanvasIntent {
   const layout = computeCanvasLayout(spec, spacing);
   return parseCanvasIntent({
     canvas: spec.canvas,
-    nodes: layout.nodes.map((node) => node.mode === "reuse"
-      ? { kind: "note", mode: "reuse", selector: node.title, x: node.x, y: node.y }
-      : { kind: "note", mode: "create", title: node.title, x: node.x, y: node.y }),
+    nodes: layout.nodes.map((node) => ({ kind: "note", mode: "place", note: node.title, x: node.x, y: node.y })),
     links: spec.edges.map((edge) => ({
       mode: "create",
       source: edge.from,
@@ -171,7 +169,6 @@ function placeNodes(spec: CanvasSpec, layers: number[][], spacing: number): Layo
       const member = spec.members[node];
       nodes.push({
         title: member.title,
-        mode: member.mode,
         x: spec.direction === "TB" ? along : across,
         y: spec.direction === "TB" ? across : along
       });

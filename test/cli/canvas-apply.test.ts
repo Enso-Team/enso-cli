@@ -71,7 +71,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "A", x: 1, y: 2 }]
+      nodes: [{ kind: "note", mode: "place", note: "A", x: 1, y: 2 }]
     })]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).data.results).toEqual([]);
@@ -115,7 +115,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "Roadmap",
-      nodes: [{ kind: "note", mode: "create", title: "API", content: "# API", x: 10, y: 20 }]
+      nodes: [{ kind: "note", mode: "place", note: "API", x: 10, y: 20 }]
     })]);
     expect(result.code).toBe(0);
     expect(calls.filter((call) => new URL(call.url).pathname === "/v1/canvases/Roadmap/inspect")).toHaveLength(2);
@@ -140,7 +140,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "Missing", x: 1, y: 2 }]
+      nodes: [{ kind: "note", mode: "place", note: "Missing", x: 1, y: 2 }]
     })]);
     expect(result.code).toBe(1);
     expect(calls.filter((call) => new URL(call.url).pathname === "/v1/apply")).toHaveLength(1);
@@ -219,7 +219,7 @@ describe("canvas apply", () => {
       canvas: "current",
       nodes: [
         { kind: "note", mode: "remove", selector: "A" },
-        { kind: "note", mode: "create", title: "C", x: 1, y: 2 }
+        { kind: "note", mode: "place", note: "C", x: 1, y: 2 }
       ],
       links: [
         { mode: "remove", id: link },
@@ -254,7 +254,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "A", x: 1, y: 2 }]
+      nodes: [{ kind: "note", mode: "place", note: "A", x: 1, y: 2 }]
     }), "--dry-run"]);
     const data = JSON.parse(result.stdout).data;
     expect(data).not.toHaveProperty("valid");
@@ -272,7 +272,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "Roadmap",
-      nodes: [{ kind: "note", mode: "create", title: "A", x: 1, y: 2 }]
+      nodes: [{ kind: "note", mode: "place", note: "A", x: 1, y: 2 }]
     }), "--dry-run"]);
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/canvases/Roadmap/inspect", "/v1/search"]);
     expect(JSON.parse(result.stdout).data.validation).toEqual({
@@ -304,18 +304,6 @@ describe("canvas apply", () => {
     });
   });
 
-  it("flags shared Note writes in dry-run output", async () => {
-    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      return Response.json({ ok: true, data: { nodes: [{ id: "a", title: "A" }], links: [], diagramPrimitives: [] } });
-    });
-    const result = await run(["canvas", "apply", "--json", JSON.stringify({
-      canvas: "current",
-      nodes: [{ kind: "note", mode: "update", selector: "A", content: "changed" }]
-    }), "--dry-run"]);
-    expect(JSON.parse(result.stdout).data.sharedNoteWrites).toEqual(["A"]);
-  });
-
   it("preflights an unplaced Note reuse by exact Note name", async () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
@@ -326,7 +314,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "reuse", selector: "API Gateway", x: 1, y: 2 }]
+      nodes: [{ kind: "note", mode: "place", note: "API Gateway", x: 1, y: 2 }]
     }), "--dry-run"]);
     expect(result.code).toBe(0);
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/context", "/v1/search", "/v1/apply"]);
@@ -343,33 +331,13 @@ describe("canvas apply", () => {
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
       nodes: [
-        { kind: "note", mode: "reuse", selector: "API Gateway", x: 1, y: 2 },
-        { kind: "note", mode: "create", title: "Client", x: 3, y: 4 }
+        { kind: "note", mode: "place", note: "API Gateway", x: 1, y: 2 },
+        { kind: "note", mode: "place", note: "Client", x: 3, y: 4 }
       ],
       links: [{ mode: "create", source: "Client", target: "API Gateway" }]
     }), "--dry-run"]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).data.planned).toMatchObject({ nodePortalWrites: 2, linkWrites: 1 });
-  });
-
-  it("rejects a create Note whose title already exists in the vault", async () => {
-    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      const parsed = new URL(String(url));
-      if (parsed.pathname === "/v1/context") return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
-      if (parsed.pathname === "/v1/search") return Response.json({ ok: true, data: { results: [{ type: "file", path: "Files/Agent.md" }] } });
-      return Response.json({ ok: true, data: { valid: true } });
-    });
-    const result = await run(["canvas", "apply", "--json", JSON.stringify({
-      canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "Agent", x: 0, y: 0 }]
-    }), "--dry-run"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "note_exists", details: { hint: expect.stringContaining("reuse") } }
-    });
-    expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/context", "/v1/search"]);
   });
 
   it("creates a Note whose title only fuzzy-matches vault search results", async () => {
@@ -382,7 +350,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "Agent", x: 0, y: 0 }]
+      nodes: [{ kind: "note", mode: "place", note: "Agent", x: 0, y: 0 }]
     }), "--dry-run"]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).data.preflightPassed).toBe(true);
@@ -402,7 +370,7 @@ describe("canvas apply", () => {
     });
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "Agent", x: 0, y: 0 }]
+      nodes: [{ kind: "note", mode: "place", note: "Agent", x: 0, y: 0 }]
     }), "--dry-run"]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).data.planned).not.toHaveProperty("nodePortalWrites");
@@ -415,7 +383,7 @@ describe("canvas apply", () => {
       if (new URL(String(url)).pathname === "/v1/context") {
         inspections += 1;
         return Response.json({ ok: true, data: inspections === 1
-          ? { nodes: [{ id: "vault", title: "Vault Manager" }], links: [], diagramPrimitives: [] }
+          ? { nodes: [{ id: "vault", title: "Vault Manager", position: { x: 900, y: 2000 } }], links: [], diagramPrimitives: [] }
           : {
               nodes: [{ id: "cli", title: "CLI" }, { id: "vault", title: "Vault Manager" }, { id: "portal", title: "Sync Detail", kind: "portal" }],
               links: [{ id: "l1", sourceNodeID: "cli", targetNodeID: "vault" }, { id: "l2", sourceNodeID: "vault", targetNodeID: "portal" }],
@@ -428,8 +396,8 @@ describe("canvas apply", () => {
     writeFileSync(intent, JSON.stringify({
       canvas: "current",
       nodes: [
-        { kind: "note", mode: "create", title: "CLI", content: "Command surface", x: 550, y: 2000 },
-        { kind: "note", mode: "reuse", selector: "Vault Manager", x: 1000, y: 2000 },
+        { kind: "note", mode: "place", note: "CLI", x: 550, y: 2000 },
+        { kind: "note", mode: "place", note: "Vault Manager", x: 1000, y: 2000 },
         { kind: "portal", mode: "create", title: "Sync Detail", subcanvasRef: "Canvases/Sync Detail.json", x: 1450, y: 2000 }
       ],
       links: [
@@ -455,8 +423,8 @@ describe("canvas apply", () => {
     }
     const nodePatch = JSON.parse(String(applyCalls[0].init.body));
     expect(nodePatch.operations).toMatchObject([
-      { type: "node.create", title: "CLI", content: "Command surface", x: 550, y: 2000 },
-      { type: "node.create", title: "Vault Manager", placeExisting: true, x: 1000, y: 2000 },
+      { type: "node.create", title: "CLI", placeExisting: true, x: 550, y: 2000 },
+      { type: "node.move", selector: "Vault Manager", x: 1000, y: 2000 },
       { type: "portal.create", title: "Sync Detail", subcanvasRef: "Canvases/Sync Detail.json", x: 1450, y: 2000 }
     ]);
 
@@ -517,7 +485,7 @@ describe("canvas apply", () => {
     const intent = join(tempDir, "partial.json");
     writeFileSync(intent, JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "create", title: "A", content: "a", x: 1, y: 1 }, { kind: "note", mode: "create", title: "B", content: "b", x: 2, y: 2 }],
+      nodes: [{ kind: "note", mode: "place", note: "A", x: 1, y: 1 }, { kind: "note", mode: "place", note: "B", x: 2, y: 2 }],
       links: [{ mode: "create", source: "A", target: "B" }]
     }));
 
@@ -569,8 +537,8 @@ describe("canvas apply", () => {
   it("rejects duplicate declared node titles before any bridge call", async () => {
     const dupNodes = join(tempDir, "dup-nodes.json");
     writeFileSync(dupNodes, JSON.stringify({ canvas: "current", nodes: [
-      { kind: "note", mode: "create", title: "A", x: 1, y: 1 },
-      { kind: "note", mode: "create", title: "A", x: 2, y: 2 }
+      { kind: "note", mode: "place", note: "A", x: 1, y: 1 },
+      { kind: "note", mode: "place", note: "A", x: 2, y: 2 }
     ] }));
     const r1 = await run(["canvas", "apply", dupNodes, "--dry-run"]);
     expect(r1.code).toBe(1);
@@ -601,7 +569,7 @@ describe("canvas apply", () => {
     const intent = join(tempDir, "existing-content.json");
     writeFileSync(intent, JSON.stringify({
       canvas: "current",
-      nodes: [{ kind: "note", mode: "reuse", selector: "API Gateway", content: "updated body", x: 1, y: 2 }]
+      nodes: [{ kind: "note", mode: "place", note: "API Gateway", content: "updated body", x: 1, y: 2 }]
     }));
     const result = await run(["canvas", "apply", intent, "--dry-run"]);
     expect(result.code).toBe(1);
@@ -631,8 +599,8 @@ describe("canvas apply", () => {
     writeFileSync(intent, JSON.stringify({
       canvas: "current",
       nodes: [
-        { kind: "note", mode: "create", title: "A", x: 100, y: 200 },
-        { kind: "note", mode: "create", title: "B", x: 550, y: 200 }
+        { kind: "note", mode: "place", note: "A", x: 100, y: 200 },
+        { kind: "note", mode: "place", note: "B", x: 550, y: 200 }
       ],
       links: [{ mode: "create", source: "A", target: "B" }]
     }));
@@ -661,7 +629,7 @@ describe("canvas apply", () => {
       return Response.json({ ok: true, data: { dryRun: true, valid: false } });
     });
     const intent = join(tempDir, "invalid-dry-run.json");
-    writeFileSync(intent, JSON.stringify({ canvas: "current", nodes: [{ kind: "note", mode: "create", title: "A", x: 1, y: 2 }] }));
+    writeFileSync(intent, JSON.stringify({ canvas: "current", nodes: [{ kind: "note", mode: "place", note: "A", x: 1, y: 2 }] }));
 
     const result = await run(["canvas", "apply", intent, "--dry-run"]);
     expect(result.code).toBe(0);

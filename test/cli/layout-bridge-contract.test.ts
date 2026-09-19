@@ -10,7 +10,7 @@ setupCliTest();
 // compiler learns to emit outside this set fails on a paired app. Widen this list only
 // after confirming the released app accepts the new type.
 const RELEASED_BRIDGE_OPS = new Set([
-  "node.create", "node.write", "node.move", "node.delete",
+  "node.create", "node.move", "node.delete",
   "portal.create", "portal.open", "portal.delete", "portal.changeSubcanvas",
   "canvas.create", "canvas.open",
   "link.create", "link.update", "link.delete",
@@ -18,34 +18,17 @@ const RELEASED_BRIDGE_OPS = new Set([
   "diagramPrimitive.update", "diagramPrimitive.delete"
 ]);
 
-// A reuse member and a cluster are required: without them placeExisting and group.create
-// never appear in the compiled phases.
-const CONTRACT_SPEC = [
-  "---",
-  "canvas: current",
-  "direction: LR",
-  "members:",
-  "  - Gateway",
-  "  - Router",
-  "  - title: Object Store",
-  "    mode: reuse",
-  "edges:",
-  "  - from: Gateway",
-  "    to: Router",
-  "    label: routes",
-  "  - from: Router",
-  "    to: Object Store",
-  "clusters:",
-  "  - name: Edge",
-  "    color: \"#6B7280\"",
-  "    members:",
-  "      - Gateway",
-  "      - Router",
-  "---",
-  "",
-  "Every op type the compiler can emit.",
-  ""
-].join("\n");
+// A cluster is required: without it group.create never appears in the compiled phases.
+const CONTRACT_SPEC = {
+  canvas: "current",
+  direction: "LR",
+  members: ["Gateway", "Router", { title: "Object Store" }],
+  edges: [
+    { from: "Gateway", to: "Router", label: "routes" },
+    { from: "Router", to: "Object Store" }
+  ],
+  clusters: [{ name: "Edge", color: "#6B7280", members: ["Gateway", "Router"] }]
+};
 
 describe("layout bridge contract", () => {
   it("emits only operation types the released bridge implements", async () => {
@@ -59,8 +42,8 @@ describe("layout bridge contract", () => {
       }
       return Response.json({ ok: true, data: {} });
     });
-    const spec = join(tempDir, "contract.canvas.md");
-    writeFileSync(spec, CONTRACT_SPEC);
+    const spec = join(tempDir, "contract.json");
+    writeFileSync(spec, JSON.stringify(CONTRACT_SPEC));
 
     const result = await run(["layout", spec, "--apply", "--dry-run"]);
     expect(result.stderr).toBe("");

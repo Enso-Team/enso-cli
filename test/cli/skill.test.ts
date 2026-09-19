@@ -20,10 +20,10 @@ describe("skill", () => {
     expect(metadata).toContain('Treat "in Enso" as a destination and perform the work through the Enso app');
     expect(diagramDesign).toContain("Give each region an intentional color and low fill opacity");
     expect(diagramDesign).toContain("every region has a semantic color");
-    expect(skill).toContain("enso canvas apply /tmp/enso-<task>-intent.json --dry-run");
-    expect(skill).toContain("enso canvas apply /tmp/enso-<task>-intent.json\n");
-    expect(skill).toContain("Confirm `/tmp/enso-<task>-intent.json` no longer exists");
-    expect(skill).not.toContain("rm -f /tmp/enso-<task>-intent.json");
+    expect(skill).toContain("enso layout /tmp/enso-<task>-graph.json --apply --dry-run");
+    expect(skill).toContain("enso layout /tmp/enso-<task>-graph.json --apply");
+    expect(skill).toContain("Confirm `/tmp/enso-<task>-graph.json` no longer exists");
+    expect(skill).not.toContain("rm -f /tmp/enso-<task>-graph.json");
     expect(skill).toContain("Use diagnostics to focus screenshot review");
     expect(skill).not.toContain("canvas apply --json -");
     expect(skill).not.toContain("Compose one JSON intent in memory");

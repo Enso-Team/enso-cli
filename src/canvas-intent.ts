@@ -24,12 +24,10 @@ function pairedCoordinates(value: { x?: number; y?: number }, ctx: z.RefinementC
   }
 }
 
-const noteCreate = z.object({ kind: z.literal("note"), mode: z.literal("create"), title: safeTitle, content: z.string().optional(), ...coordinates }).strict();
-const noteReuse = z.object({ kind: z.literal("note"), mode: z.literal("reuse"), selector, ...coordinates }).strict();
-const noteUpdate = z.object({ kind: z.literal("note"), mode: z.literal("update"), selector, content: z.string().optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
-  pairedCoordinates(value, ctx);
-  if (value.content === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires content or x and y" });
-});
+// A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
+// the Vault, named by its title or its Vault-relative path. The intent carries no content.
+const notePlace = z.object({ kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...coordinates }).strict();
+const noteUpdate = z.object({ kind: z.literal("note"), mode: z.literal("update"), selector, ...coordinates }).strict();
 const noteRemove = z.object({ kind: z.literal("note"), mode: z.literal("remove"), selector }).strict();
 const portalCreate = z.object({ kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
 const portalUpdate = z.object({ kind: z.literal("portal"), mode: z.literal("update"), selector, subcanvasRef: safeString.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
@@ -37,7 +35,7 @@ const portalUpdate = z.object({ kind: z.literal("portal"), mode: z.literal("upda
   if (value.subcanvasRef === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "portal update requires subcanvasRef or x and y" });
 });
 const portalRemove = z.object({ kind: z.literal("portal"), mode: z.literal("remove"), selector }).strict();
-const intentNode = z.union([noteCreate, noteReuse, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
+const intentNode = z.union([notePlace, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
 
 const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional() };
 const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
@@ -66,8 +64,7 @@ export const canvasIntentSchema = z.object({
   links: z.array(intentLink).default([]),
   primitives: z.array(intentPrimitive).default([])
 }).strict().superRefine((intent, ctx) => {
-  const declaredTitles = intent.nodes.flatMap((node) => "title" in node && typeof node.title === "string" ? [node.title] : []);
-  addDuplicates(ctx, "nodes", declaredTitles);
+  addDuplicates(ctx, "nodes", intent.nodes.flatMap((node) => node.mode === "place" ? [node.note] : "title" in node ? [node.title] : []));
   const linkPairs = intent.links.flatMap((link) => link.mode === "create"
     ? [[link.source, link.target].sort((a, b) => a.localeCompare(b)).join("\u0000")]
     : []);
@@ -89,7 +86,7 @@ export type CanvasPhaseName = "linkRemovals" | "nodePortalRemovals" | "nodePorta
 export type CanvasPhase = { name: CanvasPhaseName; operations: Record<string, unknown>[]; retrySections: string[] };
 export type CompiledCanvasApply = { phases: CanvasPhase[]; verification: { nodes: string[]; links: string[]; primitives: string[] } };
 
-type ContextNode = { id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; content?: string; position?: { x?: number; y?: number } };
+type ContextNode = { id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } };
 type ContextLink = { id?: string; sourceNodeID?: string; targetNodeID?: string; label?: string | null; color?: string | null; direction?: string };
 type ContextPrimitive = { id?: string; kind?: string };
 
@@ -98,36 +95,27 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   const links = readArray<ContextLink>(context, "links");
   const primitives = readArray<ContextPrimitive>(context, "diagramPrimitives");
   const availableNotes = readArray<string>(context, "availableNotes");
-  const declaredTitles = intent.nodes.flatMap((node) => "title" in node && typeof node.title === "string" ? [node.title] : []);
+  const declaredTitles = intent.nodes.flatMap((node) => node.kind === "portal" && node.mode === "create" ? [node.title] : []);
 
-  // Reuse places a vault Note in the node phase, ahead of the link phase, so its selector
-  // is a valid Link endpoint even though the Canvas does not hold it yet.
-  const placedByReuse: string[] = [];
+  // A placed Note is a valid Link endpoint in the same intent even though the Canvas does
+  // not hold it yet. The bridge resolves the file from disk, so a Note written a moment ago
+  // places without a search round trip; preflight only refuses what it can see is wrong.
+  const placed: string[] = [];
 
   for (const node of intent.nodes) {
-    if (node.mode === "reuse") {
-      const canvasMatches = matches(nodes, node.selector);
-      const vaultMatches = availableNotes.filter((candidate) => candidate === node.selector);
-      if (canvasMatches.length + vaultMatches.length === 0) fail("missing_selector", `No Note matches '${node.selector}'`, `nodes.${node.selector}`, "Use the exact Note name or ref");
-      if (canvasMatches.length > 1 || vaultMatches.length > 1) fail("ambiguous_selector", `Multiple Notes match '${node.selector}'`, `nodes.${node.selector}`, "Use the exact unique Note name or ref");
-      if (canvasMatches.length === 0) placedByReuse.push(node.selector);
+    if (node.mode === "place") {
+      const canvasMatches = matches(nodes, node.note);
+      const vaultMatches = availableNotes.filter((candidate) => candidate === node.note);
+      if (canvasMatches.length > 1 || vaultMatches.length > 1) fail("ambiguous_selector", `Multiple Notes match '${node.note}'`, `nodes.${node.note}`, "Name the Note by its Vault-relative path");
+      if (canvasMatches.length === 0) placed.push(node.note);
     } else if ("selector" in node) {
       resolveOne(nodes, node.selector, "node");
     }
-    if (node.mode === "create" && matches(nodes, node.title).length > 0) {
-      const existing = resolveOne(nodes, node.title, "node");
-      const identicalNote = node.kind === "note" && existing.kind !== "portal" && existing.content === (node.content ?? "")
-        && existing.position?.x === node.x && existing.position?.y === node.y;
-      if (!identicalNote) fail("title_collision", `A Canvas element already uses the title '${node.title}'`, `nodes.${node.title}`, "Choose a distinct title or use update/reuse explicitly");
-    } else if (node.mode === "create" && node.kind === "note" && availableNotes.includes(node.title)) {
-      throw new EnsoCliError("note_exists", `Note '${node.title}' already exists in the vault`, {
-        path: `nodes.${node.title}`,
-        expected: "a Note title that is new to the vault",
-        hint: 'Use mode "reuse" with the existing Note selector, or choose a unique title'
-      });
+    if (node.kind === "portal" && node.mode === "create" && matches(nodes, node.title).length > 0) {
+      fail("title_collision", `A Canvas element already uses the title '${node.title}'`, `nodes.${node.title}`, "Choose a distinct title or use update explicitly");
     }
   }
-  const declaredEndpoints = [...declaredTitles, ...placedByReuse];
+  const declaredEndpoints = [...declaredTitles, ...placed];
   for (const link of intent.links) {
     if (link.mode === "create") {
       resolveEndpoint(link.source, nodes, declaredEndpoints);
@@ -164,7 +152,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   const phases: CanvasPhase[] = [
     { name: "linkRemovals", operations: linkRemovals, retrySections: ["links.remove"] },
     { name: "nodePortalRemovals", operations: nodePortalRemovals, retrySections: ["nodes.remove"] },
-    { name: "nodePortalWrites", operations: nodePortalWrites, retrySections: ["nodes.create", "nodes.reuse", "nodes.update"] },
+    { name: "nodePortalWrites", operations: nodePortalWrites, retrySections: ["nodes.place", "nodes.create", "nodes.update"] },
     { name: "linkWrites", operations: linkWrites, retrySections: ["links.create", "links.update"] },
     { name: "primitives", operations: primitiveOps, retrySections: ["primitives"] }
   ].filter((phase) => phase.operations.length > 0) as CanvasPhase[];
@@ -221,30 +209,31 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown): { ok
 }
 
 function nodeTarget(node: CanvasIntent["nodes"][number]): string {
+  if (node.mode === "place") return node.note;
   if (node.mode === "create") return node.title;
-  if (node.mode === "reuse" || node.mode === "remove" || node.mode === "update") return node.selector;
-  return "";
+  return node.selector;
 }
 
 function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: ContextNode[]): Record<string, unknown>[] {
   if (node.mode === "remove") return [];
   if (node.mode === "create") {
     if (matches(nodes, node.title).length > 0) return [];
-    return node.kind === "note"
-      ? [{ type: "node.create", title: node.title, content: node.content ?? "", x: node.x, y: node.y }]
-      : [{ type: "portal.create", title: node.title, subcanvasRef: node.subcanvasRef, x: node.x, y: node.y }];
+    return [{ type: "portal.create", title: node.title, subcanvasRef: node.subcanvasRef, x: node.x, y: node.y }];
   }
-  if (node.mode === "reuse") return [{ type: "node.create", title: node.selector, placeExisting: true, x: node.x, y: node.y }];
+  if (node.mode === "place") {
+    const existing = matches(nodes, node.note)[0];
+    if (!existing) return [{ type: "node.create", title: node.note, placeExisting: true, x: node.x, y: node.y }];
+    return moveIfDisplaced(existing, node.note, node.x, node.y);
+  }
   const operations: Record<string, unknown>[] = [];
-  if (node.kind === "note" && node.content !== undefined) operations.push({ type: "node.write", selector: node.selector, content: node.content });
   if (node.kind === "portal" && node.subcanvasRef !== undefined) operations.push({ type: "portal.changeSubcanvas", selector: node.selector, subcanvasRef: node.subcanvasRef });
-  if (node.x !== undefined && node.y !== undefined) {
-    const existing = matches(nodes, node.selector)[0];
-    if (existing?.position?.x !== node.x || existing.position.y !== node.y) {
-      operations.push({ type: "node.move", selector: node.selector, x: node.x, y: node.y });
-    }
-  }
+  if (node.x !== undefined && node.y !== undefined) operations.push(...moveIfDisplaced(matches(nodes, node.selector)[0], node.selector, node.x, node.y));
   return operations;
+}
+
+function moveIfDisplaced(existing: ContextNode | undefined, selector: string, x: number, y: number): Record<string, unknown>[] {
+  if (existing?.position?.x === x && existing.position.y === y) return [];
+  return [{ type: "node.move", selector, x, y }];
 }
 
 function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Record<string, unknown> {
@@ -297,9 +286,8 @@ export const canvasApplyContract = {
     color: VISUAL_COLOR_GRAMMAR,
     nodes: {
       note: {
-        create: { identity: "title", required: ["kind", "mode", "title", "x", "y"], optional: ["content"] },
-        reuse: { identity: "selector", required: ["kind", "mode", "selector", "x", "y"], forbidden: ["content"] },
-        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["content", "x", "y"] },
+        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault" },
+        update: { identity: "selector", required: ["kind", "mode", "selector", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
       portal: {
@@ -328,11 +316,12 @@ export const canvasApplyContract = {
       remove: { identity: "app DiagramPrimitive UUID", required: ["kind", "mode", "id"] }
     }
   },
-  validation: { local: "complete", vaultNoteTitles: "create-mode Note titles are resolved against vault search and rejected as note_exists when taken", bridgeValidated: "first nonempty phase for current-Canvas dry-run", deferredUntilApply: "later phases, or every phase for a named-Canvas dry-run" },
+  content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
+  validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase for current-Canvas dry-run", deferredUntilApply: "later phases, or every phase for a named-Canvas dry-run" },
   partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives"] },
   success: { ok: true, data: { appliedBatches: [], results: [], verification: "targeted" } },
   error: { ok: false, error: { code: "string", message: "string", details: {} } },
-  example: { canvas: "current", nodes: [{ kind: "note", mode: "create", title: "Service", content: "# Service", x: 0, y: 0 }] }
+  example: { canvas: "current", nodes: [{ kind: "note", mode: "place", note: "docs/Service.md", x: 0, y: 0 }] }
 } as const;
 
 export function parseCanvasIntent(input: unknown): CanvasIntent {

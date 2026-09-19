@@ -16,8 +16,8 @@ function patch(overrides: Partial<{ nodes: unknown[]; primitives: unknown[] }> =
   return parseCanvasIntent({
     canvas: "current",
     nodes: overrides.nodes ?? [
-      { kind: "note", mode: "create", title: "A", x: -225, y: 0 },
-      { kind: "note", mode: "create", title: "B", x: 225, y: 0 }
+      { kind: "note", mode: "place", note: "A", x: -225, y: 0 },
+      { kind: "note", mode: "place", note: "B", x: 225, y: 0 }
     ],
     links: [],
     primitives: overrides.primitives ?? [
@@ -124,7 +124,7 @@ describe("layout centering", () => {
   it("keeps hands off an intent that updates or reuses", () => {
     const withUpdate = patch({
       nodes: [
-        { kind: "note", mode: "create", title: "A", x: 0, y: 0 },
+        { kind: "note", mode: "place", note: "A", x: 0, y: 0 },
         { kind: "note", mode: "update", selector: "B", x: 100, y: 100 }
       ]
     });

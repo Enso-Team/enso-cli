@@ -7,50 +7,29 @@ import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
-const FLOW_SPEC = [
-  "---",
-  "canvas: Request Flow",
-  "direction: LR",
-  "members:",
-  "  - Gateway",
-  "  - Router",
-  "  - Store",
-  "  - Audit Log",
-  "  - Metrics",
-  "edges:",
-  "  - from: Gateway",
-  "    to: Router",
-  "    label: routes",
-  "  - from: Router",
-  "    to: Store",
-  "    direction: directed",
-  "  - from: Router",
-  "    to: Audit Log",
-  "  - from: Audit Log",
-  "    to: Metrics",
-  "clusters:",
-  "  - name: Edge",
-  "    color: \"#6B7280\"",
-  "    members:",
-  "      - Gateway",
-  "      - Router",
-  "  - name: Observability",
-  "    members:",
-  "      - Audit Log",
-  "      - Metrics",
-  "---",
-  "",
-  "How a request reaches the store.",
-  ""
-].join("\n");
+const FLOW_SPEC = {
+  canvas: "Request Flow",
+  direction: "LR",
+  members: ["Gateway", "Router", "Store", "Audit Log", "Metrics"],
+  edges: [
+    { from: "Gateway", to: "Router", label: "routes" },
+    { from: "Router", to: "Store", direction: "directed" },
+    { from: "Router", to: "Audit Log" },
+    { from: "Audit Log", to: "Metrics" }
+  ],
+  clusters: [
+    { name: "Edge", color: "#6B7280", members: ["Gateway", "Router"] },
+    { name: "Observability", members: ["Audit Log", "Metrics"] }
+  ]
+};
 
-function writeSpec(contents: string, name = "flow.canvas.md"): string {
+function writeSpec(spec: unknown, name = "flow.json"): string {
   const path = join(tempDir, name);
-  writeFileSync(path, contents);
+  writeFileSync(path, typeof spec === "string" ? spec : JSON.stringify(spec));
   return path;
 }
 
-type PatchNode = { title?: string; selector?: string; x: number; y: number };
+type PatchNode = { note?: string; title?: string; selector?: string; x: number; y: number };
 type PatchRegion = { title: string; x: number; y: number; width: number; height: number };
 type Patch = { canvas: string; nodes: PatchNode[]; links: Array<Record<string, unknown>>; primitives: PatchRegion[] };
 
@@ -69,7 +48,7 @@ describe("layout", () => {
     expect(calls).toHaveLength(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
-      data: { frontmatter: { direction: { values: ["TB", "LR"], default: "TB" } }, body: "descriptive prose, never compiled" }
+      data: { graph: { direction: { values: ["TB", "LR"], default: "TB" } } }
     });
   });
 
@@ -86,13 +65,13 @@ describe("layout", () => {
 
   it("ranks members along the direction hint and centers each rank", async () => {
     const horizontal = patchOf((await run(["layout", writeSpec(FLOW_SPEC)])).stdout);
-    const vertical = patchOf((await run(["layout", writeSpec(FLOW_SPEC.replace("direction: LR", "direction: TB"), "tb.canvas.md")])).stdout);
-    const gateway = horizontal.nodes.find((node) => node.title === "Gateway")!;
-    const router = horizontal.nodes.find((node) => node.title === "Router")!;
+    const vertical = patchOf((await run(["layout", writeSpec({ ...FLOW_SPEC, direction: "TB" }, "tb.json")])).stdout);
+    const gateway = horizontal.nodes.find((node) => node.note === "Gateway")!;
+    const router = horizontal.nodes.find((node) => node.note === "Router")!;
     expect(router.x - gateway.x).toBe(LAYOUT_GEOMETRY.colStep);
     expect(gateway.y).toBe(0);
-    const verticalGateway = vertical.nodes.find((node) => node.title === "Gateway")!;
-    const verticalRouter = vertical.nodes.find((node) => node.title === "Router")!;
+    const verticalGateway = vertical.nodes.find((node) => node.note === "Gateway")!;
+    const verticalRouter = vertical.nodes.find((node) => node.note === "Router")!;
     expect(verticalRouter.y - verticalGateway.y).toBe(LAYOUT_GEOMETRY.rowStep);
     expect(verticalGateway.x).toBe(0);
   });
@@ -111,7 +90,7 @@ describe("layout", () => {
   it("derives cluster region bounds from member bounds plus padding", async () => {
     const patch = patchOf((await run(["layout", writeSpec(FLOW_SPEC)])).stdout);
     const region = patch.primitives.find((primitive) => primitive.title === "Edge")!;
-    const members = patch.nodes.filter((node) => ["Gateway", "Router"].includes(node.title ?? ""));
+    const members = patch.nodes.filter((node) => ["Gateway", "Router"].includes(node.note ?? ""));
     expect(members).toHaveLength(2);
     for (const member of members) {
       expect(member.x - LAYOUT_GEOMETRY.nodeWidth / 2).toBeGreaterThanOrEqual(region.x - region.width / 2);
@@ -124,36 +103,25 @@ describe("layout", () => {
     expect(patch.primitives.every((primitive) => primitive.width > 0 && primitive.height > 0)).toBe(true);
   });
 
-  it("compiles reuse members and edge visuals into the apply patch", async () => {
-    const spec = writeSpec([
-      "---",
-      "canvas: current",
-      "members:",
-      "  - title: Existing Note",
-      "    mode: reuse",
-      "  - New Note",
-      "edges:",
-      "  - from: Existing Note",
-      "    to: New Note",
-      "    label: feeds",
-      "    direction: bidirectional",
-      "    color: \"#2563EB\"",
-      "---",
-      ""
-    ].join("\n"), "reuse.canvas.md");
+  it("compiles members as placements and edge visuals into the apply patch", async () => {
+    const spec = writeSpec({
+      canvas: "current",
+      members: [{ title: "Existing Note" }, "New Note"],
+      edges: [{ from: "Existing Note", to: "New Note", label: "feeds", direction: "bidirectional", color: "#2563EB" }]
+    }, "place.json");
     const patch = patchOf((await run(["layout", spec])).stdout);
-    expect(patch.nodes[0]).toMatchObject({ kind: "note", mode: "reuse", selector: "Existing Note" });
-    expect(patch.nodes[1]).toMatchObject({ kind: "note", mode: "create", title: "New Note" });
+    expect(patch.nodes[0]).toMatchObject({ kind: "note", mode: "place", note: "Existing Note" });
+    expect(patch.nodes[1]).toMatchObject({ kind: "note", mode: "place", note: "New Note" });
     expect(patch.links[0]).toMatchObject({ mode: "create", source: "Existing Note", target: "New Note", label: "feeds", direction: "bidirectional", color: "#2563EB" });
   });
 
   it("scales node-center distances by --spacing and leaves sizes fixed", async () => {
     const standard = patchOf((await run(["layout", writeSpec(FLOW_SPEC)])).stdout);
     const spaced = patchOf((await run(["layout", writeSpec(FLOW_SPEC), "--spacing", "2"])).stdout);
-    const gateway = standard.nodes.find((node) => node.title === "Gateway")!;
-    const router = standard.nodes.find((node) => node.title === "Router")!;
-    const spacedGateway = spaced.nodes.find((node) => node.title === "Gateway")!;
-    const spacedRouter = spaced.nodes.find((node) => node.title === "Router")!;
+    const gateway = standard.nodes.find((node) => node.note === "Gateway")!;
+    const router = standard.nodes.find((node) => node.note === "Router")!;
+    const spacedGateway = spaced.nodes.find((node) => node.note === "Gateway")!;
+    const spacedRouter = spaced.nodes.find((node) => node.note === "Router")!;
     expect(spacedRouter.x - spacedGateway.x).toBe((router.x - gateway.x) * 2);
     expect(spaced.primitives[0].width - standard.primitives[0].width).toBe((spacedRouter.x - spacedGateway.x) - (router.x - gateway.x));
   });
@@ -223,7 +191,7 @@ describe("layout", () => {
   });
 
   it("moves the compiled cluster onto the app's empty-canvas home before applying", async () => {
-    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply", "--dry-run"]);
+    const result = await run(["layout", writeSpec({ ...FLOW_SPEC, canvas: "current" }), "--apply", "--dry-run"]);
     expect(result.code).toBe(0);
     const phases = JSON.parse(result.stdout).data.applied.phases as Array<{ name: string; operations: Array<{ x: number; y: number; width?: number; height?: number }> }>;
     const boxes = phases.flatMap((phase) => phase.name === "nodePortalWrites" || phase.name === "primitives"
@@ -247,14 +215,18 @@ describe("layout", () => {
   });
 
   it("names the phases the app validated and the phases validated locally alone", async () => {
-    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply", "--dry-run"]);
+    const result = await run(["layout", writeSpec({ ...FLOW_SPEC, canvas: "current" }), "--apply", "--dry-run"]);
     expect(result.code).toBe(0);
     const validation = JSON.parse(result.stdout).data.validation;
     expect(validation).toEqual({ bridgeValidated: ["nodePortalWrites"], locallyValidatedOnly: ["linkWrites", "primitives"] });
   });
 
   it("rejects a color the app would refuse, before any bridge call", async () => {
-    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("\"#6B7280\"", "slate-ish"), "badcolor.canvas.md"), "--apply"]);
+    const badColor = {
+      ...FLOW_SPEC,
+      clusters: FLOW_SPEC.clusters.map((cluster) => cluster.name === "Edge" ? { ...cluster, color: "slate-ish" } : cluster)
+    };
+    const result = await run(["layout", writeSpec(badColor, "badcolor.json"), "--apply"]);
     expect(result.code).toBe(1);
     expect(calls).toHaveLength(0);
     expect(JSON.parse(result.stderr)).toMatchObject({
@@ -268,19 +240,7 @@ describe("layout", () => {
   });
 
   it("rejects a malformed hex color on an edge before any bridge call", async () => {
-    const spec = writeSpec([
-      "---",
-      "canvas: current",
-      "members:",
-      "  - A",
-      "  - B",
-      "edges:",
-      "  - from: A",
-      "    to: B",
-      "    color: \"#12\"",
-      "---",
-      ""
-    ].join("\n"), "badedge.canvas.md");
+    const spec = writeSpec({ canvas: "current", members: ["A", "B"], edges: [{ from: "A", to: "B", color: "#12" }] }, "badedge.json");
     const result = await run(["layout", spec]);
     expect(result.code).toBe(1);
     expect(calls).toHaveLength(0);
@@ -288,27 +248,17 @@ describe("layout", () => {
   });
 
   it.each([["#0AF"], ["#3B82F6"], ["#3B82F6CC"], ["green"], ["Teal"]])("accepts the app color %s", async (color) => {
-    const spec = writeSpec([
-      "---",
-      "canvas: current",
-      "members:",
-      "  - A",
-      "  - B",
-      "clusters:",
-      "  - name: Core",
-      `    color: "${color}"`,
-      "    members:",
-      "      - A",
-      "      - B",
-      "---",
-      ""
-    ].join("\n"), "color.canvas.md");
+    const spec = writeSpec({
+      canvas: "current",
+      members: ["A", "B"],
+      clusters: [{ name: "Core", color, members: ["A", "B"] }]
+    }, "color.json");
     const result = await run(["layout", spec]);
     expect(result.code).toBe(0);
     expect(patchOf(result.stdout).primitives[0]).toMatchObject({ title: "Core", color });
   });
 
-  it("reports a canvas that already holds the spec's members as one structured error", async () => {
+  it("moves a member the Canvas already holds into the layout instead of placing it twice", async () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       if (new URL(String(url)).pathname === "/v1/context") {
@@ -316,20 +266,15 @@ describe("layout", () => {
       }
       return Response.json({ ok: true, data: {} });
     });
-    const result = await run(["layout", writeSpec(FLOW_SPEC.replace("canvas: Request Flow", "canvas: current")), "--apply"]);
-    expect(result.code).toBe(1);
-    expect(calls.some((call) => new URL(call.url).pathname === "/v1/apply")).toBe(false);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: {
-        code: "canvas_already_laid_out",
-        message: expect.stringContaining("already contains"),
-        details: { hint: expect.stringContaining("#25"), cause: { code: "title_collision" } }
-      }
-    });
+    await run(["layout", writeSpec({ ...FLOW_SPEC, canvas: "current" }), "--apply"]);
+    const applied = calls.filter((call) => new URL(call.url).pathname === "/v1/apply")
+      .flatMap((call) => (JSON.parse(String(call.init.body)) as { operations: Array<{ type: string; title?: string; selector?: string }> }).operations);
+    expect(applied.some((op) => op.type === "node.move" && op.selector === "Gateway")).toBe(true);
+    expect(applied.some((op) => op.type === "node.create" && op.title === "Gateway")).toBe(false);
+    expect(applied.some((op) => op.type === "node.create" && op.title === "Router")).toBe(true);
   });
 
-  it("reports a reuse member the app rejects as already placed as the same structured error", async () => {
+  it("reports a member the app rejects as already placed as the same structured error", async () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
@@ -340,15 +285,7 @@ describe("layout", () => {
       }
       return Response.json({ ok: true, data: {} });
     });
-    const spec = writeSpec([
-      "---",
-      "canvas: current",
-      "members:",
-      "  - title: Existing Note",
-      "    mode: reuse",
-      "---",
-      ""
-    ].join("\n"), "reuse-apply.canvas.md");
+    const spec = writeSpec({ canvas: "current", members: [{ title: "Existing Note" }] }, "place-apply.json");
     const result = await run(["layout", spec, "--apply"]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({
@@ -361,7 +298,7 @@ describe("layout", () => {
   });
 
   it("rejects --dry-run without --apply before reading the spec", async () => {
-    const result = await run(["layout", join(tempDir, "missing.canvas.md"), "--dry-run"]);
+    const result = await run(["layout", join(tempDir, "missing.json"), "--dry-run"]);
     expect(result.code).toBe(1);
     expect(calls).toHaveLength(0);
     expect(JSON.parse(result.stderr)).toMatchObject({
@@ -371,24 +308,22 @@ describe("layout", () => {
   });
 
   it("reports an unreadable spec as a structured envelope", async () => {
-    const result = await run(["layout", join(tempDir, "missing.canvas.md")]);
+    const result = await run(["layout", join(tempDir, "missing.json")]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, error: { code: "invalid_input", details: { path: "spec" } } });
   });
 
   it.each([
-    ["a missing frontmatter fence", "canvas: Flow\nmembers:\n  - A\n", "frontmatter"],
-    ["an unknown frontmatter key", "---\ncanvas: Flow\nmembers:\n  - A\nlayout: manual\n---\n", "frontmatter"],
-    ["a missing canvas name", "---\nmembers:\n  - A\n---\n", "canvas"],
-    ["an empty member list", "---\ncanvas: Flow\nmembers:\n  - A\n  - A\n---\n", "members"],
-    ["an edge endpoint that is not a member", "---\ncanvas: Flow\nmembers:\n  - A\nedges:\n  - from: A\n    to: B\n---\n", "edges.to"],
-    ["a cluster member that is not a canvas member", "---\ncanvas: Flow\nmembers:\n  - A\nclusters:\n  - name: Core\n    members:\n      - B\n---\n", "clusters.members"],
-    ["an unknown direction hint", "---\ncanvas: Flow\ndirection: diagonal\nmembers:\n  - A\n---\n", "direction"],
-    ["a malformed frontmatter line", "---\ncanvas: Flow\nmembers\n---\n", "frontmatter:3"],
-    ["an inline collection", "---\ncanvas: Flow\nmembers: []\n---\n", "frontmatter:3"],
-    ["a key named after an Object prototype member", "---\ncanvas: Flow\nmembers:\n  - A\nconstructor: X\n---\n", "frontmatter"]
+    ["invalid JSON", "{", "spec"],
+    ["an unknown key", { canvas: "Flow", members: ["A"], layout: "manual" }, "layout"],
+    ["a missing canvas name", { members: ["A"] }, "canvas"],
+    ["duplicate members", { canvas: "Flow", members: ["A", "A"] }, "members"],
+    ["an edge endpoint that is not a member", { canvas: "Flow", members: ["A"], edges: [{ from: "A", to: "B" }] }, "edges.to"],
+    ["a cluster member that is not a canvas member", { canvas: "Flow", members: ["A"], clusters: [{ name: "Core", members: ["B"] }] }, "clusters.members"],
+    ["an unknown direction hint", { canvas: "Flow", direction: "diagonal", members: ["A"] }, "direction"],
+    ["an empty member list", { canvas: "Flow", members: [] }, "members"]
   ])("rejects %s as a structured envelope", async (_description, contents, path) => {
-    const result = await run(["layout", writeSpec(contents, "broken.canvas.md")]);
+    const result = await run(["layout", writeSpec(contents, "broken.json")]);
     expect(result.code).toBe(1);
     expect(calls).toHaveLength(0);
     expect(JSON.parse(result.stderr)).toMatchObject({

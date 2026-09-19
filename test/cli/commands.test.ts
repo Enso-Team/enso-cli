@@ -34,8 +34,7 @@ describe("commands", () => {
     [["canvas", "inspect", "Roadmap"], "/v1/canvases/Roadmap/inspect", "GET"],
     [["node", "list", "--canvas", "current"], "/v1/nodes?canvas=current", "GET"],
     [["node", "read", "Auth"], "/v1/nodes/Auth", "GET"],
-    [["node", "write", "Auth", "--content", "hello"], "/v1/nodes/Auth?dryRun=false", "PUT"],
-    [["node", "create", "--title", "Auth"], "/v1/nodes?dryRun=false", "POST"],
+    [["node", "place", "Auth"], "/v1/nodes?dryRun=false", "POST"],
     [["node", "move", "Auth", "--x", "1", "--y", "2"], "/v1/nodes/Auth?dryRun=false", "PUT"],
     [["node", "remove", "Auth"], "/v1/nodes/Auth?dryRun=false", "DELETE"],
     [["node", "neighbors", "Auth", "--depth", "2"], "/v1/nodes/Auth/neighbors?depth=2", "GET"],
@@ -71,10 +70,10 @@ describe("commands", () => {
   });
 
   it("passes dry-run in query and body", async () => {
-    await run(["node", "write", "Auth", "--content", "hello", "--dry-run"]);
+    await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];
     expect(new URL(request.url).searchParams.get("dryRun")).toBe("true");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({ content: "hello", dryRun: true });
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ x: 1, y: 2, dryRun: true });
   });
 
   it("passes from-note in body on link delete", async () => {
@@ -134,30 +133,27 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("creates note nodes explicitly", async () => {
-    await run(["node", "create", "--title", "Auth", "--content", "hello", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      kind: "note",
-      title: "Auth",
-      content: "hello",
-      canvas: "current",
-      dryRun: true
-    });
+  it("places a Vault Note by path and never sends content", async () => {
+    await run(["node", "place", "docs/Auth.md", "--dry-run"]);
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).toMatchObject({ kind: "note", title: "docs/Auth.md", placeExisting: true, canvas: "current", dryRun: true });
+    expect(body).not.toHaveProperty("content");
   });
 
-  it("places nodes with world-space x/y on create", async () => {
-    await run(["node", "create", "--title", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
+  it("places nodes with world-space x/y", async () => {
+    await run(["node", "place", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
       kind: "note",
       title: "Placed",
+      placeExisting: true,
       x: 2700,
       y: 2850,
       dryRun: true
     });
   });
 
-  it("omits x/y when not provided on create", async () => {
-    await run(["node", "create", "--title", "Auto"]);
+  it("omits x/y when not provided on place", async () => {
+    await run(["node", "place", "Auto"]);
     const body = JSON.parse(String(calls[0].init.body));
     expect(body).not.toHaveProperty("x");
     expect(body).not.toHaveProperty("y");
@@ -590,18 +586,11 @@ describe("commands", () => {
     expect(vision).not.toHaveProperty("diagramPrimitives");
   });
 
-  it("reads content from @file", async () => {
-    const note = join(tempDir, "note.md");
-    writeFileSync(note, "# Auth\n", "utf8");
-    await run(["node", "write", "Auth", "--content", `@${note}`]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ content: "# Auth\n" });
-  });
-
-  it("unescapes literal \\n in --content before sending to bridge", async () => {
-    await run(["node", "create", "--title", "Router", "--content", "# Router\\n\\nDispatches events."]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      content: "# Router\n\nDispatches events."
-    });
+  it("reads a bound line from @file", async () => {
+    const line = join(tempDir, "line.md");
+    writeFileSync(line, "Routes to [[Target]]\n", "utf8");
+    await run(["link", "update", "abc", "--bound-line", `@${line}`]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ boundLine: "Routes to [[Target]]\n" });
   });
 
   it("unescapes literal \\n in link --bound-line", async () => {

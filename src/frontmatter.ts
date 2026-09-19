@@ -1,6 +1,4 @@
-// The YAML-subset frontmatter reader behind every authored file in an `enso/` folder:
-// canvas manifests and Note frontmatter alike. It reports the offending line so callers
-// can point at it, and hands back the body with its line offset so nobody re-derives the fence.
+// The YAML-subset frontmatter reader behind authored Vault files.
 
 export class FrontmatterError extends Error {
   readonly line?: number;

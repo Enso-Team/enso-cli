@@ -5,11 +5,9 @@ description: Operate in Enso through its local CLI. Treat "in Enso" as a destina
 
 # Enso
 
-Enso turns durable Notes and their relationships into navigable Canvases. The agent expresses intent, the CLI validates and compiles it, and the Enso app bridge owns Canvas and vault writes.
+Enso turns durable Notes and their relationships into navigable Canvases. Write Note markdown in the Vault folder. The CLI places, links, and lays those Notes out. The bridge does not write Note bodies.
 
 ## Default Canvas Pass
-
-Use one temporary JSON file for a multi-element Canvas build or reshape. The file keeps dry-run and apply on the same inspectable bytes without putting an intent artifact in the repository.
 
 1. Check the intended Enso instance:
 
@@ -28,74 +26,66 @@ Use one temporary JSON file for a multi-element Canvas build or reshape. The fil
 
    Continue when status succeeds for the intended instance.
 
-2. Select one exact Canvas:
+2. Ask the app which folder is the Vault, then write Notes as markdown files there. A Note's identity is its filename stem or vault-relative path (`docs/API.md`). Do not send Note `content` through the CLI. Do not write `Canvases/*.json` or sidecar state.
+
+   ```sh
+   enso vault current --pretty
+   ```
+
+3. Select one exact Canvas:
 
    ```sh
    enso canvas list --pretty
    enso context --canvas "<Canvas Name>" --pretty
    ```
 
-   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it. Copy exact selectors or UUIDs for existing objects; preflight rejects missing or ambiguous identities.
+   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it.
 
-3. For placement work among existing elements, open the target and inspect vision once:
+4. For a first build, write one temporary graph JSON (not a Vault file). Members and edge endpoints are existing Note titles or vault-relative paths. Layout owns coordinates.
+
+   ```sh
+   enso layout --schema
+   # Write /tmp/enso-<task>-graph.json with a filesystem editing tool.
+   enso layout /tmp/enso-<task>-graph.json --apply --dry-run
+   enso layout /tmp/enso-<task>-graph.json --apply
+   ```
+
+   Continue from dry-run only when the command succeeds, `preflightPassed` is true, and each validation deferral is understood. On apply success, require `verification.status: "verified"`.
+
+5. For placement work among existing elements, open the target and inspect vision once, then use a surgical command (`enso node place`, `enso node move`, `enso link create`) instead of inventing a full graph.
 
    ```sh
    enso canvas open "<Canvas Name>"
    enso context --canvas current --vision --pretty
    ```
 
-   Read the screenshot, viewport, and diagnostics; element world geometry is in the same response's `nodes`, `links`, and `diagramPrimitives` sections. Vision describes the open Canvas. A first build on an empty Canvas needs no vision pass; choose fresh world coordinates directly. Read [references/diagram-design.md](references/diagram-design.md) before choosing or repairing geometry.
+   Read the screenshot, viewport, and diagnostics. Element world geometry is in `nodes`, `links`, and `diagramPrimitives`. Read [references/diagram-design.md](references/diagram-design.md) before choosing or repairing geometry.
 
-4. Load the active contract, then write one descriptive temporary intent file:
-
-   ```sh
-   enso canvas apply --schema
-   # Write /tmp/enso-<task>-intent.json with a filesystem editing tool.
-   ```
-
-   Use explicit modes and final create geometry. For an existing Link endpoint, copy one exact inspected selector. For a Node or Portal created in the same intent, use its declared title. Keep the path outside the repository and reuse it unchanged through apply.
-
-5. Dry-run the file once:
-
-   ```sh
-   enso canvas apply /tmp/enso-<task>-intent.json --dry-run
-   ```
-
-   Continue only when the command succeeds, `preflightPassed` is true, planned phase counts match the intent, shared Note writes are intentional, and each validation deferral is understood. A named-Canvas dry-run completes local preflight while bridge validation remains deferred until apply.
-
-6. Apply the same file once:
-
-   ```sh
-   enso canvas apply /tmp/enso-<task>-intent.json
-   ```
-
-   On success, require `verification.status: "verified"` and inspect `appliedBatches` plus any compact `results`. Targeted verification replaces a redundant whole-Canvas count pass.
-
-7. Recapture vision after apply only when the pass moved or reshaped existing elements, or when the user asks for visual polish. A fresh build whose apply reports `verification.status: "verified"` is complete without a screenshot pass.
+6. Recapture vision after apply only when the pass moved or reshaped existing elements, or when the user asks for visual polish. A fresh layout whose apply reports `verification.status: "verified"` is complete without a screenshot pass.
 
    ```sh
    enso context --canvas current --vision --pretty
    ```
 
-   Use diagnostics to focus screenshot review. Check for Node overlap, clipped content, unreadable Link labels, Links crossing unrelated Nodes, primitive titles that obscure Links or labels, and unclear reading order. Accept warnings and close proximity when the text remains legible and the reading order remains clear. Repair only a materially impaired screenshot, using the smallest typed change, then recapture. The pass is complete when targeted verification succeeds and any inspected screenshot communicates the requested idea clearly.
+   Use diagnostics to focus screenshot review. Check for Node overlap, clipped content, unreadable Link labels, Links crossing unrelated Nodes, primitive titles that obscure Links or labels, and unclear reading order. Accept warnings and close proximity when the text remains legible and the reading order remains clear. Repair only a materially impaired screenshot, using the smallest typed change, then recapture.
 
-8. Delete the temporary intent with the filesystem editing tool after verification or after preserving any failure details needed for recovery. Confirm `/tmp/enso-<task>-intent.json` no longer exists.
+7. Delete the temporary graph JSON after verification or after preserving any failure details needed for recovery. Confirm `/tmp/enso-<task>-graph.json` no longer exists.
 
 ## Failure Recovery
 
-- On a phase failure, preserve `appliedBatches`, `failedBatch`, `returnedIds`, and `retrySections`. Earlier successful phases remain applied. Inspect the target and create a new temporary intent containing only unresolved sections.
-- On `verification_failed`, treat mutation phases as applied and verification as uncertain. Inspect state and construct the smallest corrective intent; do not replay the full payload.
-- On `ambiguous_selector`, choose one exact returned candidate. On `missing_selector`, inspect again and correct the intent instead of inventing a replacement.
+- On a phase failure, preserve `appliedBatches`, `failedBatch`, `returnedIds`, and `retrySections`. Earlier successful phases remain applied. Inspect the target and send only unresolved work.
+- On `verification_failed`, treat mutation phases as applied and verification as uncertain. Inspect state and construct the smallest corrective layout or typed command; do not replay the full payload.
+- On `ambiguous_selector` or `note_ambiguous`, choose one exact returned candidate, usually a vault-relative path. On `missing_selector` or `note_not_found`, inspect again and correct the graph instead of inventing a replacement.
 
 ## Small Edits
 
-For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`, `enso primitive`, or `enso canvas` command. Run it with `--dry-run`, inspect success, then run the same command without `--dry-run`.
+For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`, `enso primitive`, or `enso canvas` command. Run it with `--dry-run`, inspect success, then run the same command without `--dry-run`. `enso node place <path>` places a Note that already exists. There is no `node write` and no Note `content` on apply.
 
 ## Guardrails
 
-- Mutate through the Enso bridge. Vault files, including `Canvases/*.json`, remain app-owned.
+- Write Note markdown in the Vault folder. Arrange through the CLI. Canvas JSON lives in the app sidecar, not the folder.
 - Work on one Canvas per pass.
-- Treat Note content updates as shared vault writes, not Canvas-local decoration.
+- Treat Note content updates as file writes, not Canvas-local decoration.
 - `node remove` and `portal remove` preserve backing content.
 - `link remove` preserves relation prose. `link delete` removes the bound relation line across Canvases.
 - Canvas and DiagramPrimitive destructive typed commands use `delete`.
@@ -105,5 +95,5 @@ For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`
 
 - Use a Note for a durable concept, a Portal for navigation to another Canvas, and a Link for a visible relationship.
 - Use a region for a cluster and an axis-aligned line for a lane divider, separator, or callout.
-- Coordinates are world-space element centers. Anchor new geometry to the vision viewport or inspected neighbors, compute the arrangement before apply, and put final geometry on creates.
+- First builds go through `enso layout`. Agent-picked `x`/`y` is for a single nudge against inspected geometry.
 - Read [references/codebase-maps.md](references/codebase-maps.md) when the Canvas represents a repository or software architecture.
