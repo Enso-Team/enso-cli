@@ -185,7 +185,7 @@ describe("canvas apply", () => {
     expect(missing.code).toBe(1);
     expect(JSON.parse(missing.stderr).error.code).toBe("missing_selector");
 
-    const refused = await run(["canvas", "apply", "--json", intent([{ mode: "update", id: link, source: "B", syncProse: true }]), "--dry-run"]);
+    const refused = await run(["canvas", "apply", "--json", intent([{ mode: "update", id: link, source: "B", target: "C" }]), "--dry-run"]);
     expect(refused.code).toBe(1);
     expect(JSON.parse(refused.stderr).error.code).toBe("invalid_input");
 
@@ -439,6 +439,36 @@ describe("canvas apply", () => {
       { type: "group.create", title: "Persistence", x: 1225, y: 2000, width: 830, height: 300 },
       { type: "line.create", title: "Control Plane", x1: 390, y1: 1820, x2: 1610, y2: 1820 },
       { type: "line.create", title: "Section split", x1: 800, y1: 2300, x2: 1700, y2: 2300, color: "#6B7280" }
+    ]);
+  });
+
+  it("forwards appearance on a new place and on an existing Node", async () => {
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({
+          ok: true,
+          data: {
+            nodes: [{ id: "cache-1", title: "Cache", position: { x: 100, y: 200 } }],
+            links: [],
+            diagramPrimitives: []
+          }
+        });
+      }
+      return Response.json({ ok: true, data: { valid: true } });
+    });
+
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      nodes: [
+        { kind: "note", mode: "place", note: "Origin", appearance: "database", x: 400, y: 200 },
+        { kind: "note", mode: "place", note: "Cache", appearance: "cache", x: 100, y: 200 }
+      ]
+    }), "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data.phases[0].operations).toMatchObject([
+      { type: "node.create", title: "Origin", placeExisting: true, appearance: "database", x: 400, y: 200 },
+      { type: "node.update", selector: "Cache", appearance: "cache" }
     ]);
   });
 

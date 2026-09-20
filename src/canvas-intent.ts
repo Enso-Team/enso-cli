@@ -26,8 +26,14 @@ function pairedCoordinates(value: { x?: number; y?: number }, ctx: z.RefinementC
 
 // A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
 // the Vault, named by its title or its Vault-relative path. The intent carries no content.
-const notePlace = z.object({ kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...coordinates }).strict();
-const noteUpdate = z.object({ kind: z.literal("note"), mode: z.literal("update"), selector, ...coordinates }).strict();
+const nodeAppearances = [
+  "card", "user", "developer", "player", "client", "mobileApp", "service", "api",
+  "database", "server", "queue", "cache", "cloud", "storage", "external",
+  "component", "auth", "loadBalancer", "ux", "decision", "terminal"
+] as const;
+const nodeAppearance = z.enum(nodeAppearances);
+const notePlace = z.object({ kind: z.literal("note"), mode: z.literal("place"), note: safeString, appearance: nodeAppearance.optional(), ...coordinates }).strict();
+const noteUpdate = z.object({ kind: z.literal("note"), mode: z.literal("update"), selector, appearance: nodeAppearance.optional(), ...coordinates }).strict();
 const noteRemove = z.object({ kind: z.literal("note"), mode: z.literal("remove"), selector }).strict();
 const portalCreate = z.object({ kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
 const portalUpdate = z.object({ kind: z.literal("portal"), mode: z.literal("update"), selector, subcanvasRef: safeString.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
@@ -39,7 +45,7 @@ const intentNode = z.union([notePlace, noteUpdate, noteRemove, portalCreate, por
 
 const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional() };
 const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
-const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, boundLine: z.string().optional(), syncProse: z.boolean().optional(), source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
+const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
   try {
     validateLinkEndpointMove(value);
   } catch (error) {
@@ -146,7 +152,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
     if (link.mode === "create" && !matchingExistingLink(link, nodes, links)) {
       linkWrites.push({ type: "link.create", source: link.source, target: link.target, ...defined(linkVisualValues(link)) });
     }
-    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ boundLine: link.boundLine, syncProse: link.syncProse, source: link.source, target: link.target, targetPosition: link.targetPosition }) });
+    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ source: link.source, target: link.target, targetPosition: link.targetPosition }) });
   }
   const primitiveOps = intent.primitives.map((primitive) => primitiveOperation(primitive));
   const phases: CanvasPhase[] = [
@@ -222,12 +228,19 @@ function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: Context
   }
   if (node.mode === "place") {
     const existing = matches(nodes, node.note)[0];
-    if (!existing) return [{ type: "node.create", title: node.note, placeExisting: true, x: node.x, y: node.y }];
-    return moveIfDisplaced(existing, node.note, node.x, node.y);
+    const appearance = node.appearance !== undefined ? { appearance: node.appearance } : {};
+    if (!existing) return [{ type: "node.create", title: node.note, placeExisting: true, x: node.x, y: node.y, ...appearance }];
+    return [
+      ...moveIfDisplaced(existing, node.note, node.x, node.y),
+      ...(node.appearance !== undefined ? [{ type: "node.update", selector: node.note, appearance: node.appearance }] : [])
+    ];
   }
   const operations: Record<string, unknown>[] = [];
   if (node.kind === "portal" && node.subcanvasRef !== undefined) operations.push({ type: "portal.changeSubcanvas", selector: node.selector, subcanvasRef: node.subcanvasRef });
   if (node.x !== undefined && node.y !== undefined) operations.push(...moveIfDisplaced(matches(nodes, node.selector)[0], node.selector, node.x, node.y));
+  if (node.kind === "note" && node.appearance !== undefined) {
+    operations.push({ type: "node.update", selector: node.selector, appearance: node.appearance });
+  }
   return operations;
 }
 
@@ -286,8 +299,8 @@ export const canvasApplyContract = {
     color: VISUAL_COLOR_GRAMMAR,
     nodes: {
       note: {
-        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault" },
-        update: { identity: "selector", required: ["kind", "mode", "selector", "x", "y"] },
+        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], optional: ["appearance"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", appearance: nodeAppearances },
+        update: { identity: "selector", required: ["kind", "mode", "selector", "x", "y"], optional: ["appearance"], appearance: nodeAppearances },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
       portal: {
@@ -299,7 +312,7 @@ export const canvasApplyContract = {
     links: {
       direction: ["directed", "undirected", "bidirectional"],
       create: { identity: "unordered source/target pair", required: ["mode", "source", "target"], optional: ["label", "color", "direction"] },
-      update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction", "boundLine", "syncProse"] },
+      update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction"] },
       remove: { identity: "app Link UUID", required: ["mode", "id"], preservesRelationProse: true }
     },
     primitives: {

@@ -42,14 +42,14 @@ Setup:
 Default workflow:
 1. enso status --pretty
 2. enso vault current --pretty
-3. Write markdown in the folder it prints (`path`)
+3. Write markdown in the folder it prints (`path`) that explains each part
 4. enso check "<path>" --pretty
-5. enso layout /tmp/graph.json --apply --dry-run
-6. enso layout /tmp/graph.json --apply
+5. enso canvas apply /tmp/intent.json --dry-run
+6. enso canvas apply /tmp/intent.json
 
 Rules:
-- Write markdown in that folder. Open the file to read it.
-- Use enso layout for a first build so you do not invent coordinates.
+- Write markdown in that folder. Open the file to read it. The file explains the node.
+- Read skills/enso/references/diagram-design.md, pick world x/y, and give each Node an appearance that matches it.
 - Use --dry-run before mutations and read its bridge-validation limits.
 - Read skills/enso/SKILL.md for the full workflow.
 ```
@@ -194,15 +194,14 @@ Place a Note that already exists in the Vault. Write the markdown file first. Th
 | Concept             | Meaning                                     |
 | ------------------- | ------------------------------------------- |
 | Canvas label        | Short predicate on the link curve           |
-| Bound relation line | Source note markdown line owned by the link |
-| Wikilink            | `[[Target]]` inside the bound line          |
+| Mention             | A sentence in the source Note holding a wikilink to the target |
+| Wikilink            | `[[Target]]` in a Note. Links derive from it |
 
 
 ```sh
 enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-run
 enso link update "<id>" --label syncs --dry-run
-enso link update "<id>" --bound-line "Streams events to [[Target]]"
-enso link update "<id>" --sync-prose
+enso link update "<id>" --clear-label
 enso link update "<id>" --source "Cache" --dry-run
 enso link update "<id>" --target "Database"
 enso link update "<id>" --delink --target-position 320,-180
@@ -210,9 +209,9 @@ enso link remove "<id>" --dry-run
 enso link delete "<id>" --dry-run
 ```
 
-`link remove` removes the Canvas-local Link and preserves relation prose. `link delete` removes the bound relation line from the source Note across canvases. `--label` changes the canvas label only; `--bound-line` rewrites Note prose; `--sync-prose` copies the label into the bound line.
+A Link between two placed Notes stands on a mention: the source Note holds `[[Target]]`. `link create` returns `wikilink_required` when it does not, and a mention alone draws nothing. `link remove` takes the Link off this canvas and keeps the prose. `link delete` deletes the first mentioning sentence from the source Note, on every canvas. `--label` sets the override shown on the curve, and `--clear-label` shows the sentence from the Note again. Neither edits the Note.
 
-One update moves one endpoint. `--source` re-sources the tail and moves the bound relation line to the new source Note, appended at its end. `--target` re-targets the head and rewrites the `[[wikilink]]` token in the bound line. `--delink` detaches the head into open space: the Link goes dangling and unbound, the wikilink token is removed, and the prose stays. `--target-position x,y` picks where the dangling head points in World space and applies only with `--delink`. Endpoints resolve like every other selector, with the same `not_found` and `ambiguous_selector` errors. A move that would make a Link start and end at the same Node fails with `invalid_link_endpoint`. An endpoint move never travels with `--bound-line` or `--sync-prose`, since the line would validate against the stale target, and the CLI refuses those combinations before sending. The returned link carries `targetPosition` after a delink, so the change is observable.
+One update moves one endpoint. `--source` re-sources the tail: the old sentence stays, and the new source gets a sentence when it does not mention the target. `--target` re-targets the head and rewrites the token in the first mention. `--delink` detaches the head into open space: the Link goes dangling, the token leaves the first mention, and the prose stays. Re-targeting that head writes the token back into the sentence it left when the line still exists. `--target-position x,y` picks where the dangling head points in World space and applies only with `--delink`. Endpoints resolve like every other selector, with the same `not_found` and `ambiguous_selector` errors. A move that would make a Link start and end at the same Node fails with `invalid_link_endpoint`. The returned link carries `targetPosition` after a delink, so the change is observable.
 
 ### DiagramPrimitives
 
