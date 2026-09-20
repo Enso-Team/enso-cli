@@ -1,7 +1,8 @@
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
-import { centerPatchOnCanvas, existingContent, isPureCreation } from "../layout-centering.js";
+import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
@@ -38,6 +39,35 @@ export function registerCanvas(program: Command): void {
     .action(async (selector: string) =>
       new BridgeClient().request(`/v1/canvases/${encodeURIComponent(selector)}/inspect`)
     );
+  canvas
+    .command("outline")
+    .description("Print the markdown outline Enso keeps for a Canvas under Canvases/ in the Vault")
+    .argument("<selector>", "Canvas name, id, or ref")
+    .action(async (selector: string): Promise<EnsoEnvelope> => {
+      const client = new BridgeClient();
+      const canvases = await client.request("/v1/canvases");
+      if (!canvases.ok) return canvases;
+      const listed = readArray<{ id?: string; name?: string; ref?: string }>(canvases.data, "canvases");
+      const found = listed.filter((item) => [item.id, item.name, item.ref].includes(selector));
+      if (found.length !== 1) {
+        throw new EnsoCliError(found.length === 0 ? "missing_selector" : "ambiguous_selector",
+          found.length === 0 ? `No Canvas matches '${selector}'` : `Multiple Canvases match '${selector}'`,
+          { path: "canvas", expected: "one Canvas name, id, or ref", hint: "Run `enso canvas list` and copy one exactly" });
+      }
+      const vault = await client.request("/v1/vault/current");
+      if (!vault.ok) return vault;
+      const root = (vault.data as { path?: string } | undefined)?.path;
+      const ref = found[0].ref ?? `${found[0].name}.json`;
+      if (!root) throw new EnsoCliError("vault_unavailable", "The app reported no Vault path", { path: "vault", expected: "a Vault folder", hint: "Open a Vault in Enso" });
+      const file = join(root, "Canvases", ref.replace(/\.json$/i, "") + ".md");
+      let markdown: string;
+      try {
+        markdown = readFileSync(file, "utf8");
+      } catch {
+        throw new EnsoCliError("outline_missing", `No outline at ${file}`, { path: "outline", expected: "the outline Enso writes on Canvas save", hint: "Open the Canvas in Enso once so it writes its outline" });
+      }
+      return { ok: true, data: { canvas: found[0].name ?? selector, file, markdown } };
+    });
   canvas
     .command("delete")
     .argument("<selector>")
@@ -91,12 +121,10 @@ export function registerCanvas(program: Command): void {
       if (!context.ok) return context;
       // A pure-creation intent on an empty Canvas lands on the app's empty-Canvas home
       // point, where the first load focuses, instead of wherever the author's coordinates
-      // happen to sit. Existing content or any update/reuse means the author placed
+      // happen to sit. Existing content or any update means the author placed
       // against inspected geometry, so the coordinates pass through untouched.
-      const patch = isPureCreation(intent) && existingContent(context.data) === undefined
-        ? centerPatchOnCanvas(intent, context.data)
-        : intent;
-      return applyCanvasIntent(patch, Boolean(options.dryRun), context);
+      const { patch, placement } = placeIntentOnCanvas(intent, context.data);
+      return applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
     });
 }
 
@@ -107,22 +135,43 @@ export function requestCanvasContext(client: BridgeClient, canvas: string): Prom
     : client.request(`/v1/canvases/${encodeURIComponent(canvas)}/inspect`);
 }
 
+type PlacementReport = {
+  recentered: boolean;
+  dx: number;
+  dy: number;
+  home?: typeof CANVAS_WORLD_HOME;
+};
+
+function placeIntentOnCanvas(intent: CanvasIntent, context: unknown): { patch: CanvasIntent; placement: PlacementReport } {
+  if (!(isPureCreation(intent) && existingContent(context) === undefined)) {
+    return { patch: intent, placement: { recentered: false, dx: 0, dy: 0 } };
+  }
+  const offset = centeringOffset(patchBounds(intent), undefined);
+  const recentered = offset.dx !== 0 || offset.dy !== 0;
+  return {
+    patch: translatePatch(intent, offset),
+    placement: recentered
+      ? { recentered: true, dx: offset.dx, dy: offset.dy, home: CANVAS_WORLD_HOME }
+      : { recentered: false, dx: 0, dy: 0 }
+  };
+}
+
 /**
  * Run a validated canvas intent through the dependency-aware apply pipeline. A caller that
  * already read the target Canvas passes that context in so the preflight reads it once.
  */
-export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, preflightContext?: EnsoEnvelope): Promise<EnsoEnvelope> {
+export async function applyCanvasIntent(
+  intent: CanvasIntent,
+  dryRun: boolean,
+  preflightContext?: EnsoEnvelope,
+  placement: PlacementReport = { recentered: false, dx: 0, dy: 0 }
+): Promise<EnsoEnvelope> {
   const client = new BridgeClient();
   const inspect = () => requestCanvasContext(client, intent.canvas);
   const context = preflightContext ?? await inspect();
   if (!context.ok) return context;
   const availableNotes: string[] = [];
-  const vaultQueries = new Set(intent.nodes.flatMap((node) => {
-    if (node.kind !== "note") return [];
-    if (node.mode === "reuse") return [node.selector];
-    if (node.mode === "create") return [node.title];
-    return [];
-  }));
+  const vaultQueries = new Set(intent.nodes.flatMap((node) => node.kind === "note" && node.mode === "place" ? [node.note] : []));
   // Vault lookups are independent, so they run together; results accumulate in query
   // order to keep availableNotes deterministic, and the first failure in that order wins.
   const searches = await Promise.all([...vaultQueries].map((query) => client.request("/v1/search", { query: { q: query } })));
@@ -146,14 +195,13 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, p
       data: {
         dryRun: true,
         preflightPassed: true,
+        placement,
         validation: {
           local: "complete",
           bridgeValidated: bridgePhase ? [bridgePhase.name] : [],
           deferredUntilApply: compiled.phases.slice(bridgePhase ? 1 : 0).map((phase) => phase.name)
         },
         planned: Object.fromEntries(compiled.phases.map((phase) => [phase.name, phase.operations.length])),
-        sharedNoteWrites: intent.nodes.flatMap((node) =>
-          node.kind === "note" && node.mode === "update" && node.content !== undefined ? [node.selector] : []),
         phases: compiled.phases.map((phase) => ({ name: phase.name, operations: phase.operations }))
       }
     };
@@ -163,8 +211,10 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, p
     return {
       ok: true,
       data: {
+        applied: true,
         appliedBatches: [],
         results: [],
+        placement,
         verification: { status: "verified", target: intent.canvas, requested: compiled.verification, source: "preflight" }
       }
     };
@@ -220,8 +270,10 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, p
   return {
     ok: true,
     data: {
+      applied: true,
       appliedBatches,
       results,
+      placement,
       verification: { status: "verified", target: intent.canvas, requested: compiled.verification }
     }
   };
@@ -264,4 +316,10 @@ function noteNames(data: unknown): string[] {
     }
   }
   return names;
+}
+
+function readArray<T>(value: unknown, key: string): T[] {
+  if (!value || typeof value !== "object") return [];
+  const items = (value as Record<string, unknown>)[key];
+  return Array.isArray(items) ? items as T[] : [];
 }

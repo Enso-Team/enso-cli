@@ -5,8 +5,8 @@ import type { EnsoEnvelope } from "../errors.js";
 export function registerCheck(program: Command): void {
   program
     .command("check")
-    .argument("[folder]", "authoring root to lint", "enso")
-    .description("Lint an enso/ folder: frontmatter, UUIDs, wikilinks, and canvas manifests")
+    .argument("[folder]", "the Vault folder to lint", ".")
+    .description("Lint a Vault folder: frontmatter, duplicate titles, and wikilinks")
     .action((folder: string): EnsoEnvelope => toEnvelope(checkEnsoFolder(folder)));
 }
 

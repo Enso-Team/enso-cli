@@ -1,6 +1,5 @@
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient } from "../client.js";
-import { readContentValue } from "../content.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -19,63 +18,22 @@ export function registerNode(program: Command): void {
       new BridgeClient().request("/v1/nodes", { query: { canvas: options.canvas } })
     );
   node
-    .command("read")
-    .argument("<selector>")
-    .action(async (selector: string) => new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`));
-  node
-    .command("write")
-    .argument("<selector>")
-    .requiredOption("--content <string|@file>")
-    .option("--dry-run", "validate without mutating")
-    .action(async (selector: string, options: { content: string; dryRun?: boolean }) =>
-      new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {
-        method: "PUT",
-        body: { content: readContentValue(options.content), dryRun: Boolean(options.dryRun) },
-        dryRun: Boolean(options.dryRun)
-      })
-    );
-  node
-    .command("create")
-    .requiredOption("--title <title>")
-    .option("--content <string|@file>")
+    .command("place")
+    .description("Place a Note that exists in the Vault on a Canvas. Write the markdown file first.")
+    .argument("<note>", "the Note's title or Vault-relative path, e.g. docs/Service.md")
     .option("--canvas <selector|current>", "target canvas", "current")
     .option("--x <number>", "world-space center x (omit to auto-place at viewport center)")
     .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
     .option("--dry-run", "validate without mutating")
-    .action(async (options: { title: string; content?: string; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
+    .action(async (note: string, options: { canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
       const x = parseCoord(options.x, "x");
       const y = parseCoord(options.y, "y");
       return new BridgeClient().request("/v1/nodes", {
         method: "POST",
         body: {
           kind: "note",
-          title: options.title,
-          content: options.content ? readContentValue(options.content) : "",
+          title: note,
           canvas: options.canvas ?? "current",
-          ...(x !== undefined ? { x } : {}),
-          ...(y !== undefined ? { y } : {}),
-          dryRun: Boolean(options.dryRun)
-        },
-        dryRun: Boolean(options.dryRun)
-      });
-    });
-  node
-    .command("add")
-    .description("Place an existing Note on the current canvas (references it; writes no new file)")
-    .requiredOption("--title <title>", "name of the existing Note to place")
-    .option("--canvas <selector|current>", "target canvas", "current")
-    .option("--x <number>", "world-space center x (omit to auto-place at viewport center)")
-    .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
-    .option("--dry-run", "validate without mutating")
-    .action(async (options: { title: string; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
-      const x = parseCoord(options.x, "x");
-      const y = parseCoord(options.y, "y");
-      return new BridgeClient().request("/v1/nodes", {
-        method: "POST",
-        body: {
-          kind: "note",
-          title: options.title,
-          canvas: options.canvas,
           placeExisting: true,
           ...(x !== undefined ? { x } : {}),
           ...(y !== undefined ? { y } : {}),
@@ -86,9 +44,10 @@ export function registerNode(program: Command): void {
     });
   node
     .command("move")
+    .description("Move a Node on the current Canvas. There is no --canvas flag: the Canvas the app has open is the one edited.")
     .argument("<selector>")
-    .requiredOption("--x <number>")
-    .requiredOption("--y <number>")
+    .requiredOption("--x <number>", "world-space center x")
+    .requiredOption("--y <number>", "world-space center y")
     .option("--dry-run", "validate without mutating")
     .action(async (selector: string, options: { x: string; y: string; dryRun?: boolean }) =>
       new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {

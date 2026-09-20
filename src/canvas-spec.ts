@@ -1,11 +1,9 @@
 import { z } from "zod";
-import { safeTitle } from "./canvas-intent.js";
 import { EnsoCliError } from "./errors.js";
-import { FrontmatterError, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
 import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
 
-// A canvas spec is one markdown manifest per canvas: frontmatter declares the graph,
-// the body is the canvas's own descriptive prose and is never compiled.
+// A canvas spec is a graph JSON: members, edges, clusters, direction. Layout compiles
+// it into a place-only apply patch. Titles are vault files, never mermaid ids.
 
 const nonEmpty = z.string().min(1);
 
@@ -14,9 +12,10 @@ const directionHintSchema = z.preprocess(
   z.enum(["TB", "LR"])
 );
 
+// A member names a Note that already exists in the Vault, by title or Vault-relative path.
 const memberSchema = z.union([
-  safeTitle.transform((title) => ({ title, mode: "create" as const })),
-  z.object({ title: safeTitle, mode: z.enum(["create", "reuse"]).default("create") }).strict()
+  nonEmpty.transform((title) => ({ title })),
+  z.object({ title: nonEmpty }).strict()
 ]);
 
 const edgeSchema = z.object({
@@ -59,36 +58,29 @@ export type SpecIssueCode =
 export type SpecIssue = { code: SpecIssueCode; message: string; path: string };
 
 export function parseCanvasSpec(source: string): CanvasSpec {
-  const spec = canvasSpecFromFrontmatter(readSpecFrontmatter(source).value);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(source);
+  } catch (error) {
+    throw specError(
+      error instanceof Error ? `Graph JSON is not valid JSON: ${error.message}` : "Graph JSON is not valid JSON",
+      "spec"
+    );
+  }
+  const spec = canvasSpecFromObject(decoded);
   const issue = canvasSpecIssues(spec)[0];
   if (issue) throw specError(issue.message, issue.path);
   return spec;
 }
 
-/** The shared frontmatter reader in canvas spec dressing. */
-export function readSpecFrontmatter(source: string): ParsedFrontmatter {
-  try {
-    return parseFrontmatter(source);
-  } catch (error) {
-    if (!(error instanceof FrontmatterError)) throw error;
-    throw frontmatterError(error);
-  }
-}
-
-export function frontmatterError(error: FrontmatterError): EnsoCliError {
-  if (error.line === undefined) return specError(error.message, "frontmatter");
-  const dressed = specError(`${error.message} (line ${error.line})`, `frontmatter:${error.line}`);
-  dressed.body.details = { ...dressed.body.details, line: error.line };
-  return dressed;
-}
-
-export function canvasSpecFromFrontmatter(frontmatter: unknown): CanvasSpec {
-  const parsed = canvasSpecSchema.safeParse(frontmatter);
+export function canvasSpecFromObject(value: unknown): CanvasSpec {
+  const parsed = canvasSpecSchema.safeParse(value);
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
-  const path = issue?.path.join(".") || "frontmatter";
+  const path =
+    issue?.code === "unrecognized_keys" ? issue.keys[0] ?? "spec" : issue?.path.join(".") || "spec";
   throw specError(
-    issue?.message ?? "Canvas spec frontmatter is invalid",
+    issue?.message ?? "Canvas graph JSON is invalid",
     path,
     path.endsWith("color") ? VISUAL_COLOR_GRAMMAR : undefined
   );
@@ -156,44 +148,30 @@ export function canvasSpecIssues(spec: CanvasSpec): SpecIssue[] {
 export function specError(message: string, path: string, expected?: string): EnsoCliError {
   return new EnsoCliError("invalid_input", message, {
     path,
-    expected: expected ?? "a canvas spec with canvas, members, and optional edges, clusters, and direction",
+    expected: expected ?? "a graph JSON with canvas, members, and optional edges, clusters, and direction",
     hint: "Run `enso layout --schema` for the machine-readable canvas spec contract"
   });
 }
 
 export const canvasSpecContract = {
-  file: "one markdown manifest per canvas, YAML-subset frontmatter plus descriptive prose body",
-  frontmatter: {
+  file: "command-input graph JSON, not a Vault file",
+  graph: {
     canvas: "target Canvas name, or current",
     direction: { values: ["TB", "LR"], aliases: { "top-bottom": "TB", "left-right": "LR" }, default: "TB" },
-    members: "sequence of Note titles, or { title, mode: create | reuse } mappings",
+    members: "sequence of Notes that already exist in the Vault, each a title or Vault-relative path, or a { title } mapping",
     edges: "sequence of { from, to } with optional label, direction, color",
     clusters: "sequence of { name, members } with optional semantic color"
   },
   color: VISUAL_COLOR_GRAMMAR,
-  body: "descriptive prose, never compiled",
-  output: "a canvas apply patch; see `enso canvas apply --schema`",
+  output: "a canvas apply patch of place/link/region operations; see `enso canvas apply --schema`",
   determinism: "identical spec input yields byte-identical geometry",
-  example: [
-    "---",
-    "canvas: Request Flow",
-    "direction: LR",
-    "members:",
-    "  - Gateway",
-    "  - Router",
-    "edges:",
-    "  - from: Gateway",
-    "    to: Router",
-    "    label: routes",
-    "clusters:",
-    "  - name: Edge",
-    "    color: \"#6B7280\"",
-    "    members:",
-    "      - Gateway",
-    "---",
-    "",
-    "How a request reaches the router."
-  ].join("\n")
+  example: {
+    canvas: "Request Flow",
+    direction: "LR",
+    members: ["Gateway", "Router"],
+    edges: [{ from: "Gateway", to: "Router", label: "routes" }],
+    clusters: [{ name: "Edge", color: "#6B7280", members: ["Gateway"] }]
+  }
 } as const;
 
 export function compareStrings(a: string, b: string): number {

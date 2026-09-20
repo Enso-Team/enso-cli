@@ -15,6 +15,8 @@ describe("commands", () => {
       expect(command.commands.map((candidate) => candidate.name())).toContain("remove");
       expect(command.commands.map((candidate) => candidate.name())).not.toContain("delete");
     }
+    const node = program.commands.find((candidate) => candidate.name() === "node")!;
+    expect(node.commands.map((candidate) => candidate.name())).not.toContain("read");
     const link = program.commands.find((candidate) => candidate.name() === "link")!;
     expect(link.commands.map((candidate) => candidate.name())).toEqual(expect.arrayContaining(["remove", "delete"]));
     const primitive = program.commands.find((candidate) => candidate.name() === "primitive")!;
@@ -33,9 +35,7 @@ describe("commands", () => {
     [["canvas", "open", "Roadmap"], "/v1/canvases/Roadmap/open?dryRun=false", "POST"],
     [["canvas", "inspect", "Roadmap"], "/v1/canvases/Roadmap/inspect", "GET"],
     [["node", "list", "--canvas", "current"], "/v1/nodes?canvas=current", "GET"],
-    [["node", "read", "Auth"], "/v1/nodes/Auth", "GET"],
-    [["node", "write", "Auth", "--content", "hello"], "/v1/nodes/Auth?dryRun=false", "PUT"],
-    [["node", "create", "--title", "Auth"], "/v1/nodes?dryRun=false", "POST"],
+    [["node", "place", "Auth"], "/v1/nodes?dryRun=false", "POST"],
     [["node", "move", "Auth", "--x", "1", "--y", "2"], "/v1/nodes/Auth?dryRun=false", "PUT"],
     [["node", "remove", "Auth"], "/v1/nodes/Auth?dryRun=false", "DELETE"],
     [["node", "neighbors", "Auth", "--depth", "2"], "/v1/nodes/Auth/neighbors?depth=2", "GET"],
@@ -71,10 +71,10 @@ describe("commands", () => {
   });
 
   it("passes dry-run in query and body", async () => {
-    await run(["node", "write", "Auth", "--content", "hello", "--dry-run"]);
+    await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];
     expect(new URL(request.url).searchParams.get("dryRun")).toBe("true");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({ content: "hello", dryRun: true });
+    expect(JSON.parse(String(request.init.body))).toMatchObject({ x: 1, y: 2, dryRun: true });
   });
 
   it("passes from-note in body on link delete", async () => {
@@ -134,30 +134,27 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("creates note nodes explicitly", async () => {
-    await run(["node", "create", "--title", "Auth", "--content", "hello", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      kind: "note",
-      title: "Auth",
-      content: "hello",
-      canvas: "current",
-      dryRun: true
-    });
+  it("places a Vault Note by path and never sends content", async () => {
+    await run(["node", "place", "docs/Auth.md", "--dry-run"]);
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).toMatchObject({ kind: "note", title: "docs/Auth.md", placeExisting: true, canvas: "current", dryRun: true });
+    expect(body).not.toHaveProperty("content");
   });
 
-  it("places nodes with world-space x/y on create", async () => {
-    await run(["node", "create", "--title", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
+  it("places nodes with world-space x/y", async () => {
+    await run(["node", "place", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
       kind: "note",
       title: "Placed",
+      placeExisting: true,
       x: 2700,
       y: 2850,
       dryRun: true
     });
   });
 
-  it("omits x/y when not provided on create", async () => {
-    await run(["node", "create", "--title", "Auto"]);
+  it("omits x/y when not provided on place", async () => {
+    await run(["node", "place", "Auto"]);
     const body = JSON.parse(String(calls[0].init.body));
     expect(body).not.toHaveProperty("x");
     expect(body).not.toHaveProperty("y");
@@ -217,32 +214,15 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("sends label-only link update without syncProse", async () => {
+  it("sends a label-only link update", async () => {
     await run(["link", "update", "abc", "--label", "queries"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
       label: "queries",
       dryRun: false
     });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("syncProse");
   });
 
-  it("sends syncProse on link update", async () => {
-    await run(["link", "update", "abc", "--sync-prose"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      syncProse: true,
-      dryRun: false
-    });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("label");
-  });
 
-  it("sends label and syncProse together on link update", async () => {
-    await run(["link", "update", "abc", "--label", "queries", "--sync-prose"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      label: "queries",
-      syncProse: true,
-      dryRun: false
-    });
-  });
 
   it("sends null label when clearing canvas label", async () => {
     await run(["link", "update", "abc", "--clear-label"]);
@@ -252,40 +232,8 @@ describe("commands", () => {
     });
   });
 
-  it("sends boundLine on link update without changing label semantics", async () => {
-    await run([
-      "link",
-      "update",
-      "abc",
-      "--bound-line",
-      "Streams events to [[Event Bus]] before persistence"
-    ]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      boundLine: "Streams events to [[Event Bus]] before persistence",
-      dryRun: false
-    });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("syncProse");
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("label");
-  });
 
-  it("reads bound-line content from @file", async () => {
-    const line = join(tempDir, "relation.md");
-    writeFileSync(line, "Before [[Target]] after\n", "utf8");
-    await run(["link", "update", "abc", "--bound-line", `@${line}`]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      boundLine: "Before [[Target]] after\n"
-    });
-  });
 
-  it("rejects bound-line without a wikilink", async () => {
-    const result = await run(["link", "update", "abc", "--bound-line", "no wikilink here"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "invalid_input" }
-    });
-    expect(calls).toHaveLength(0);
-  });
 
   it("re-sources a link with --source", async () => {
     await run(["link", "update", "abc", "--source", "Cache"]);
@@ -321,9 +269,7 @@ describe("commands", () => {
     [["--source", "Cache", "--target", "Database"], "Choose one of --source, --target, or --delink"],
     [["--source", "Cache", "--delink"], "Choose one of --source, --target, or --delink"],
     [["--target-position", "1,2"], "--target-position only applies with --delink"],
-    [["--target", "Database", "--target-position", "1,2"], "--target-position only applies with --delink"],
-    [["--source", "Cache", "--bound-line", "x [[T]]"], "An endpoint move cannot be combined with --bound-line or --sync-prose"],
-    [["--delink", "--sync-prose"], "An endpoint move cannot be combined with --bound-line or --sync-prose"]
+    [["--target", "Database", "--target-position", "1,2"], "--target-position only applies with --delink"]
   ])("refuses the endpoint combination %j locally", async (flags, message) => {
     const result = await run(["link", "update", "abc", ...flags]);
     expect(result.code).toBe(1);
@@ -344,15 +290,6 @@ describe("commands", () => {
     });
   });
 
-  it("rejects --sync-prose and --bound-line together", async () => {
-    const result = await run(["link", "update", "abc", "--sync-prose", "--bound-line", "x [[T]]"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "invalid_input", message: "Cannot use --sync-prose and --bound-line together" }
-    });
-    expect(calls).toHaveLength(0);
-  });
 
   it("rejects --label and --clear-label together", async () => {
     const result = await run(["link", "update", "abc", "--label", "x", "--clear-label"]);
@@ -364,17 +301,8 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("rejects --clear-label and --sync-prose together", async () => {
-    const result = await run(["link", "update", "abc", "--clear-label", "--sync-prose"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "invalid_input", message: "Cannot use --clear-label and --sync-prose together" }
-    });
-    expect(calls).toHaveLength(0);
-  });
 
-  it("passes through link primaryBinding fields from bridge responses", async () => {
+  it("passes through displayLabel and mentions from bridge responses", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -388,11 +316,8 @@ describe("commands", () => {
               targetNodeID: "b",
               label: "queries",
               type: "interfile",
-              isUnbound: false,
-              primaryBinding: {
-                status: "bound",
-                lastKnownRelationText: "queries: [[Target]]"
-              }
+              displayLabel: "queries",
+              mentions: ["Auth reads from [[Target]]."]
             }
           }
         });
@@ -403,11 +328,8 @@ describe("commands", () => {
       ok: true,
       data: {
         link: {
-          isUnbound: false,
-          primaryBinding: {
-            status: "bound",
-            lastKnownRelationText: "queries: [[Target]]"
-          }
+          displayLabel: "queries",
+          mentions: ["Auth reads from [[Target]]."]
         }
       }
     });
@@ -473,14 +395,14 @@ describe("commands", () => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ ok: true, data: {
         nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 } }],
-        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", boundLine: "long prose" }],
+        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], path: [] }],
         diagramPrimitives: []
       } });
     }));
     const result = await run(["context", "--canvas", "current"]);
     const data = JSON.parse(result.stdout).data;
     expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 } });
-    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2" });
+    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."] });
   });
 
   it("requests file-backed viewport vision context", async () => {
@@ -582,34 +504,15 @@ describe("commands", () => {
     expect(vision).toMatchObject({
       ok: true,
       viewport: { scale: 1 },
-      diagnostics: { score: 1 },
-      image: { width: 2660, height: 1996 }
+      diagnostics: { score: 1 }
     });
+    expect(vision).not.toHaveProperty("image");
     expect(vision).not.toHaveProperty("nodes");
     expect(vision).not.toHaveProperty("links");
     expect(vision).not.toHaveProperty("diagramPrimitives");
   });
 
-  it("reads content from @file", async () => {
-    const note = join(tempDir, "note.md");
-    writeFileSync(note, "# Auth\n", "utf8");
-    await run(["node", "write", "Auth", "--content", `@${note}`]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ content: "# Auth\n" });
-  });
 
-  it("unescapes literal \\n in --content before sending to bridge", async () => {
-    await run(["node", "create", "--title", "Router", "--content", "# Router\\n\\nDispatches events."]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      content: "# Router\n\nDispatches events."
-    });
-  });
-
-  it("unescapes literal \\n in link --bound-line", async () => {
-    await run(["link", "update", "abc", "--bound-line", "Routes to [[Target]]\\nnext clause"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      boundLine: "Routes to [[Target]]\nnext clause"
-    });
-  });
 
   it("renders app unavailable as structured JSON", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
@@ -657,7 +560,7 @@ describe("commands", () => {
         })
       )
     );
-    const result = await run(["node", "read", "Auth"]);
+    const result = await run(["node", "move", "Auth", "--x", "1", "--y", "2"]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({
       ok: false,

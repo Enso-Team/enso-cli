@@ -1,15 +1,8 @@
 ---
 name: enso
-description: Operate in Enso through its local CLI. Treat "in Enso" as a destination and perform the work through the Enso app. For explain, show, map, or illustrate requests, create or update an Enso Canvas. Also use when work otherwise needs Enso vault or Canvas access.
+description: Use when someone needs to explain something in a visual way, or when they ask to do something in Enso.
 ---
-
 # Enso
-
-Enso turns durable Notes and their relationships into navigable Canvases. The agent expresses intent, the CLI validates and compiles it, and the Enso app bridge owns Canvas and vault writes.
-
-## Default Canvas Pass
-
-Use one temporary JSON file for a multi-element Canvas build or reshape. The file keeps dry-run and apply on the same inspectable bytes without putting an intent artifact in the repository.
 
 1. Check the intended Enso instance:
 
@@ -17,93 +10,90 @@ Use one temporary JSON file for a multi-element Canvas build or reshape. The fil
    enso status --pretty
    ```
 
-   Continue on `ok: true`. Otherwise route on `error.code`. Never run `enso auth link` from this skill. The CLI links itself inside any command, with no prompt, whenever the app provisions a token file. `enso auth link` is the prompt path for older apps.
+   Continue on `ok: true`. If Enso isn't running, launch it and retry. If Local agent access is off, or the CLI and app are out of date, stop and tell the user, quoting `error.details.hint`.
 
-   - `auth_required`: no pairing exists. Launch the Enso app, then run `enso status` again. It links itself.
-   - `invalid_token`: the stored pairing is stale and the configured app provisions no token file to replace it. Stop. Tell the user to update Enso, quoting `error.details.hint`.
-   - `app_unavailable`: nothing answers at `error.details.bridgeUrl`. Launch that instance, or run `enso auth unlink` and then `enso status` to link to the instance that is running.
-   - `access_disabled`: Local agent access is off in Enso's Settings. Stop and tell the user.
-   - `cli_outdated` or `app_outdated`: stop. Tell the user which side is behind, quoting `error.details.hint`, and wait for them to update it.
-   - `pairing_in_progress`: another `enso auth link` owns the app's dialog. Wait for it, then run `enso status` again.
+2. Ask the app which folder it has open using
 
-   Continue when status succeeds for the intended instance.
+   ```sh
+   enso vault current --pretty
+   ```
 
-2. Select one exact Canvas:
+   then write markdown there. Identity is the filename stem or the path relative to that folder.
+
+   Write at `path`. Cwd is often some other workspace; use that path anyway.
+
+   Each file is the explanation of that part. A reader who opens only that file should learn what it is, what it does, and how it fits. Write in prose. Do not use a Role / Evidence / Flow / Invariants template, and do not leave a title with an empty or outline-only body.
+
+3. Before a first build, lint that folder. `enso check` takes the folder from `vault current`, never a single file, because wikilinks resolve across it. A `[[wikilink]]` inside backticks or a fenced block is text, not a link, so show syntax that way.
+
+   ```sh
+   enso check "<path>" --pretty
+   ```
+
+   Continue when `ok: true`. Place members must already exist as files.
+
+4. Select one Canvas:
 
    ```sh
    enso canvas list --pretty
-   enso context --canvas "<Canvas Name>" --pretty
    ```
 
-   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it. Copy exact selectors or UUIDs for existing objects; preflight rejects missing or ambiguous identities.
+   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it: `enso canvas create "<name>"`.
 
-3. For placement work among existing elements, open the target and inspect vision once:
+5. Read [references/diagram-design.md](references/diagram-design.md) before choosing geometry or appearance. Give each Node an appearance that matches what it is; `card` is only for a reading surface. All `x`/`y` values are world-space centers.
+
+   On an empty Canvas, choose fresh coordinates. On a Canvas that already has elements:
 
    ```sh
-   enso canvas open "<Canvas Name>"
    enso context --canvas current --vision --pretty
    ```
 
-   Read the screenshot, viewport, and diagnostics; element world geometry is in the same response's `nodes`, `links`, and `diagramPrimitives` sections. Vision describes the open Canvas. A first build on an empty Canvas needs no vision pass; choose fresh world coordinates directly. Read [references/diagram-design.md](references/diagram-design.md) before choosing or repairing geometry.
+   Read `data.vision.diagnostics` and the element geometry in `nodes`, `links`, and `diagramPrimitives`. Anchor new placement to neighbors.
 
-4. Load the active contract, then write one descriptive temporary intent file:
+6. First build: write one temporary apply JSON (not in the Enso folder). Nodes are existing files, named by stem or folder-relative path, each with an appearance. The same intent carries the `links` and the `primitives`, so the first apply is the whole picture:
+
+   - **Regions** (`primitives`, `kind: region`) around each cluster that forms one subsystem, layer, or phase. Give each a `title`, a `color`, and a low `fillOpacity` (0.06 to 0.12). Size it from its members' positions plus padding. A Canvas with more than one cluster and no region is unfinished.
+   - **Direction on every Link** (`links[].direction`): `directed` for flow, dependency, ownership, or writes, pointing from the Note that mentions to the Note it mentions. `bidirectional` when each Note mentions the other and the relationship runs both ways. `undirected` only for a symmetric association. A Link with no `direction` draws an arrowhead at the target, which is right for flow and wrong for a symmetric pair, so say which it is.
+   - **Colour on Links** (`links[].color`) by what the Link means: one colour per semantic class (data flow, control, identity, fallback), reused only when Links share meaning. A Link with no `color` takes the ink colour, which is right for the primary path and wrong for everything that should read as secondary.
+   - **Lines** (`kind: line`) only for a lane divider or a callout that a region cannot express.
+
+   Colours come from the schema's list: `#RRGGBB`, or `blue`, `teal`, `green`, `orange`, `purple`, `pink`, `red`, `yellow`, `gray`. Pick a colour per meaning and write it down once before the intent, so regions and the Links inside them agree.
 
    ```sh
    enso canvas apply --schema
    # Write /tmp/enso-<task>-intent.json with a filesystem editing tool.
-   ```
-
-   Use explicit modes and final create geometry. For an existing Link endpoint, copy one exact inspected selector. For a Node or Portal created in the same intent, use its declared title. Keep the path outside the repository and reuse it unchanged through apply.
-
-5. Dry-run the file once:
-
-   ```sh
    enso canvas apply /tmp/enso-<task>-intent.json --dry-run
-   ```
-
-   Continue only when the command succeeds, `preflightPassed` is true, planned phase counts match the intent, shared Note writes are intentional, and each validation deferral is understood. A named-Canvas dry-run completes local preflight while bridge validation remains deferred until apply.
-
-6. Apply the same file once:
-
-   ```sh
    enso canvas apply /tmp/enso-<task>-intent.json
    ```
 
-   On success, require `verification.status: "verified"` and inspect `appliedBatches` plus any compact `results`. Targeted verification replaces a redundant whole-Canvas count pass.
+   Continue from dry-run only when `ok: true`, `preflightPassed` is true, and each validation deferral is understood. Read `data.placement`: when `recentered` is true the CLI moved the cluster onto the empty-Canvas home; use the compiled phase coordinates, not the file's originals. On apply, continue when `ok: true` and `data.applied` is true. Then delete the temp file. Confirm `/tmp/enso-<task>-intent.json` no longer exists.
 
-7. Recapture vision after apply only when the pass moved or reshaped existing elements, or when the user asks for visual polish. A fresh build whose apply reports `verification.status: "verified"` is complete without a screenshot pass.
+7. Overlap lint, one round. After apply:
 
    ```sh
    enso context --canvas current --vision --pretty
    ```
 
-   Use diagnostics to focus screenshot review. Check for Node overlap, clipped content, unreadable Link labels, Links crossing unrelated Nodes, primitive titles that obscure Links or labels, and unclear reading order. Accept warnings and close proximity when the text remains legible and the reading order remains clear. Repair only a materially impaired screenshot, using the smallest typed change, then recapture. The pass is complete when targeted verification succeeds and any inspected screenshot communicates the requested idea clearly.
+   Read `data.vision.diagnostics` only. Ignore `node_offscreen`, `label_offscreen`, `link_crossing`, and `link_label_overlap`: crossings and label brushes do not stop a person reading the Canvas, and the person will nudge what they want nudged. Act on `node_overlap`, `low_node_gap`, and `link_node_intersection` only, and only once: collect every subject, `enso node move` each one off its neighbour in a single pass, then stop. Do not run context again after the moves. A Canvas that still has a crossing after one round is finished.
 
-8. Delete the temporary intent with the filesystem editing tool after verification or after preserving any failure details needed for recovery. Confirm `/tmp/enso-<task>-intent.json` no longer exists.
+   Each issue carries `subjects` (the ids involved), `bounds` in Viewport space matching the rendered image, and `worldBounds` in World space matching `nodes[].position`. Use `worldBounds` and `subjects` to pick the move. `enso node move` acts on the Canvas the app has open, so there is no `--canvas` flag: `canvas apply` on a named Canvas opens it.
 
-## Failure Recovery
+   `enso node place <path>` places a file that already exists. Pass `--x` `--y` from a neighbor. `enso node remove` takes the card off the Canvas; the markdown file stays.
 
-- On a phase failure, preserve `appliedBatches`, `failedBatch`, `returnedIds`, and `retrySections`. Earlier successful phases remain applied. Inspect the target and create a new temporary intent containing only unresolved sections.
-- On `verification_failed`, treat mutation phases as applied and verification as uncertain. Inspect state and construct the smallest corrective intent; do not replay the full payload.
-- On `ambiguous_selector`, choose one exact returned candidate. On `missing_selector`, inspect again and correct the intent instead of inventing a replacement.
+## Failure recovery
 
-## Small Edits
+- Check or apply failed locally: fix the markdown or the intent JSON, then check or apply again.
+- Apply or place failed: inspect, then the smallest typed command or a corrected intent. Dry-run, then apply.
+- `verification_failed`: mutation may have landed. Inspect, then the smallest fix. Do not replay the full intent.
+- `ambiguous_selector` or `note_ambiguous`: pick one exact returned candidate, usually a folder-relative path.
+- `missing_selector` or `note_not_found`: the file is missing or the path is wrong. Write or rename the file, then retry.
 
-For one surgical mutation, use the typed `enso node`, `enso portal`, `enso link`, `enso primitive`, or `enso canvas` command. Run it with `--dry-run`, inspect success, then run the same command without `--dry-run`.
+## Links are wikilinks
 
-## Guardrails
+A Link between two placed files stands on a sentence in the source file that holds `[[Target]]`. Write that sentence, one wikilink per sentence, before the intent names the Link. `canvas apply` returns `wikilink_required` when the sentence is missing. A wikilink alone draws nothing: the intent's `links` decides which relationships are worth a line. A Link's `label` is the short reading on the curve. With no label the curve shows the first mentioning sentence, so give a label when that sentence is long.
 
-- Mutate through the Enso bridge. Vault files, including `Canvases/*.json`, remain app-owned.
-- Work on one Canvas per pass.
-- Treat Note content updates as shared vault writes, not Canvas-local decoration.
-- `node remove` and `portal remove` preserve backing content.
-- `link remove` preserves relation prose. `link delete` removes the bound relation line across Canvases.
-- Canvas and DiagramPrimitive destructive typed commands use `delete`.
-- Portal updates change placement or referenced subcanvas; they do not rename Portal titles.
+`link remove` takes the Link off this Canvas and keeps the prose. `link delete` deletes the mentioning sentence from the file, and the Link leaves every Canvas when it was the last. Canvas and DiagramPrimitive destructive commands use `delete`. Portal updates change placement or referenced subcanvas; they do not rename Portal titles.
 
-## Object and Placement Choices
+Work on one Canvas per pass.
 
-- Use a Note for a durable concept, a Portal for navigation to another Canvas, and a Link for a visible relationship.
-- Use a region for a cluster and an axis-aligned line for a lane divider, separator, or callout.
-- Coordinates are world-space element centers. Anchor new geometry to the vision viewport or inspected neighbors, compute the arrangement before apply, and put final geometry on creates.
-- Read [references/codebase-maps.md](references/codebase-maps.md) when the Canvas represents a repository or software architecture.
+Use a markdown file for a durable concept, a Portal for navigation to another Canvas, and a Link for a visible relationship. Use a region for a cluster and an axis-aligned line for a lane divider, separator, or callout. First builds go through `enso canvas apply`. Agent-picked `x`/`y` is a placement from diagram-design, or a nudge off a neighbor's `position`.

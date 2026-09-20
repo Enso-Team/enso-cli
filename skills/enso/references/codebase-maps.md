@@ -23,14 +23,16 @@ These are prompts, not a taxonomy. A file, function, type, package, process, or 
 
 ## Write Evidence-Rich Notes
 
-Write enough evidence in each Note for a maintainer to evaluate the claim without reopening the entire investigation. Depending on the map, useful material includes:
+Write those files in the folder `enso vault current` prints, then layout. Open the file to read it.
+
+Write enough evidence in each file for a maintainer to evaluate the claim without reopening the entire investigation. Depending on the map, useful material includes:
 
 - **Role:** the responsibility it owns;
 - **Evidence:** concrete repository paths;
 - **Flow:** inputs, outputs, and neighboring boundaries;
 - **Invariants:** behavior that callers or maintainers rely on.
 
-Use headings that fit the repository and omit sections that add no value. This is one possible shape for this repository, not a required template:
+Use headings that fit the repository and omit sections that add no value, an example would be:
 
 ```markdown
 **Role:** Owns CLI command registration and structured result handling.
