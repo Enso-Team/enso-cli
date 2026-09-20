@@ -28,15 +28,6 @@ export function assertVisualColor(value: string): void {
   if (!isVisualColor(value)) throw new Error(`color must be ${VISUAL_COLOR_GRAMMAR}`);
 }
 
-export const primaryBindingStatusSchema = z.enum(["bound", "unbound", "unresolved"]);
-export type PrimaryBindingStatus = z.infer<typeof primaryBindingStatusSchema>;
-
-export const primaryBindingSchema = z.object({
-  status: primaryBindingStatusSchema,
-  lastKnownRelationText: z.string().optional()
-});
-export type PrimaryBinding = z.infer<typeof primaryBindingSchema>;
-
 /** A World-space point, the shape every bridge coordinate object takes. */
 export const worldPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 export type WorldPoint = z.infer<typeof worldPointSchema>;
@@ -47,8 +38,10 @@ export const linkSchema = z.object({
   targetNodeID: z.string(),
   label: z.string().nullable(),
   type: z.string(),
-  isUnbound: z.boolean(),
-  primaryBinding: primaryBindingSchema.nullable().optional(),
+  /** What the curve shows: the label override, else the first mentioning sentence minus its token. */
+  displayLabel: z.string().nullable().optional(),
+  /** Every sentence in the source Note that mentions the target. */
+  mentions: z.array(z.string()).optional(),
   direction: linkDirectionSchema.optional(),
   color: z.string().optional(),
   targetPosition: worldPointSchema.optional()
@@ -67,10 +60,8 @@ export type LinkCreateBody = {
 export type LinkUpdateOptions = {
   label?: string;
   clearLabel?: boolean;
-  boundLine?: string;
   color?: string;
   direction?: LinkDirection;
-  syncProse?: boolean;
   source?: string;
   target?: string;
   delink?: boolean;
@@ -81,8 +72,7 @@ export type LinkUpdateOptions = {
 /**
  * One operation moves one end of a Link. `source` re-sources the tail, `target` re-targets
  * the head, and `target: null` delinks the head into open space, optionally at
- * `targetPosition`. The bridge rewrites the bound relation line for every move, so a move
- * never travels with `boundLine` or `syncProse`, which would validate against the stale target.
+ * `targetPosition`. The bridge edits the first mention for every move (ADR-0008).
  */
 export type LinkEndpointMove = { source: string } | { target: string } | { target: null; targetPosition?: WorldPoint };
 
@@ -93,9 +83,6 @@ export function linkEndpointMove(options: LinkUpdateOptions): LinkEndpointMove |
     throw new Error("--target-position only applies with --delink");
   }
   if (moves === 0) return undefined;
-  if (options.syncProse || options.boundLine !== undefined) {
-    throw new Error("An endpoint move cannot be combined with --bound-line or --sync-prose");
-  }
   if (options.source !== undefined) return { source: options.source };
   if (options.target !== undefined) return { target: options.target };
   return options.targetPosition === undefined ? { target: null } : { target: null, targetPosition: options.targetPosition };
@@ -109,14 +96,6 @@ export function parseWorldPoint(value: string): WorldPoint {
     throw new Error("expected a World-space point as x,y such as 320,-180");
   }
   return { x, y };
-}
-
-const WIKILINK_PATTERN = /\[\[[^\]]+\]\]/;
-
-export function assertBoundLineHasWikilink(boundLine: string): void {
-  if (!WIKILINK_PATTERN.test(boundLine)) {
-    throw new Error("bound line must include a target wikilink like [[Target Title]]");
-  }
 }
 
 export function buildLinkCreateBody(
@@ -142,12 +121,6 @@ export function buildLinkUpdateBody(options: LinkUpdateOptions): Record<string, 
   if (options.clearLabel && options.label !== undefined) {
     throw new Error("Cannot use --label and --clear-label together");
   }
-  if (options.syncProse && options.boundLine !== undefined) {
-    throw new Error("Cannot use --sync-prose and --bound-line together");
-  }
-  if (options.clearLabel && options.syncProse) {
-    throw new Error("Cannot use --clear-label and --sync-prose together");
-  }
 
   const body: Record<string, unknown> = { dryRun: Boolean(options.dryRun) };
   Object.assign(body, linkEndpointMove(options));
@@ -163,11 +136,6 @@ export function buildLinkUpdateBody(options: LinkUpdateOptions): Record<string, 
     body.color = options.color;
   }
   if (options.direction !== undefined) body.direction = options.direction;
-  if (options.syncProse) body.syncProse = true;
-  if (options.boundLine !== undefined) {
-    assertBoundLineHasWikilink(options.boundLine);
-    body.boundLine = options.boundLine;
-  }
 
   return body;
 }
@@ -176,8 +144,6 @@ export const linkUpdateOperationSchema = z.object({
   type: z.literal("link.update"),
   id: z.string(),
   label: z.string().nullable().optional(),
-  boundLine: z.string().optional(),
-  syncProse: z.boolean().optional(),
   color: visualColorSchema.optional(),
   direction: linkDirectionSchema.optional(),
   source: z.string().optional(),
@@ -188,28 +154,15 @@ export const linkUpdateOperationSchema = z.object({
 export type LinkUpdateOperation = z.infer<typeof linkUpdateOperationSchema>;
 
 export function validateLinkUpdateOperation(op: LinkUpdateOperation): void {
-  if (op.syncProse && op.boundLine !== undefined) {
-    throw new Error("link.update cannot set both syncProse and boundLine");
-  }
   validateLinkEndpointMove(op);
-  if (op.label === null && op.syncProse) {
-    throw new Error("link.update cannot set both label: null and syncProse");
-  }
-  if (op.boundLine !== undefined) {
-    assertBoundLineHasWikilink(op.boundLine);
-  }
 }
 
 /** The refusals the bridge applies to an endpoint move, checked before any bytes leave. */
-export function validateLinkEndpointMove(op: { source?: string; target?: string | null; targetPosition?: WorldPoint; boundLine?: string; syncProse?: boolean }): void {
-  const moves = op.source !== undefined || op.target !== undefined;
+export function validateLinkEndpointMove(op: { source?: string; target?: string | null; targetPosition?: WorldPoint }): void {
   if (op.source !== undefined && op.target !== undefined) {
     throw new Error("link.update cannot move source and target in one operation");
   }
   if (op.targetPosition !== undefined && op.target !== null) {
     throw new Error("link.update targetPosition only applies when target is null");
-  }
-  if (moves && (op.boundLine !== undefined || op.syncProse)) {
-    throw new Error("link.update cannot move an endpoint together with boundLine or syncProse");
   }
 }

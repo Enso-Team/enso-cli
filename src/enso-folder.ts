@@ -36,6 +36,10 @@ type NoteFile = Prose & {
 };
 
 export function checkEnsoFolder(root: string): CheckReport {
+  // Wikilinks resolve across the folder, so one file cannot be linted alone.
+  if (statSync(root, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error(`enso check takes the Vault folder, not a file. Run it on the folder that holds ${root}.`);
+  }
   const violations: CheckFinding[] = [];
   const notes: NoteFile[] = [];
 
@@ -166,7 +170,9 @@ function unresolvedWikilinks(files: Array<Prose & { file: string; generated?: bo
         return;
       }
       if (fenced) return;
-      for (const match of text.matchAll(WIKILINK_PATTERN)) {
+      // A code span shows the syntax. `[[Target]]` in backticks is not a wikilink.
+      const prose = text.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
+      for (const match of prose.matchAll(WIKILINK_PATTERN)) {
         const target = wikilinkTarget(match[1]);
         if (target === "" || byTitle.has(target)) continue;
         findings.push({

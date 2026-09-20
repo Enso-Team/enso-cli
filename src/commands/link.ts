@@ -1,6 +1,5 @@
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient } from "../client.js";
-import { readContentValue } from "../content.js";
 import {
   buildLinkCreateBody,
   buildLinkUpdateBody,
@@ -24,11 +23,11 @@ function parseTargetPosition(value: string): WorldPoint {
 }
 
 export function registerLink(program: Command): void {
-  const link = program.command("link").description("Manage Enso canvas links and relation bindings");
+  const link = program.command("link").description("Manage Enso canvas Links, the visual form of wikilinks between placed Notes");
 
   link
     .command("list")
-    .description("List links on a canvas (includes isUnbound and primaryBinding when present)")
+    .description("List Links on a canvas. Each carries displayLabel and the mentioning sentences.")
     .option("--canvas <selector|current>")
     .action(async (options: { canvas?: string }) =>
       new BridgeClient().request("/v1/links", { query: { canvas: options.canvas } })
@@ -36,11 +35,11 @@ export function registerLink(program: Command): void {
   link
     .command("create")
     .description(
-      "Create an interfile link. Always establishes primaryBinding and inserts Related: [[Target]] in the source note. May return duplicate_link if the pair already exists."
+      "Show a Link over a pair the source Note already mentions with [[Target]]. Returns wikilink_required when it does not: write the sentence first. A mention alone draws nothing."
     )
     .argument("<source-node>")
     .argument("<target-node>")
-    .option("--label <label>", "canvas label only (does not rewrite bound note text)")
+    .option("--label <label>", "label override on the curve; empty shows the sentence from the Note")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
     .option("--dry-run", "validate without mutating")
@@ -54,30 +53,22 @@ export function registerLink(program: Command): void {
   link
     .command("update")
     .description(
-      "Update a link. --label is canvas-only. Use --bound-line to replace the owned relation line in the source note (must include [[Target]]). Use --sync-prose only when note text should mirror the canvas label. --source, --target, and --delink move one endpoint and rewrite the bound line themselves."
+      "Update a Link's presentation. --label sets the override and never edits the Note. --source, --target, and --delink move one endpoint and edit the first mention themselves."
     )
     .argument("<link-id>")
-    .option("--source <node>", "move the tail to this Node; the bound relation line moves to the new source Note")
-    .option("--target <node>", "move the head to this Node; the [[wikilink]] in the bound line is rewritten")
-    .option("--delink", "detach the head into open space; the wikilink token is removed and the prose stays")
+    .option("--source <node>", "move the tail to this Node; the old sentence stays and the new source gets one when it needs it")
+    .option("--target <node>", "move the head to this Node; the token in the first mention is rewritten")
+    .option("--delink", "detach the head into open space; the token leaves the first mention and the prose stays")
     .option("--target-position <x,y>", "with --delink, where the dangling head points in World space", parseTargetPosition)
-    .option("--label <label>", "set canvas label only (does not rewrite note markdown)")
-    .option("--clear-label", "clear canvas label (binding and note line unchanged)")
-    .option(
-      "--bound-line <string|@file>",
-      "replace bound relation line in source note; wikilink may appear anywhere in the line"
-    )
-    .option("--sync-prose", "rewrite bound line from canvas label or Related fallback (not custom prose)")
+    .option("--label <label>", "set the label override (never edits the Note)")
+    .option("--clear-label", "clear the override so the curve shows the sentence from the Note")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
     .option("--dry-run", "validate without mutating")
-    .action(async (linkId: string, options: LinkUpdateOptions & { boundLine?: string }) => {
+    .action(async (linkId: string, options: LinkUpdateOptions) => {
       let body: Record<string, unknown>;
       try {
-        body = buildLinkUpdateBody({
-          ...options,
-          boundLine: options.boundLine !== undefined ? readContentValue(options.boundLine) : undefined
-        });
+        body = buildLinkUpdateBody(options);
       } catch (error) {
         throw new InvalidArgumentError(error instanceof Error ? error.message : "Invalid link update options");
       }
@@ -90,7 +81,7 @@ export function registerLink(program: Command): void {
   link
     .command("remove")
     .argument("<link-id>")
-    .description("Remove the Canvas-local Link and preserve relation prose")
+    .description("Remove from Canvas: take the Link off this canvas. The mention and other canvases are untouched.")
     .option("--dry-run", "validate without mutating")
     .action(async (linkId: string, options: { dryRun?: boolean }) =>
       new BridgeClient().request(`/v1/links/${encodeURIComponent(linkId)}`, {
@@ -102,7 +93,7 @@ export function registerLink(program: Command): void {
   link
     .command("delete")
     .argument("<link-id>")
-    .description("Delete the bound relation line from the source Note across canvases")
+    .description("Remove from Note: delete the first mentioning sentence from the source Note. The Link leaves every canvas when it was the last mention.")
     .option("--dry-run", "validate without mutating")
     .action(async (linkId: string, options: { dryRun?: boolean }) =>
       new BridgeClient().request(`/v1/links/${encodeURIComponent(linkId)}`, {

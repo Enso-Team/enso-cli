@@ -61,6 +61,22 @@ describe("check", () => {
     });
   });
 
+  it("refuses a file path and says to run on the folder", async () => {
+    const root = fixture(CLEAN);
+    const result = await run(["check", join(root, "Gateway.md")]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.message).toContain("takes the Vault folder");
+  });
+
+  it("does not read a wikilink shown in a code span as a wikilink", async () => {
+    const root = fixture({
+      ...CLEAN,
+      "Guide.md": note("Guide", "Write `[[Nowhere]]` to link. Fences too:\n```\n[[Nowhere]]\n```\nReal: [[Store]].")
+    });
+    const result = await run(["check", root]);
+    expect(result.code).toBe(0);
+  });
+
   it("reports a folder that cannot be read as a structured envelope", async () => {
     const result = await run(["check", join(tempDir, "absent")]);
     expect(result.code).toBe(1);

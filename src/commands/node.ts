@@ -44,9 +44,10 @@ export function registerNode(program: Command): void {
     });
   node
     .command("move")
+    .description("Move a Node on the current Canvas. There is no --canvas flag: the Canvas the app has open is the one edited.")
     .argument("<selector>")
-    .requiredOption("--x <number>")
-    .requiredOption("--y <number>")
+    .requiredOption("--x <number>", "world-space center x")
+    .requiredOption("--y <number>", "world-space center y")
     .option("--dry-run", "validate without mutating")
     .action(async (selector: string, options: { x: string; y: string; dryRun?: boolean }) =>
       new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {

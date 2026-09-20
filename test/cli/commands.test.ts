@@ -214,32 +214,15 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("sends label-only link update without syncProse", async () => {
+  it("sends a label-only link update", async () => {
     await run(["link", "update", "abc", "--label", "queries"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
       label: "queries",
       dryRun: false
     });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("syncProse");
   });
 
-  it("sends syncProse on link update", async () => {
-    await run(["link", "update", "abc", "--sync-prose"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      syncProse: true,
-      dryRun: false
-    });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("label");
-  });
 
-  it("sends label and syncProse together on link update", async () => {
-    await run(["link", "update", "abc", "--label", "queries", "--sync-prose"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      label: "queries",
-      syncProse: true,
-      dryRun: false
-    });
-  });
 
   it("sends null label when clearing canvas label", async () => {
     await run(["link", "update", "abc", "--clear-label"]);
@@ -249,40 +232,8 @@ describe("commands", () => {
     });
   });
 
-  it("sends boundLine on link update without changing label semantics", async () => {
-    await run([
-      "link",
-      "update",
-      "abc",
-      "--bound-line",
-      "Streams events to [[Event Bus]] before persistence"
-    ]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      boundLine: "Streams events to [[Event Bus]] before persistence",
-      dryRun: false
-    });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("syncProse");
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("label");
-  });
 
-  it("reads bound-line content from @file", async () => {
-    const line = join(tempDir, "relation.md");
-    writeFileSync(line, "Before [[Target]] after\n", "utf8");
-    await run(["link", "update", "abc", "--bound-line", `@${line}`]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      boundLine: "Before [[Target]] after\n"
-    });
-  });
 
-  it("rejects bound-line without a wikilink", async () => {
-    const result = await run(["link", "update", "abc", "--bound-line", "no wikilink here"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "invalid_input" }
-    });
-    expect(calls).toHaveLength(0);
-  });
 
   it("re-sources a link with --source", async () => {
     await run(["link", "update", "abc", "--source", "Cache"]);
@@ -318,9 +269,7 @@ describe("commands", () => {
     [["--source", "Cache", "--target", "Database"], "Choose one of --source, --target, or --delink"],
     [["--source", "Cache", "--delink"], "Choose one of --source, --target, or --delink"],
     [["--target-position", "1,2"], "--target-position only applies with --delink"],
-    [["--target", "Database", "--target-position", "1,2"], "--target-position only applies with --delink"],
-    [["--source", "Cache", "--bound-line", "x [[T]]"], "An endpoint move cannot be combined with --bound-line or --sync-prose"],
-    [["--delink", "--sync-prose"], "An endpoint move cannot be combined with --bound-line or --sync-prose"]
+    [["--target", "Database", "--target-position", "1,2"], "--target-position only applies with --delink"]
   ])("refuses the endpoint combination %j locally", async (flags, message) => {
     const result = await run(["link", "update", "abc", ...flags]);
     expect(result.code).toBe(1);
@@ -341,15 +290,6 @@ describe("commands", () => {
     });
   });
 
-  it("rejects --sync-prose and --bound-line together", async () => {
-    const result = await run(["link", "update", "abc", "--sync-prose", "--bound-line", "x [[T]]"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "invalid_input", message: "Cannot use --sync-prose and --bound-line together" }
-    });
-    expect(calls).toHaveLength(0);
-  });
 
   it("rejects --label and --clear-label together", async () => {
     const result = await run(["link", "update", "abc", "--label", "x", "--clear-label"]);
@@ -361,17 +301,8 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("rejects --clear-label and --sync-prose together", async () => {
-    const result = await run(["link", "update", "abc", "--clear-label", "--sync-prose"]);
-    expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr)).toMatchObject({
-      ok: false,
-      error: { code: "invalid_input", message: "Cannot use --clear-label and --sync-prose together" }
-    });
-    expect(calls).toHaveLength(0);
-  });
 
-  it("passes through link primaryBinding fields from bridge responses", async () => {
+  it("passes through displayLabel and mentions from bridge responses", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -385,11 +316,8 @@ describe("commands", () => {
               targetNodeID: "b",
               label: "queries",
               type: "interfile",
-              isUnbound: false,
-              primaryBinding: {
-                status: "bound",
-                lastKnownRelationText: "queries: [[Target]]"
-              }
+              displayLabel: "queries",
+              mentions: ["Auth reads from [[Target]]."]
             }
           }
         });
@@ -400,11 +328,8 @@ describe("commands", () => {
       ok: true,
       data: {
         link: {
-          isUnbound: false,
-          primaryBinding: {
-            status: "bound",
-            lastKnownRelationText: "queries: [[Target]]"
-          }
+          displayLabel: "queries",
+          mentions: ["Auth reads from [[Target]]."]
         }
       }
     });
@@ -470,14 +395,14 @@ describe("commands", () => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ ok: true, data: {
         nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 } }],
-        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", boundLine: "long prose" }],
+        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], path: [] }],
         diagramPrimitives: []
       } });
     }));
     const result = await run(["context", "--canvas", "current"]);
     const data = JSON.parse(result.stdout).data;
     expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 } });
-    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2" });
+    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."] });
   });
 
   it("requests file-backed viewport vision context", async () => {
@@ -587,19 +512,7 @@ describe("commands", () => {
     expect(vision).not.toHaveProperty("diagramPrimitives");
   });
 
-  it("reads a bound line from @file", async () => {
-    const line = join(tempDir, "line.md");
-    writeFileSync(line, "Routes to [[Target]]\n", "utf8");
-    await run(["link", "update", "abc", "--bound-line", `@${line}`]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ boundLine: "Routes to [[Target]]\n" });
-  });
 
-  it("unescapes literal \\n in link --bound-line", async () => {
-    await run(["link", "update", "abc", "--bound-line", "Routes to [[Target]]\\nnext clause"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
-      boundLine: "Routes to [[Target]]\nnext clause"
-    });
-  });
 
   it("renders app unavailable as structured JSON", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
