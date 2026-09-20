@@ -321,7 +321,7 @@ export const canvasApplyContract = {
         identity: "app-returned UUID",
         commonOptional: ["title", "color", "lineStyle", "strokeWidth"],
         geometry: {
-          region: { required: ["x", "y", "width", "height"], optional: ["fillOpacity"] },
+          region: { required: ["x", "y", "width", "height"], optional: ["fillOpacity"], x: "world-space centre", y: "world-space centre" },
           line: { required: ["x1", "y1", "x2", "y2"] }
         }
       },
@@ -332,7 +332,7 @@ export const canvasApplyContract = {
   content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
   validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase for current-Canvas dry-run", deferredUntilApply: "later phases, or every phase for a named-Canvas dry-run" },
   partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives"] },
-  success: { ok: true, data: { appliedBatches: [], results: [], verification: "targeted" } },
+  success: { ok: true, data: { applied: true, appliedBatches: [], results: [], verification: "targeted" } },
   error: { ok: false, error: { code: "string", message: "string", details: {} } },
   example: { canvas: "current", nodes: [{ kind: "note", mode: "place", note: "docs/Service.md", x: 0, y: 0 }] }
 } as const;

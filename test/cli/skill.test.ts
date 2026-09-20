@@ -23,9 +23,13 @@ describe("skill", () => {
     expect(skill).toContain("enso vault current --pretty");
     expect(skill).toContain("enso check");
     expect(skill).toContain("references/diagram-design.md");
+    expect(skill).toContain("enso canvas create");
     expect(skill).toContain("enso canvas apply --schema");
     expect(skill).toContain("enso canvas apply /tmp/enso-<task>-intent.json --dry-run");
     expect(skill).toContain("enso canvas apply /tmp/enso-<task>-intent.json");
+    expect(skill).toContain("link_node_intersection");
+    expect(skill).toContain("data.applied");
+    expect(skill).toContain("data.placement");
     expect(skill).toContain("Confirm `/tmp/enso-<task>-intent.json` no longer exists");
     expect(skill).toContain("an appearance that matches what it is");
     expect(skill).toContain("Do not use a Role / Evidence / Flow / Invariants template");

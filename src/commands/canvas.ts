@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
-import { centerPatchOnCanvas, existingContent, isPureCreation } from "../layout-centering.js";
+import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
@@ -123,10 +123,8 @@ export function registerCanvas(program: Command): void {
       // point, where the first load focuses, instead of wherever the author's coordinates
       // happen to sit. Existing content or any update means the author placed
       // against inspected geometry, so the coordinates pass through untouched.
-      const patch = isPureCreation(intent) && existingContent(context.data) === undefined
-        ? centerPatchOnCanvas(intent, context.data)
-        : intent;
-      return applyCanvasIntent(patch, Boolean(options.dryRun), context);
+      const { patch, placement } = placeIntentOnCanvas(intent, context.data);
+      return applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
     });
 }
 
@@ -137,11 +135,37 @@ export function requestCanvasContext(client: BridgeClient, canvas: string): Prom
     : client.request(`/v1/canvases/${encodeURIComponent(canvas)}/inspect`);
 }
 
+type PlacementReport = {
+  recentered: boolean;
+  dx: number;
+  dy: number;
+  home?: typeof CANVAS_WORLD_HOME;
+};
+
+function placeIntentOnCanvas(intent: CanvasIntent, context: unknown): { patch: CanvasIntent; placement: PlacementReport } {
+  if (!(isPureCreation(intent) && existingContent(context) === undefined)) {
+    return { patch: intent, placement: { recentered: false, dx: 0, dy: 0 } };
+  }
+  const offset = centeringOffset(patchBounds(intent), undefined);
+  const recentered = offset.dx !== 0 || offset.dy !== 0;
+  return {
+    patch: translatePatch(intent, offset),
+    placement: recentered
+      ? { recentered: true, dx: offset.dx, dy: offset.dy, home: CANVAS_WORLD_HOME }
+      : { recentered: false, dx: 0, dy: 0 }
+  };
+}
+
 /**
  * Run a validated canvas intent through the dependency-aware apply pipeline. A caller that
  * already read the target Canvas passes that context in so the preflight reads it once.
  */
-export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, preflightContext?: EnsoEnvelope): Promise<EnsoEnvelope> {
+export async function applyCanvasIntent(
+  intent: CanvasIntent,
+  dryRun: boolean,
+  preflightContext?: EnsoEnvelope,
+  placement: PlacementReport = { recentered: false, dx: 0, dy: 0 }
+): Promise<EnsoEnvelope> {
   const client = new BridgeClient();
   const inspect = () => requestCanvasContext(client, intent.canvas);
   const context = preflightContext ?? await inspect();
@@ -171,6 +195,7 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, p
       data: {
         dryRun: true,
         preflightPassed: true,
+        placement,
         validation: {
           local: "complete",
           bridgeValidated: bridgePhase ? [bridgePhase.name] : [],
@@ -186,8 +211,10 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, p
     return {
       ok: true,
       data: {
+        applied: true,
         appliedBatches: [],
         results: [],
+        placement,
         verification: { status: "verified", target: intent.canvas, requested: compiled.verification, source: "preflight" }
       }
     };
@@ -243,8 +270,10 @@ export async function applyCanvasIntent(intent: CanvasIntent, dryRun: boolean, p
   return {
     ok: true,
     data: {
+      applied: true,
       appliedBatches,
       results,
+      placement,
       verification: { status: "verified", target: intent.canvas, requested: compiled.verification }
     }
   };

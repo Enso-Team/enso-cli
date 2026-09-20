@@ -23,7 +23,7 @@ describe("canvas apply", () => {
     const contract = JSON.parse(result.stdout).data;
     expect(contract.input.links.direction).toEqual(["directed", "undirected", "bidirectional"]);
     expect(contract.input.primitives.create.geometry).toEqual({
-      region: { required: ["x", "y", "width", "height"], optional: ["fillOpacity"] },
+      region: { required: ["x", "y", "width", "height"], optional: ["fillOpacity"], x: "world-space centre", y: "world-space centre" },
       line: { required: ["x1", "y1", "x2", "y2"] }
     });
   });
@@ -123,6 +123,7 @@ describe("canvas apply", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
       data: {
+        applied: true,
         appliedBatches: [{ name: "nodePortalWrites", count: 1 }],
         results: [{ type: "node.create", id: "node-1", status: "created" }],
         verification: { status: "verified" }
@@ -644,6 +645,7 @@ describe("canvas apply", () => {
       data: {
         dryRun: true,
         preflightPassed: true,
+        placement: { recentered: true, dx: 24675, dy: 24800, home: { x: 25_000, y: 25_000 } },
         validation: { bridgeValidated: ["nodePortalWrites"], deferredUntilApply: ["linkWrites"] },
         planned: { nodePortalWrites: 2, linkWrites: 1 }
       }

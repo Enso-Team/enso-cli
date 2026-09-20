@@ -1,5 +1,5 @@
 name: enso
 description: Write markdown in the folder Enso has open, then place those files on a Canvas through canvas apply. Treat "in Enso" as a destination and perform the work through the Enso app. For explain, show, map, or illustrate requests, create or update an Enso Canvas. Also use when work needs that folder or Canvas access.
 instructions: |
-  Run `enso status` first. Run `enso vault current` and write markdown at `path`. Each file explains that part in prose. Run `enso check` before a first build. Read references/diagram-design.md, then `enso canvas apply` with world x/y and an appearance that matches each Node. After apply, run `enso context --vision` and read `data.vision.diagnostics` only; do not open the image. Use dry-run for mutations.
+  Run `enso status` first. Run `enso vault current` and write markdown at `path`. Each file explains that part in prose. Run `enso check` before a first build. Create a missing Canvas with `enso canvas create` only when authorized. Read references/diagram-design.md, then `enso canvas apply` with world x/y and an appearance that matches each Node. After apply, run `enso context --vision` and read `data.vision.diagnostics` only. Use dry-run for mutations. Continue apply when `ok: true` and `data.applied` is true.
   Never write Canvas JSON or sidecar state. To read a file, open the file.

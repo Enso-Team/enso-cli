@@ -38,7 +38,7 @@ description: Use when someone needs to explain something in a visual way, or whe
    enso canvas list --pretty
    ```
 
-   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it.
+   Use `current` only when the user means the open Canvas. Create a missing Canvas only when the request authorizes it: `enso canvas create "<name>"`.
 
 5. Read [references/diagram-design.md](references/diagram-design.md) before choosing geometry or appearance. Give each Node an appearance that matches what it is; `card` is only for a reading surface. All `x`/`y` values are world-space centers.
 
@@ -66,7 +66,7 @@ description: Use when someone needs to explain something in a visual way, or whe
    enso canvas apply /tmp/enso-<task>-intent.json
    ```
 
-   Continue from dry-run only when the command succeeds, `preflightPassed` is true, and each validation deferral is understood. On apply success, require `verification.status: "verified"`. Then delete the temp file. Confirm `/tmp/enso-<task>-intent.json` no longer exists.
+   Continue from dry-run only when `ok: true`, `preflightPassed` is true, and each validation deferral is understood. Read `data.placement`: when `recentered` is true the CLI moved the cluster onto the empty-Canvas home; use the compiled phase coordinates, not the file's originals. On apply, continue when `ok: true` and `data.applied` is true. Then delete the temp file. Confirm `/tmp/enso-<task>-intent.json` no longer exists.
 
 7. Overlap lint, one round. After apply:
 
@@ -74,7 +74,7 @@ description: Use when someone needs to explain something in a visual way, or whe
    enso context --canvas current --vision --pretty
    ```
 
-   Read `data.vision.diagnostics` only. Do not open `vision.image.path`. Ignore `node_offscreen`, `label_offscreen`, `link_crossing`, and `link_label_overlap`: crossings and label brushes do not stop a person reading the Canvas, and the person will nudge what they want nudged. Act on `node_overlap` and `low_node_gap` only, and only once: collect every subject, `enso node move` each one off its neighbour in a single pass, then stop. Do not run context again after the moves. A Canvas that still has a crossing after one round is finished.
+   Read `data.vision.diagnostics` only. Ignore `node_offscreen`, `label_offscreen`, `link_crossing`, and `link_label_overlap`: crossings and label brushes do not stop a person reading the Canvas, and the person will nudge what they want nudged. Act on `node_overlap`, `low_node_gap`, and `link_node_intersection` only, and only once: collect every subject, `enso node move` each one off its neighbour in a single pass, then stop. Do not run context again after the moves. A Canvas that still has a crossing after one round is finished.
 
    Each issue carries `subjects` (the ids involved), `bounds` in Viewport space matching the rendered image, and `worldBounds` in World space matching `nodes[].position`. Use `worldBounds` and `subjects` to pick the move. `enso node move` acts on the Canvas the app has open, so there is no `--canvas` flag: `canvas apply` on a named Canvas opens it.
 

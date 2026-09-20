@@ -504,9 +504,9 @@ describe("commands", () => {
     expect(vision).toMatchObject({
       ok: true,
       viewport: { scale: 1 },
-      diagnostics: { score: 1 },
-      image: { width: 2660, height: 1996 }
+      diagnostics: { score: 1 }
     });
+    expect(vision).not.toHaveProperty("image");
     expect(vision).not.toHaveProperty("nodes");
     expect(vision).not.toHaveProperty("links");
     expect(vision).not.toHaveProperty("diagramPrimitives");
