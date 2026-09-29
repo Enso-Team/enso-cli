@@ -105,6 +105,20 @@ describe("layout centering", () => {
     expect(existingContent(context)!.bounds).toEqual({ minX: 0, minY: 0, maxX: 550, maxY: 550 });
   });
 
+  it("measures positioned Symbols with Symbol geometry when bounds are absent", () => {
+    const content = existingContent({ nodes: [{ appearance: "api", position: { x: 100, y: 200 } }] })!;
+    expect(content.bounds).toEqual({ minX: 30, minY: 159, maxX: 170, maxY: 241 });
+  });
+
+  it("centers a direct mixed-appearance intent from each Node's geometry", () => {
+    const intent = patch({ nodes: [
+      { kind: "note", mode: "place", note: "Card", appearance: "card", x: 0, y: 0 },
+      { kind: "note", mode: "place", note: "API", appearance: "api", x: 200, y: 0 }
+    ], primitives: [] });
+    expect(patchBounds(intent)).toEqual({ minX: -110, minY: -70, maxX: 270, maxY: 70 });
+    expect(center(centerPatchOnCanvas(intent, undefined))).toEqual(CANVAS_WORLD_HOME);
+  });
+
   it("translates line primitives on both endpoints", () => {
     const compiled = patch({
       primitives: [{ kind: "line", mode: "create", x1: 0, y1: 0, x2: 100, y2: 50 }]

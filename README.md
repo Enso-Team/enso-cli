@@ -12,8 +12,7 @@ enso status --pretty
 ```
 
 With the Enso app open, the first command links itself by reading the token
-file the app provisions. `enso auth link` stays available for relinking, and on
-an app that provisions no token file it pairs through the app's prompt.
+file the app provisions. `enso auth link` relinks the same way.
 
 The app names its bridge contract on `/v1/health`, and every CLI request
 carries its own in the `Enso-Contract-Version` header. The number moves only on
@@ -188,6 +187,20 @@ enso portal remove "Detail" --dry-run
 
 Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write` and no `node read`; open the file.
 
+`enso node place "API" --appearance api` places a Note as a symbol Node.
+`enso node update "API" --appearance database` changes its visual form.
+Use `--appearance card` to reset it, and `--dry-run` to validate a request.
+`enso canvas apply` accepts `appearance` on Note place and update intents and Portal create and update intents.
+`enso canvas apply --schema` lists the supported values.
+
+`enso node update "API" --glyph-size 72` sets the icon width in World points.
+`enso node update "API" --font-size 24` sets the title size.
+`enso node update "API" --clear-glyph-size` derives the icon size from the block width.
+Canvas intents accept optional `glyphSize` and `fontSize` fields on place, create, and update.
+`glyphSize: null` clears an explicit icon size. Icon sizes range from 24 to 160; title sizes range from 8 to 96.
+
+`enso node update API --lock-ratio true` locks the proportions of the complete Node. Use `--lock-ratio false` to resize its parts independently. The setting survives Appearance changes. `--title-gap 12` sets the spacing between the icon and title in World points. Canvas intents accept `isResizeLocked` and `titleGap` for Node placement, creation, and updates.
+
 ### Links
 
 
@@ -202,6 +215,7 @@ Place a Note that already exists in the Vault. Write the markdown file first. Th
 enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-run
 enso link update "<id>" --label syncs --dry-run
 enso link update "<id>" --clear-label
+enso link update "<id>" --label-font-size 12
 enso link update "<id>" --source "Cache" --dry-run
 enso link update "<id>" --target "Database"
 enso link update "<id>" --delink --target-position 320,-180
@@ -230,11 +244,10 @@ enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 | Error                  | Fix                                                 |
 | ---------------------- | --------------------------------------------------- |
 | `app_unavailable`      | Launch the configured app, or run `enso auth link` to relink |
-| `invalid_token`        | The CLI relinks through the app's token file on its own. When the app provisions none, update Enso, or run `enso auth link` to pair through its prompt |
+| `invalid_token`        | The CLI relinks through the app's token file on its own. If that fails, run `enso auth link` with the app open |
 | `access_disabled`      | Turn on Local agent access in Enso's Settings        |
 | `bridge_busy`          | Wait for the agent change in flight, then retry      |
 | `canvas_changed`       | The user changed the open Canvas; inspect `appliedBatches`, reopen the target, and resume |
-| `pairing_in_progress`  | Wait for the active pairing attempt                  |
 | `ambiguous_selector`   | Use the candidate list from the error; do not guess |
 | Unreadable JSON output | Add `--pretty`                                      |
 

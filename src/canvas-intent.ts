@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
 import { EnsoCliError } from "./errors.js";
-import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
+import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
 
 const finite = z.number().finite();
 const positiveFinite = finite.positive();
@@ -24,26 +25,27 @@ function pairedCoordinates(value: { x?: number; y?: number }, ctx: z.RefinementC
   }
 }
 
+// How a Note or Portal Node looks. Every Node schema takes the same fields.
+const nodeVisual = { appearance: nodeAppearanceSchema.optional(), glyphSize: nodeGlyphSizeSchema.optional(), fontSize: nodeFontSizeSchema.optional(), titleGap: nodeTitleGapSchema.optional(), isResizeLocked: z.boolean().optional() };
+const setsNodeVisual = (value: Record<string, unknown>): boolean => Object.keys(nodeVisual).some((key) => value[key] !== undefined);
+
 // A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
 // the Vault, named by its title or its Vault-relative path. The intent carries no content.
-const nodeAppearances = [
-  "card", "user", "developer", "player", "client", "mobileApp", "service", "api",
-  "database", "server", "queue", "cache", "cloud", "storage", "external",
-  "component", "auth", "loadBalancer", "ux", "decision", "terminal"
-] as const;
-const nodeAppearance = z.enum(nodeAppearances);
-const notePlace = z.object({ kind: z.literal("note"), mode: z.literal("place"), note: safeString, appearance: nodeAppearance.optional(), ...coordinates }).strict();
-const noteUpdate = z.object({ kind: z.literal("note"), mode: z.literal("update"), selector, appearance: nodeAppearance.optional(), ...coordinates }).strict();
-const noteRemove = z.object({ kind: z.literal("note"), mode: z.literal("remove"), selector }).strict();
-const portalCreate = z.object({ kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
-const portalUpdate = z.object({ kind: z.literal("portal"), mode: z.literal("update"), selector, subcanvasRef: safeString.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
+const notePlace = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...coordinates }).strict();
+const noteUpdate = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
-  if (value.subcanvasRef === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "portal update requires subcanvasRef or x and y" });
+  if (!setsNodeVisual(value) && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, glyphSize, fontSize, titleGap, isResizeLocked, or x and y" });
+});
+const noteRemove = z.object({ kind: z.literal("note"), mode: z.literal("remove"), selector }).strict();
+const portalCreate = z.object({ ...nodeVisual, kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
+const portalUpdate = z.object({ ...nodeVisual, kind: z.literal("portal"), mode: z.literal("update"), selector, subcanvasRef: safeString.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
+  pairedCoordinates(value, ctx);
+  if (!setsNodeVisual(value) && value.subcanvasRef === undefined && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "portal update requires appearance, glyphSize, fontSize, titleGap, isResizeLocked, subcanvasRef, or x and y" });
 });
 const portalRemove = z.object({ kind: z.literal("portal"), mode: z.literal("remove"), selector }).strict();
 const intentNode = z.union([notePlace, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
 
-const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional() };
+const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional(), labelFontSize: labelFontSizeSchema.optional() };
 const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
 const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
   try {
@@ -90,10 +92,10 @@ function addDuplicates(ctx: z.RefinementCtx, path: string, values: string[]): vo
 export type CanvasIntent = z.infer<typeof canvasIntentSchema>;
 export type CanvasPhaseName = "linkRemovals" | "nodePortalRemovals" | "nodePortalWrites" | "linkWrites" | "primitives";
 export type CanvasPhase = { name: CanvasPhaseName; operations: Record<string, unknown>[]; retrySections: string[] };
-export type CompiledCanvasApply = { phases: CanvasPhase[]; verification: { nodes: string[]; links: string[]; primitives: string[] } };
+export type CompiledCanvasApply = { phases: CanvasPhase[]; sharedNoteWrites: string[]; verification: { nodes: string[]; links: string[]; primitives: string[] } };
 
-type ContextNode = { id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } };
-type ContextLink = { id?: string; sourceNodeID?: string; targetNodeID?: string; label?: string | null; color?: string | null; direction?: string };
+type ContextNode = { titleGap?: number; isResizeLocked?: boolean; glyphSize?: number | null; fontSize?: number; appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } };
+type ContextLink = { labelFontSize?: number; id?: string; sourceNodeID?: string; targetNodeID?: string; label?: string | null; color?: string | null; direction?: string };
 type ContextPrimitive = { id?: string; kind?: string };
 
 export function compileCanvasApply(intent: CanvasIntent, context: unknown): CompiledCanvasApply {
@@ -130,7 +132,8 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
       const target = matches(nodes, link.target)[0]?.id;
       const existing = source && target ? links.find((candidate) => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source, target)) : undefined;
       if (existing) {
-        const same = existing.label === (link.label ?? existing.label) && existing.color === (link.color ?? existing.color) && existing.direction === (link.direction ?? existing.direction);
+        const same = existing.label === (link.label ?? existing.label) && existing.color === (link.color ?? existing.color) && existing.direction === (link.direction ?? existing.direction)
+          && (link.labelFontSize === undefined || existing.labelFontSize === link.labelFontSize);
         if (!same) fail("link_conflict", "A Link already exists for this unordered endpoint pair with different state", "links", "Update the existing Link by id");
       }
     } else {
@@ -164,12 +167,34 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   ].filter((phase) => phase.operations.length > 0) as CanvasPhase[];
   return {
     phases,
+    sharedNoteWrites: sharedNoteWriteCandidates(phases, nodes, links),
     verification: {
       nodes: intent.nodes.map(nodeTarget),
       links: intent.links.map((link) => link.mode === "create" ? `${link.source}↔${link.target}` : link.id),
       primitives: intent.primitives.flatMap((primitive) => primitive.mode === "create" ? [] : [primitive.id])
     }
   };
+}
+
+/** Existing Notes whose content may be written by the compiled bridge operations. */
+function sharedNoteWriteCandidates(phases: CanvasPhase[], nodes: ContextNode[], links: ContextLink[]): string[] {
+  const writes = new Set<string>();
+  const add = (selector: unknown): void => {
+    const node = typeof selector === "string" ? matches(nodes, selector)[0] : undefined;
+    if (node?.kind === "note") writes.add(node.displayTitle ?? node.title ?? node.ref ?? String(selector));
+  };
+  for (const operation of phases.flatMap(phase => phase.operations)) {
+    const link = links.find(candidate => candidate.id === operation.id);
+    // Deleting from the Note removes the mentioning sentence from the source.
+    if (operation.type === "link.delete" && operation.fromNote === true) add(link?.sourceNodeID);
+    // Moving an endpoint rewrites the mention, and the app saves every Note on either end,
+    // before and after.
+    const movesEndpoint = operation.source !== undefined || operation.target !== undefined || operation.targetPosition !== undefined;
+    if (operation.type === "link.update" && movesEndpoint) {
+      for (const endpoint of [link?.sourceNodeID, link?.targetNodeID, operation.source, operation.target]) add(endpoint);
+    }
+  }
+  return [...writes];
 }
 
 function matchingExistingLink(
@@ -184,6 +209,11 @@ function matchingExistingLink(
     : undefined;
 }
 
+/**
+ * Check the inspected Canvas against the intent. The bridge serializes every visual field on
+ * every Node and Link, so a requested field that comes back absent means the app did not
+ * apply it, and it counts as a mismatch.
+ */
 export function verifyCanvasIntent(intent: CanvasIntent, context: unknown): { ok: boolean; mismatches: string[] } {
   const nodes = readArray<ContextNode>(context, "nodes");
   const links = readArray<ContextLink>(context, "links");
@@ -193,8 +223,22 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown): { ok
     const target = nodeTarget(node);
     const exists = matches(nodes, target).length === 1;
     if (node.mode === "remove" ? exists : !exists) mismatches.push(`nodes:${target}`);
+    if (node.mode !== "remove") {
+      const actual = matches(nodes, target)[0];
+      if (node.glyphSize !== undefined && actual?.glyphSize !== node.glyphSize) mismatches.push(`nodes:${target}:glyphSize`);
+      if (node.titleGap !== undefined && actual?.titleGap !== node.titleGap) mismatches.push(`nodes:${target}:titleGap`);
+      if (node.isResizeLocked !== undefined && actual?.isResizeLocked !== node.isResizeLocked) mismatches.push(`nodes:${target}:isResizeLocked`);
+      if (node.fontSize !== undefined && actual?.fontSize !== node.fontSize) mismatches.push(`nodes:${target}:fontSize`);
+    }
+    if (node.mode !== "remove" && node.appearance !== undefined && matches(nodes, target)[0]?.appearance !== node.appearance) {
+      mismatches.push(`nodes:${target}:appearance`);
+    }
   }
   for (const link of intent.links) {
+    if (link.mode !== "remove" && link.labelFontSize !== undefined) {
+      const actual = link.mode === "create" ? matchingExistingLink(link, nodes, links) : links.find(item => item.id === link.id);
+      if (actual?.labelFontSize !== link.labelFontSize) mismatches.push(`links:${link.mode === "create" ? `${link.source}↔${link.target}` : link.id}:labelFontSize`);
+    }
     if (link.mode === "create") {
       const source = matches(nodes, link.source)[0]?.id;
       const target = matches(nodes, link.target)[0]?.id;
@@ -222,25 +266,23 @@ function nodeTarget(node: CanvasIntent["nodes"][number]): string {
 
 function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: ContextNode[]): Record<string, unknown>[] {
   if (node.mode === "remove") return [];
+  const appearance = defined({ appearance: node.appearance, glyphSize: node.glyphSize, fontSize: node.fontSize, titleGap: node.titleGap, isResizeLocked: node.isResizeLocked });
   if (node.mode === "create") {
     if (matches(nodes, node.title).length > 0) return [];
-    return [{ type: "portal.create", title: node.title, subcanvasRef: node.subcanvasRef, x: node.x, y: node.y }];
+    return [{ type: "portal.create", ...appearance, title: node.title, subcanvasRef: node.subcanvasRef, x: node.x, y: node.y }];
   }
   if (node.mode === "place") {
     const existing = matches(nodes, node.note)[0];
-    const appearance = node.appearance !== undefined ? { appearance: node.appearance } : {};
-    if (!existing) return [{ type: "node.create", title: node.note, placeExisting: true, x: node.x, y: node.y, ...appearance }];
+    if (!existing) return [{ type: "node.create", ...appearance, title: node.note, placeExisting: true, x: node.x, y: node.y }];
     return [
       ...moveIfDisplaced(existing, node.note, node.x, node.y),
-      ...(node.appearance !== undefined ? [{ type: "node.update", selector: node.note, appearance: node.appearance }] : [])
+      ...(Object.keys(appearance).length > 0 ? [{ type: "node.update", selector: node.note, ...appearance }] : [])
     ];
   }
   const operations: Record<string, unknown>[] = [];
+  if (Object.keys(appearance).length > 0) operations.push({ type: "node.update", selector: node.selector, ...appearance });
   if (node.kind === "portal" && node.subcanvasRef !== undefined) operations.push({ type: "portal.changeSubcanvas", selector: node.selector, subcanvasRef: node.subcanvasRef });
   if (node.x !== undefined && node.y !== undefined) operations.push(...moveIfDisplaced(matches(nodes, node.selector)[0], node.selector, node.x, node.y));
-  if (node.kind === "note" && node.appearance !== undefined) {
-    operations.push({ type: "node.update", selector: node.selector, appearance: node.appearance });
-  }
   return operations;
 }
 
@@ -260,8 +302,8 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
   return { type, ...defined(fields) };
 }
 
-function linkVisualValues(link: { label?: string | null; color?: string | null; direction?: string }): Record<string, unknown> {
-  return { label: link.label, color: link.color, direction: link.direction };
+function linkVisualValues(link: { label?: string | null; color?: string | null; direction?: string; labelFontSize?: number }): Record<string, unknown> {
+  return { label: link.label, color: link.color, direction: link.direction, labelFontSize: link.labelFontSize };
 }
 function readArray<T>(context: unknown, key: string): T[] {
   if (!context || typeof context !== "object") return [];
@@ -298,21 +340,26 @@ export const canvasApplyContract = {
     unknownFields: "rejected",
     color: VISUAL_COLOR_GRAMMAR,
     nodes: {
+      appearance: nodeAppearanceSchema.options,
+      glyphSize: { minimum: 24, maximum: 160, null: "derive from title font size" },
+      fontSize: { minimum: 8, maximum: 96 },
+      titleGap: { exclusiveMinimum: 0, default: 8 },
+      isResizeLocked: { type: "boolean", default: false },
       note: {
-        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], optional: ["appearance"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", appearance: nodeAppearances },
-        update: { identity: "selector", required: ["kind", "mode", "selector", "x", "y"], optional: ["appearance"], appearance: nodeAppearances },
+        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], optional: ["titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault" },
+        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["titleGap", "isResizeLocked", "glyphSize", "fontSize", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
       portal: {
-        create: { identity: "title", required: ["kind", "mode", "title", "subcanvasRef", "x", "y"] },
-        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["subcanvasRef", "x", "y"] },
+        create: { identity: "title", required: ["kind", "mode", "title", "subcanvasRef", "x", "y"], optional: ["titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"] },
+        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["titleGap", "isResizeLocked", "glyphSize", "fontSize", "subcanvasRef", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       }
     },
     links: {
       direction: ["directed", "undirected", "bidirectional"],
-      create: { identity: "unordered source/target pair", required: ["mode", "source", "target"], optional: ["label", "color", "direction"] },
-      update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction"] },
+      create: { identity: "unordered source/target pair", required: ["mode", "source", "target"], optional: ["label", "color", "direction", "labelFontSize"] },
+      update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction", "labelFontSize"] },
       remove: { identity: "app Link UUID", required: ["mode", "id"], preservesRelationProse: true }
     },
     primitives: {
@@ -330,6 +377,7 @@ export const canvasApplyContract = {
     }
   },
   content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
+  sharedNoteWrites: "Existing Notes the app may rewrite: the source of a fromNote Link removal, and every Note on either end of a Link endpoint move, before and after.",
   validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase for current-Canvas dry-run", deferredUntilApply: "later phases, or every phase for a named-Canvas dry-run" },
   partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives"] },
   success: { ok: true, data: { applied: true, appliedBatches: [], results: [], verification: "targeted" } },

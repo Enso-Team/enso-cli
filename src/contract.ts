@@ -3,14 +3,14 @@ import { EnsoCliError } from "./errors.js";
 // The bridge contract is one integer that both sides name. It moves only when
 // a change breaks the other side, so an additive field leaves it alone.
 //
-// 1: prompt-and-callback pairing, the 1.3.1 app.
+// 1: the 1.3.1 app, which paired through a prompt this CLI no longer speaks.
 // 2: the app provisions a token file and names it on /v1/health.
 //
 // /v1/health reports the app's number, checked at link time. Every request
 // carries this CLI's number in the header, and the app refuses one outside the
 // range it serves, naming which side to update.
 export const contractVersion = 2;
-export const oldestSupportedContractVersion = 1;
+export const oldestSupportedContractVersion = 2;
 export const contractHeader = "Enso-Contract-Version";
 
 // An app whose health names no contract predates the field, which is contract 1.

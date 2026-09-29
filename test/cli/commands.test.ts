@@ -70,6 +70,54 @@ describe("commands", () => {
     expect((request.init.headers as Record<string, string>).Authorization).toBe("Bearer test-token");
   });
 
+  it("passes Appearance on node place", async () => {
+    const result = await run(["node", "place", "API", "--appearance", "api", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ title: "API", placeExisting: true, appearance: "api", dryRun: true });
+  });
+
+  it("resets Appearance through node update", async () => {
+    const result = await run(["node", "update", "API", "--appearance", "card", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(calls[0].init.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ appearance: "card", dryRun: true });
+  });
+
+  it("rejects unsupported Appearance before contacting the bridge", async () => {
+    await expect(run(["node", "place", "API", "--appearance", "bogus"])).rejects.toThrow("Appearance must be one of");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sets icon and title sizes separately and clears the explicit icon size", async () => {
+    await run(["node", "update", "API", "--glyph-size", "72", "--font-size", "24", "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ glyphSize: 72, fontSize: 24, dryRun: true });
+    await run(["node", "update", "API", "--clear-glyph-size"]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ glyphSize: null, dryRun: false });
+  });
+
+  it("sets and clears the whole-Node ratio lock", async () => {
+    await run(["node", "update", "API", "--lock-ratio", "true", "--title-gap", "12", "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ isResizeLocked: true, titleGap: 12, dryRun: true });
+    await run(["node", "update", "API", "--lock-ratio", "false"]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ isResizeLocked: false, dryRun: false });
+  });
+
+  it("rejects malformed ratio settings before sending a request", async () => {
+    await expect(run(["node", "update", "API", "--lock-ratio", "yes"])).rejects.toThrow("Lock ratio must");
+    await expect(run(["node", "update", "API", "--title-gap", "0"])).rejects.toThrow("Title gap must");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("passes size fields on placement", async () => {
+    await run(["node", "place", "API", "--appearance", "api", "--glyph-size", "80", "--font-size", "20"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });
+  });
+
+  it.each(["0", "161", "NaN"])("rejects invalid glyph size %s", async (value) => {
+    await expect(run(["node", "update", "API", "--glyph-size", value])).rejects.toThrow("Glyph size must");
+    expect(calls).toHaveLength(0);
+  });
+
   it("passes dry-run in query and body", async () => {
     await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];
@@ -211,6 +259,15 @@ describe("commands", () => {
     await expect(run(["link", "create", "A", "B", "--direction", "sideways"])).rejects.toThrow(
       "expected directed, undirected, or bidirectional"
     );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sends a Link label size and rejects one out of range", async () => {
+    await run(["link", "update", "abc", "--label-font-size", "12"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ labelFontSize: 12, dryRun: false });
+    calls.length = 0;
+    const tooBig = await run(["link", "update", "abc", "--label-font-size", "40"]);
+    expect(tooBig.code).not.toBe(0);
     expect(calls).toHaveLength(0);
   });
 
@@ -394,15 +451,15 @@ describe("commands", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ ok: true, data: {
-        nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 } }],
-        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], path: [] }],
+        nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false }],
+        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12, path: [] }],
         diagramPrimitives: []
       } });
     }));
     const result = await run(["context", "--canvas", "current"]);
     const data = JSON.parse(result.stdout).data;
-    expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 } });
-    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."] });
+    expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false });
+    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12 });
   });
 
   it("requests file-backed viewport vision context", async () => {

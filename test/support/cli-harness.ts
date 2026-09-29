@@ -18,7 +18,6 @@ export function setupCliTest(): void {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "enso-cli-"));
     process.env.ENSO_CLI_CONFIG_DIR = tempDir;
-    process.env.ENSO_CLI_OPEN = "0";
     calls.length = 0;
     vi.restoreAllMocks();
     vi.stubGlobal(
@@ -34,9 +33,6 @@ export function setupCliTest(): void {
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
     delete process.env.ENSO_CLI_CONFIG_DIR;
-    delete process.env.ENSO_CLI_OPEN;
-    delete process.env.ENSO_CLI_PAIRING_URL_FILE;
-    delete process.env.ENSO_CLI_PAIRING_LOCK_STALE_MS;
     delete process.env.ENSO_CLI_SKILL_INSTALLER_BIN;
     delete process.env.MOCK_NPX_ARGS_FILE;
     vi.unstubAllGlobals();

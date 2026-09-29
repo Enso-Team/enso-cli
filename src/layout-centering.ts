@@ -3,7 +3,7 @@
 // cluster — nodes and primitives together — to a world position the app is looking at.
 
 import type { CanvasIntent } from "./canvas-intent.js";
-import { LAYOUT_GEOMETRY } from "./layout.js";
+import { LAYOUT_GEOMETRY, SYMBOL_GEOMETRY, isSymbolAppearance, type LayoutGeometry } from "./layout.js";
 
 /**
  * World point the Mac app focuses when a Canvas holds nothing to focus on.
@@ -59,11 +59,15 @@ export function centeringOffset(cluster: WorldBox | undefined, existing: Existin
   return { dx: existing.bounds.maxX + ADJACENT_GAP - cluster.minX, dy: onCentroid.dy };
 }
 
-/** Bounding box of a compiled patch, node boxes and primitive boxes together. */
-export function patchBounds(patch: CanvasIntent): WorldBox | undefined {
+/**
+ * Bounding box of a compiled patch, node boxes and primitive boxes together. Nodes measure
+ * at the geometry the patch was laid out with.
+ */
+export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry): WorldBox | undefined {
   const nodes = patch.nodes.flatMap((node) => {
     const [x, y] = [coordinate(node, "x"), coordinate(node, "y")];
-    return x === undefined || y === undefined ? [] : [box(x, y, LAYOUT_GEOMETRY.nodeWidth, LAYOUT_GEOMETRY.nodeHeight)];
+    const size = geometry ?? (isSymbolAppearance("appearance" in node ? node.appearance : undefined) ? SYMBOL_GEOMETRY : LAYOUT_GEOMETRY);
+    return x === undefined || y === undefined ? [] : [box(x, y, size.nodeWidth, size.nodeHeight)];
   });
   const primitives = patch.primitives.flatMap((primitive) => primitiveBox(primitive as Record<string, unknown>));
   return unionBoxes([...nodes, ...primitives]);
@@ -134,7 +138,9 @@ function nodeBox(node: Record<string, unknown>): WorldBox[] {
   if (!position || typeof position !== "object") return [];
   const { x, y } = position as { x?: unknown; y?: unknown };
   if (!finiteNumber(x) || !finiteNumber(y)) return [];
-  return [box(x, y, LAYOUT_GEOMETRY.nodeWidth, LAYOUT_GEOMETRY.nodeHeight)];
+  const geometry = isSymbolAppearance(typeof node.appearance === "string" ? node.appearance : undefined)
+    ? SYMBOL_GEOMETRY : LAYOUT_GEOMETRY;
+  return [box(x, y, geometry.nodeWidth, geometry.nodeHeight)];
 }
 
 function primitiveBox(primitive: Record<string, unknown>): WorldBox[] {

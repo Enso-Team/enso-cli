@@ -5,18 +5,44 @@ import { compareStrings, type CanvasSpec } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
 import { parseCanvasIntent } from "./canvas-intent.js";
 
-export const LAYOUT_GEOMETRY = {
-  colStep: 450,
-  rowStep: 280,
+// Two densities, one per text role. Cards carry 17pt reading text and lay out four or
+// five across at zoom 1. Symbols carry 14pt diagram text under a 56pt icon, so seven
+// columns fit a Mac window at zoom 1. Steps are block plus the room a link label needs.
+export const CARD_GEOMETRY = {
+  colStep: 300,
+  rowStep: 200,
   nodeWidth: 220,
   nodeHeight: 140,
   clusterPadding: 60,
   clusterFillOpacity: 0.06
 } as const;
 
+export const SYMBOL_GEOMETRY = {
+  colStep: 200,
+  rowStep: 140,
+  nodeWidth: 140,
+  nodeHeight: 82,
+  clusterPadding: 40,
+  clusterFillOpacity: 0.06
+} as const;
+
+export const LAYOUT_GEOMETRY = CARD_GEOMETRY;
+
+export type LayoutGeometry = typeof CARD_GEOMETRY | typeof SYMBOL_GEOMETRY;
+
+export function isSymbolAppearance(appearance: string | undefined): boolean {
+  return appearance !== undefined && !["card", "decision", "terminal"].includes(appearance);
+}
+
+/** Symbol density applies only when every member is a symbol; one card sets card density. */
+export function layoutGeometry(spec: CanvasSpec): LayoutGeometry {
+  const allSymbols = spec.members.every((member) => isSymbolAppearance(member.appearance));
+  return allSymbols ? SYMBOL_GEOMETRY : CARD_GEOMETRY;
+}
+
 const ORDERING_SWEEPS = 4;
 
-export type LayoutNode = { title: string; x: number; y: number };
+export type LayoutNode = { title: string; appearance?: string; x: number; y: number };
 export type LayoutRegion = { name: string; color?: string; x: number; y: number; width: number; height: number };
 export type CanvasLayout = { nodes: LayoutNode[]; regions: LayoutRegion[] };
 
@@ -31,14 +57,15 @@ export function computeCanvasLayout(spec: CanvasSpec, spacing = 1): CanvasLayout
   const edges = spec.edges.map((edge) => ({ from: position.get(edge.from)!, to: position.get(edge.to)! }));
   const ranks = assignRanks(titles.length, edges);
   const layers = orderLayers(titles, edges, ranks, clusterIndexes(spec, position));
-  const nodes = placeNodes(spec, layers, spacing);
+  const geometry = layoutGeometry(spec);
+  const nodes = placeNodes(spec, layers, spacing, geometry);
   const byTitle = new Map(nodes.map((node) => [node.title, node]));
   const regions = spec.clusters.map((cluster) => {
     const members = cluster.members.map((member) => byTitle.get(member)!);
-    const left = Math.min(...members.map((member) => member.x)) - LAYOUT_GEOMETRY.nodeWidth / 2 - LAYOUT_GEOMETRY.clusterPadding;
-    const right = Math.max(...members.map((member) => member.x)) + LAYOUT_GEOMETRY.nodeWidth / 2 + LAYOUT_GEOMETRY.clusterPadding;
-    const top = Math.min(...members.map((member) => member.y)) - LAYOUT_GEOMETRY.nodeHeight / 2 - LAYOUT_GEOMETRY.clusterPadding;
-    const bottom = Math.max(...members.map((member) => member.y)) + LAYOUT_GEOMETRY.nodeHeight / 2 + LAYOUT_GEOMETRY.clusterPadding;
+    const left = Math.min(...members.map((member) => member.x)) - geometry.nodeWidth / 2 - geometry.clusterPadding;
+    const right = Math.max(...members.map((member) => member.x)) + geometry.nodeWidth / 2 + geometry.clusterPadding;
+    const top = Math.min(...members.map((member) => member.y)) - geometry.nodeHeight / 2 - geometry.clusterPadding;
+    const bottom = Math.max(...members.map((member) => member.y)) + geometry.nodeHeight / 2 + geometry.clusterPadding;
     return {
       name: cluster.name,
       ...(cluster.color === undefined ? {} : { color: cluster.color }),
@@ -58,7 +85,7 @@ export function compileCanvasSpec(spec: CanvasSpec, spacing = 1): CanvasIntent {
   const layout = computeCanvasLayout(spec, spacing);
   return parseCanvasIntent({
     canvas: spec.canvas,
-    nodes: layout.nodes.map((node) => ({ kind: "note", mode: "place", note: node.title, x: node.x, y: node.y })),
+    nodes: layout.nodes.map((node) => ({ kind: "note", mode: "place", note: node.title, x: node.x, y: node.y, ...(node.appearance === undefined ? {} : { appearance: node.appearance }) })),
     links: spec.edges.map((edge) => ({
       mode: "create",
       source: edge.from,
@@ -76,7 +103,7 @@ export function compileCanvasSpec(spec: CanvasSpec, spacing = 1): CanvasIntent {
       height: region.height,
       title: region.name,
       ...(region.color === undefined ? {} : { color: region.color }),
-      fillOpacity: LAYOUT_GEOMETRY.clusterFillOpacity
+      fillOpacity: layoutGeometry(spec).clusterFillOpacity
     }))
   });
 }
@@ -160,15 +187,16 @@ function orderLayers(titles: string[], edges: Edge[], ranks: number[], clusters:
   return layers;
 }
 
-function placeNodes(spec: CanvasSpec, layers: number[][], spacing: number): LayoutNode[] {
+function placeNodes(spec: CanvasSpec, layers: number[][], spacing: number, geometry: LayoutGeometry): LayoutNode[] {
   const nodes: LayoutNode[] = [];
   layers.forEach((layer, rank) => {
     layer.forEach((node, order) => {
-      const along = (order - (layer.length - 1) / 2) * spacing * (spec.direction === "TB" ? LAYOUT_GEOMETRY.colStep : LAYOUT_GEOMETRY.rowStep);
-      const across = (rank - (layers.length - 1) / 2) * spacing * (spec.direction === "TB" ? LAYOUT_GEOMETRY.rowStep : LAYOUT_GEOMETRY.colStep);
+      const along = (order - (layer.length - 1) / 2) * spacing * (spec.direction === "TB" ? geometry.colStep : geometry.rowStep);
+      const across = (rank - (layers.length - 1) / 2) * spacing * (spec.direction === "TB" ? geometry.rowStep : geometry.colStep);
       const member = spec.members[node];
       nodes.push({
         title: member.title,
+        ...(member.appearance === undefined ? {} : { appearance: member.appearance }),
         x: spec.direction === "TB" ? along : across,
         y: spec.direction === "TB" ? across : along
       });

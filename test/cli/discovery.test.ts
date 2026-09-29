@@ -16,7 +16,7 @@ function stubBridge(tokenPath: string, health: Record<string, unknown> = {}): vo
       if (pathname === "/v1/health") {
         return Response.json({
           ok: true,
-          data: { status: "ok", bridgeUrl: "http://127.0.0.1:17650", tokenPath, ...health }
+          data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath, ...health }
         });
       }
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;

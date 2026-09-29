@@ -1,11 +1,98 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
 import { describe, expect, it, vi } from "vitest";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
 describe("canvas apply", () => {
+  it("carries Appearance through place, update, and verification", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "place", note: "API", appearance: "api", x: 0, y: 0 },
+      { kind: "note", mode: "update", selector: "Existing", appearance: "card" }
+    ] });
+    const context = { nodes: [{ id: "existing", title: "Existing", appearance: "database" }] };
+    const operations = compileCanvasApply(intent, context).phases.flatMap((phase) => phase.operations);
+    expect(operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "node.create", title: "API", placeExisting: true, appearance: "api" }),
+      { type: "node.update", selector: "Existing", appearance: "card" }
+    ]));
+    expect(verifyCanvasIntent(intent, context).mismatches).toContain("nodes:Existing:appearance");
+  });
+
+  it("counts a requested visual field the app left out as unapplied", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "update", selector: "API", fontSize: 17, titleGap: 8, isResizeLocked: false, glyphSize: null }
+    ] });
+    const context = { nodes: [{ id: "api", title: "API", kind: "note" }] };
+    expect(verifyCanvasIntent(intent, context).mismatches).toEqual([
+      "nodes:API:glyphSize", "nodes:API:titleGap", "nodes:API:isResizeLocked", "nodes:API:fontSize"
+    ]);
+  });
+
+  it("passes an Appearance update through canvas apply dry-run", async () => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: { nodes: [{ id: "api", title: "API", appearance: "api" }] } });
+    });
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({ canvas: "current",
+      nodes: [{ kind: "note", mode: "update", selector: "API", appearance: "card" }]
+    }), "--dry-run"]);
+    expect(result.code).toBe(0);
+    const request = calls.find((call) => new URL(call.url).pathname === "/v1/apply")!;
+    expect(JSON.parse(String(request.init.body))).toEqual({
+      operations: [{ type: "node.update", selector: "API", appearance: "card" }], dryRun: true
+    });
+  });
+
+  it("compiles title-only and icon-only updates and verifies their stored values", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "update", selector: "API", glyphSize: 72 },
+      { kind: "portal", mode: "update", selector: "Detail", fontSize: 28 }
+    ] });
+    const context = { nodes: [{ id: "api", title: "API", kind: "note", glyphSize: 80 },
+      { id: "detail", title: "Detail", kind: "portal", fontSize: 17 }] };
+    expect(compileCanvasApply(intent, context).phases.flatMap((phase) => phase.operations)).toEqual([
+      { type: "node.update", selector: "API", glyphSize: 72 },
+      { type: "node.update", selector: "Detail", fontSize: 28 }
+    ]);
+    expect(verifyCanvasIntent(intent, context).mismatches).toEqual(["nodes:API:glyphSize", "nodes:Detail:fontSize"]);
+  });
+
+  it("compiles and verifies lock and gap changes including an explicit unlock", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "update", selector: "API", isResizeLocked: false, titleGap: 12 }
+    ] });
+    const context = { nodes: [{ id: "api", title: "API", kind: "note", isResizeLocked: true, titleGap: 8 }] };
+    expect(compileCanvasApply(intent, context).phases.flatMap((phase) => phase.operations)).toEqual([
+      { type: "node.update", selector: "API", isResizeLocked: false, titleGap: 12 }
+    ]);
+    expect(verifyCanvasIntent(intent, context).mismatches).toEqual(["nodes:API:titleGap", "nodes:API:isResizeLocked"]);
+    expect(verifyCanvasIntent(intent, { nodes: [{ ...context.nodes[0], isResizeLocked: false, titleGap: 12 }] }).mismatches).toEqual([]);
+  });
+
+  it("reports the placement offset for fresh geometry and zero for an existing Canvas", async () => {
+    let occupied = false;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: {
+        nodes: occupied ? [{ id: "existing", title: "Existing", bounds: { x: 0, y: 0, width: 100, height: 100 } }] : [],
+        links: [], diagramPrimitives: []
+      } });
+    });
+    const args = ["canvas", "apply", "--json", JSON.stringify({ canvas: "current",
+      nodes: [{ kind: "note", mode: "place", note: "A", x: 100, y: 200 }]
+    }), "--dry-run"];
+    const fresh = JSON.parse((await run(args)).stdout).data;
+    expect(fresh.placement).toEqual({ recentered: true, dx: 24900, dy: 24800, home: { x: 25000, y: 25000 } });
+    expect(fresh.phases[0].operations[0]).toMatchObject({ x: 25000, y: 25000 });
+    occupied = true;
+    const existing = JSON.parse((await run(args)).stdout).data;
+    expect(existing.placement).toEqual({ recentered: false, dx: 0, dy: 0 });
+    expect(existing.phases[0].operations[0]).toMatchObject({ x: 100, y: 200 });
+  });
+
   it("prints the machine-readable canvas apply contract without contacting the bridge", async () => {
     const result = await run(["canvas", "apply", "--schema"]);
     expect(result.code).toBe(0);
@@ -126,6 +213,7 @@ describe("canvas apply", () => {
         applied: true,
         appliedBatches: [{ name: "nodePortalWrites", count: 1 }],
         results: [{ type: "node.create", id: "node-1", status: "created" }],
+        placement: { recentered: true, dx: 24990, dy: 24980 },
         verification: { status: "verified" }
       }
     });
@@ -303,6 +391,60 @@ describe("canvas apply", () => {
       validation: { bridgeValidated: [], deferredUntilApply: [] },
       planned: {}
     });
+  });
+
+  it("lists the source Note a fromNote Link removal edits, and nothing for visual edits", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const context = { nodes: [{ id: "a", title: "A", kind: "note" }, { id: "b", title: "B", kind: "note" }],
+      links: [{ id, sourceNodeID: "a", targetNodeID: "b", label: "uses" }] };
+    const compile = (input: object) => compileCanvasApply(parseCanvasIntent({ canvas: "current", ...input }), context);
+    expect(compile({ links: [{ mode: "create", source: "A", target: "B" }] }).sharedNoteWrites).toEqual([]);
+    expect(compile({ links: [{ mode: "update", id, label: "reads" }] }).sharedNoteWrites).toEqual([]);
+    expect(compile({ links: [{ mode: "remove", id }] }).sharedNoteWrites).toEqual([]);
+    expect(compile({ links: [{ mode: "remove", id, fromNote: true }] }).sharedNoteWrites).toEqual(["A"]);
+  });
+
+  it("lists every Note an endpoint move rewrites", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const context = { nodes: [{ id: "a", title: "A", kind: "note" }, { id: "b", title: "B", kind: "note" }, { id: "c", title: "C", kind: "note" }],
+      links: [{ id, sourceNodeID: "a", targetNodeID: "b" }] };
+    const compile = (input: object) => compileCanvasApply(parseCanvasIntent({ canvas: "current", ...input }), context);
+    expect(compile({ links: [{ mode: "update", id, target: "C" }] }).sharedNoteWrites).toEqual(["A", "B", "C"]);
+    expect(compile({ links: [{ mode: "update", id, source: "C" }] }).sharedNoteWrites).toEqual(["A", "B", "C"]);
+    expect(compile({ links: [{ mode: "update", id, target: null, targetPosition: { x: 10, y: 20 } }] }).sharedNoteWrites).toEqual(["A", "B"]);
+  });
+
+  it("excludes Portals from the shared Note write warning", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const context = { nodes: [{ id: "a", title: "A", kind: "note" }, { id: "portal", title: "Detail", kind: "portal" }, { id: "b", title: "B", kind: "note" }],
+      links: [{ id, sourceNodeID: "a", targetNodeID: "portal" }] };
+    const compile = (input: object) => compileCanvasApply(parseCanvasIntent({ canvas: "current", ...input }), context);
+    expect(compile({ links: [{ mode: "update", id, target: "B" }] }).sharedNoteWrites).toEqual(["A", "B"]);
+  });
+
+  it("verifies requested Link label size and rejects a conflicting existing create", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const context = { nodes: [{ id: "a", title: "A" }, { id: "b", title: "B" }],
+      links: [{ id, sourceNodeID: "a", targetNodeID: "b", labelFontSize: 12 }] };
+    const update = parseCanvasIntent({ canvas: "current", links: [{ mode: "update", id, labelFontSize: 20 }] });
+    expect(verifyCanvasIntent(update, context).ok).toBe(false);
+    expect(verifyCanvasIntent(update, { ...context, links: [{ ...context.links[0], labelFontSize: 20 }] }).ok).toBe(true);
+    const create = parseCanvasIntent({ canvas: "current", links: [{ mode: "create", source: "A", target: "B", labelFontSize: 20 }] });
+    expect(() => compileCanvasApply(create, context)).toThrow(/different state/);
+  });
+
+  it("flags the Note a fromNote Link removal edits in dry-run output", async () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: { nodes: [{ id: "a", title: "A", kind: "note" }, { id: "b", title: "B", kind: "note" }],
+        links: [{ id, sourceNodeID: "a", targetNodeID: "b" }], diagramPrimitives: [] } });
+    });
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({
+      canvas: "current",
+      links: [{ mode: "remove", id, fromNote: true }]
+    }), "--dry-run"]);
+    expect(JSON.parse(result.stdout).data).toMatchObject({ sharedNoteWrites: ["A"], sharedNoteWritesAssessment: "potential" });
   });
 
   it("preflights an unplaced Note reuse by exact Note name", async () => {

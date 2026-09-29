@@ -8,7 +8,7 @@ export type EnsoErrorCode =
   | "canvas_changed"
   | "invalid_response"
   | "invalid_input"
-  | "pairing_failed"
+  | "link_failed"
   | "ambiguous_selector"
   | string;
 

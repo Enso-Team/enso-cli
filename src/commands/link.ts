@@ -42,6 +42,7 @@ export function registerLink(program: Command): void {
     .option("--label <label>", "label override on the curve; empty shows the sentence from the Note")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
+    .option("--label-font-size <points>", "label size in World points, 8 to 32; new links default to 12")
     .option("--dry-run", "validate without mutating")
     .action(async (source: string, target: string, options: LinkUpdateOptions) =>
       new BridgeClient().request("/v1/links", {
@@ -64,6 +65,7 @@ export function registerLink(program: Command): void {
     .option("--clear-label", "clear the override so the curve shows the sentence from the Note")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
+    .option("--label-font-size <points>", "label size in World points, 8 to 32; new links default to 12")
     .option("--dry-run", "validate without mutating")
     .action(async (linkId: string, options: LinkUpdateOptions) => {
       let body: Record<string, unknown>;

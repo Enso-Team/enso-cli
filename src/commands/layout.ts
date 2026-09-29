@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { canvasSpecContract, parseCanvasSpec, specError } from "../canvas-spec.js";
-import { compileCanvasSpec } from "../layout.js";
-import { centerPatchOnCanvas } from "../layout-centering.js";
+import { compileCanvasSpec, layoutGeometry } from "../layout.js";
+import { centeringOffset, patchBounds, existingContent, translatePatch } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
-import { applyCanvasIntent, requestCanvasContext } from "./canvas.js";
+import { applyCanvasIntent, placementReport, requestCanvasContext } from "./canvas.js";
 
 export function registerLayout(program: Command): void {
   program
@@ -39,16 +39,19 @@ export function registerLayout(program: Command): void {
       // first and moves the whole cluster to where the app looks; --dry-run reports the
       // same translated coordinates the apply would write.
       const context = options.apply ? await canvasContext(spec.canvas) : undefined;
-      const patch = options.apply ? centerPatchOnCanvas(compiled, context?.ok ? context.data : undefined) : compiled;
+      const existing = existingContent(context?.ok ? context.data : undefined);
+      const offset = options.apply ? centeringOffset(patchBounds(compiled, layoutGeometry(spec)), existing) : { dx: 0, dy: 0 };
+      const placement = placementReport(offset, existing === undefined);
+      const patch = translatePatch(compiled, offset);
       if (options.apply) {
         let applied: EnsoEnvelope;
         try {
-          applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context);
+          applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
         } catch (error) {
-          throw relayoutError(error) ?? error;
+          throw relayoutError(error, placement) ?? error;
         }
         if (!applied.ok) {
-          const relayout = relayoutError(applied.error);
+          const relayout = relayoutError(applied.error, placement);
           if (relayout) return { ok: false, error: { ...relayout.body, details: { ...applied.error.details, ...relayout.body.details } } };
           return applied;
         }
@@ -56,6 +59,7 @@ export function registerLayout(program: Command): void {
           ok: true,
           data: {
             ...summary(spec.canvas, spec.direction, patch),
+            placement,
             ...validationSummary(applied.data),
             applied: applied.data
           }
@@ -105,7 +109,7 @@ const RELAYOUT_CODES = new Set(["title_collision", "already_on_canvas"]);
  * Layout compiles a Canvas once. This folds the preflight title collision and the app's
  * already_on_canvas into one error that names the re-layout ticket.
  */
-function relayoutError(error: unknown): EnsoCliError | undefined {
+function relayoutError(error: unknown, placement: ReturnType<typeof placementReport>): EnsoCliError | undefined {
   const code = error instanceof EnsoCliError
     ? error.body.code
     : typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string"
@@ -114,6 +118,7 @@ function relayoutError(error: unknown): EnsoCliError | undefined {
   if (code === undefined || !RELAYOUT_CODES.has(code)) return undefined;
   return new EnsoCliError("canvas_already_laid_out", "The target Canvas already contains members of this spec", {
     path: "canvas",
+    placement,
     expected: "a target Canvas free of the spec's members",
     hint: "Compile onto an empty Canvas, or remove the existing elements first. Re-layout and update mode are tracked in issue #25.",
     cause: error instanceof EnsoCliError ? error.body : error
