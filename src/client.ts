@@ -95,7 +95,7 @@ export class BridgeClient {
       if (!discovered) {
         throw new EnsoCliError("invalid_token", "The stored Enso pairing is stale", {
           bridgeUrl: currentConfig.bridgeUrl,
-          hint: "The configured app provisions no token file. Update Enso, or run `enso auth link` to pair through its prompt"
+          hint: "Open Enso, turn Local agent access off and on in Settings, then run `enso auth link`"
         });
       }
       const relinkedUrl = new URL(url.pathname + url.search, discovered.bridgeUrl);

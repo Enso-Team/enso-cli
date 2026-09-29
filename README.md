@@ -12,8 +12,7 @@ enso status --pretty
 ```
 
 With the Enso app open, the first command links itself by reading the token
-file the app provisions. `enso auth link` stays available for relinking, and on
-an app that provisions no token file it pairs through the app's prompt.
+file the app provisions. `enso auth link` relinks the same way.
 
 The app names its bridge contract on `/v1/health`, and every CLI request
 carries its own in the `Enso-Contract-Version` header. The number moves only on
@@ -244,11 +243,10 @@ enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 | Error                  | Fix                                                 |
 | ---------------------- | --------------------------------------------------- |
 | `app_unavailable`      | Launch the configured app, or run `enso auth link` to relink |
-| `invalid_token`        | The CLI relinks through the app's token file on its own. When the app provisions none, update Enso, or run `enso auth link` to pair through its prompt |
+| `invalid_token`        | The CLI relinks through the app's token file on its own. If that fails, run `enso auth link` with the app open |
 | `access_disabled`      | Turn on Local agent access in Enso's Settings        |
 | `bridge_busy`          | Wait for the agent change in flight, then retry      |
 | `canvas_changed`       | The user changed the open Canvas; inspect `appliedBatches`, reopen the target, and resume |
-| `pairing_in_progress`  | Wait for the active pairing attempt                  |
 | `ambiguous_selector`   | Use the candidate list from the error; do not guess |
 | Unreadable JSON output | Add `--pretty`                                      |
 
