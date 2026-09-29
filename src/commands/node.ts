@@ -58,7 +58,7 @@ export function registerNode(program: Command): void {
     .argument("<selector>")
     .option("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
     .option("--glyph-size <points>", "Icon width in World points", parseGlyphSize)
-    .option("--clear-glyph-size", "Derive icon size from block width")
+    .option("--clear-glyph-size", "Derive icon size from title font size")
     .option("--font-size <points>", "Title size in World points", parseFontSize)
     .option("--title-gap <points>", "Icon/title gap in World points", parseTitleGap)
     .option("--lock-ratio <boolean>", "Scale the whole Node proportionally: true or false", parseRatioLock)

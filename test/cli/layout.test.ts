@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { LAYOUT_GEOMETRY } from "../../src/layout.js";
+import { LAYOUT_GEOMETRY, SYMBOL_GEOMETRY } from "../../src/layout.js";
 import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
@@ -29,7 +29,7 @@ function writeSpec(spec: unknown, name = "flow.json"): string {
   return path;
 }
 
-type PatchNode = { note?: string; title?: string; selector?: string; x: number; y: number };
+type PatchNode = { note?: string; title?: string; selector?: string; appearance?: string; x: number; y: number };
 type PatchRegion = { title: string; x: number; y: number; width: number; height: number };
 type Patch = { canvas: string; nodes: PatchNode[]; links: Array<Record<string, unknown>>; primitives: PatchRegion[] };
 
@@ -39,7 +39,45 @@ function patchOf(stdout: string): Patch {
 
 describe("layout", () => {
   it("exposes spacing constants for agent layout recipes", () => {
-    expect(LAYOUT_GEOMETRY).toMatchObject({ colStep: 450, rowStep: 280, nodeWidth: 220, nodeHeight: 140 });
+    expect(LAYOUT_GEOMETRY).toMatchObject({ colStep: 300, rowStep: 200, nodeWidth: 220, nodeHeight: 140 });
+  });
+
+  it("lays out an all-symbol spec at symbol density and forwards appearances", async () => {
+    const result = await run(["layout", writeSpec({ canvas: "Symbols", direction: "LR",
+      members: [{ title: "Gateway", appearance: "loadBalancer" }, { title: "Store", appearance: "database" }],
+      edges: [{ from: "Gateway", to: "Store" }] }, "symbols.json")]);
+    expect(result.code).toBe(0);
+    const nodes = patchOf(result.stdout).nodes;
+    expect(nodes.map((node) => node.appearance)).toEqual(["loadBalancer", "database"]);
+    expect(nodes[1].x - nodes[0].x).toBe(SYMBOL_GEOMETRY.colStep);
+  });
+
+  it("measures Symbols at symbol size when fitting them among existing content", async () => {
+    // Two 100-point Nodes leave a gap around x = 360. With one Node width of clearance, a
+    // 140-point Symbol fits there; a 220-point Card would not.
+    vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/context") {
+        return Response.json({ ok: true, data: { nodes: [
+          { id: "left", title: "Left", bounds: { x: -50, y: -50, width: 100, height: 100 } },
+          { id: "right", title: "Right", bounds: { x: 670, y: -50, width: 100, height: 100 } }
+        ], links: [], diagramPrimitives: [] } });
+      }
+      return Response.json({ ok: true, data: {} });
+    });
+    const spec = writeSpec({ canvas: "current", members: [{ title: "API", appearance: "api" }] }, "gap.json");
+    const result = await run(["layout", spec, "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data.applied.phases[0].operations).toEqual([expect.objectContaining({ x: 360, y: 0 })]);
+  });
+
+  it("uses card spacing for title-inside Shapes", async () => {
+    const result = await run(["layout", writeSpec({ canvas: "Flow", direction: "LR",
+      members: [{ title: "Start", appearance: "terminal" }, { title: "Ready", appearance: "decision" }],
+      edges: [{ from: "Start", to: "Ready" }] })]);
+    expect(result.code).toBe(0);
+    const nodes = patchOf(result.stdout).nodes;
+    expect(nodes[1].x - nodes[0].x).toBe(300);
   });
 
   it("prints the machine-readable canvas spec contract without contacting the bridge", async () => {
@@ -211,7 +249,10 @@ describe("layout", () => {
     const result = await run(["layout", writeSpec(FLOW_SPEC), "--apply", "--dry-run"]);
     expect(result.code).toBe(0);
     expect(calls.some((call) => new URL(call.url).pathname === "/v1/apply")).toBe(false);
-    expect(JSON.parse(result.stdout).data.applied).toMatchObject({ dryRun: true, preflightPassed: true });
+    const data = JSON.parse(result.stdout).data;
+    expect(data.applied).toMatchObject({ dryRun: true, preflightPassed: true });
+    expect(data.placement).toEqual(data.applied.placement);
+    expect(data.placement).toMatchObject({ recentered: true, home: CANVAS_WORLD_HOME });
   });
 
   it("names the phases the app validated and the phases validated locally alone", async () => {
@@ -292,7 +333,7 @@ describe("layout", () => {
       ok: false,
       error: {
         code: "canvas_already_laid_out",
-        details: { hint: expect.stringContaining("#25"), failedBatch: "nodePortalWrites" }
+        details: { hint: expect.stringContaining("#25"), failedBatch: "nodePortalWrites", placement: { recentered: true, home: CANVAS_WORLD_HOME } }
       }
     });
   });

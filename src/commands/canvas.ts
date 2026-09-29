@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
-import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch } from "../layout-centering.js";
+import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
@@ -135,25 +135,28 @@ export function requestCanvasContext(client: BridgeClient, canvas: string): Prom
     : client.request(`/v1/canvases/${encodeURIComponent(canvas)}/inspect`);
 }
 
-type PlacementReport = {
+export type PlacementReport = {
   recentered: boolean;
   dx: number;
   dy: number;
   home?: typeof CANVAS_WORLD_HOME;
 };
 
+/**
+ * What a translation did to authored coordinates, reported on dry-run, apply, and failure.
+ * `onHome` names a move onto the empty-Canvas home rather than beside existing content.
+ */
+export function placementReport(offset: WorldOffset, onHome: boolean): PlacementReport {
+  if (offset.dx === 0 && offset.dy === 0) return { recentered: false, dx: 0, dy: 0 };
+  return { recentered: true, dx: offset.dx, dy: offset.dy, ...(onHome ? { home: CANVAS_WORLD_HOME } : {}) };
+}
+
 function placeIntentOnCanvas(intent: CanvasIntent, context: unknown): { patch: CanvasIntent; placement: PlacementReport } {
   if (!(isPureCreation(intent) && existingContent(context) === undefined)) {
-    return { patch: intent, placement: { recentered: false, dx: 0, dy: 0 } };
+    return { patch: intent, placement: placementReport({ dx: 0, dy: 0 }, false) };
   }
   const offset = centeringOffset(patchBounds(intent), undefined);
-  const recentered = offset.dx !== 0 || offset.dy !== 0;
-  return {
-    patch: translatePatch(intent, offset),
-    placement: recentered
-      ? { recentered: true, dx: offset.dx, dy: offset.dy, home: CANVAS_WORLD_HOME }
-      : { recentered: false, dx: 0, dy: 0 }
-  };
+  return { patch: translatePatch(intent, offset), placement: placementReport(offset, true) };
 }
 
 /**
@@ -166,6 +169,19 @@ export async function applyCanvasIntent(
   preflightContext?: EnsoEnvelope,
   placement: PlacementReport = { recentered: false, dx: 0, dy: 0 }
 ): Promise<EnsoEnvelope> {
+  let result: EnsoEnvelope;
+  try {
+    result = await executeCanvasIntent(intent, dryRun, preflightContext, placement);
+  } catch (error) {
+    if (error instanceof EnsoCliError) {
+      throw new EnsoCliError(error.body.code, error.body.message, { ...error.body.details, placement });
+    }
+    throw error;
+  }
+  return result.ok ? result : { ...result, error: { ...result.error, details: { ...result.error.details, placement } } };
+}
+
+async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, preflightContext: EnsoEnvelope | undefined, placement: PlacementReport): Promise<EnsoEnvelope> {
   const client = new BridgeClient();
   const inspect = () => requestCanvasContext(client, intent.canvas);
   const context = preflightContext ?? await inspect();
@@ -202,6 +218,8 @@ export async function applyCanvasIntent(
           deferredUntilApply: compiled.phases.slice(bridgePhase ? 1 : 0).map((phase) => phase.name)
         },
         planned: Object.fromEntries(compiled.phases.map((phase) => [phase.name, phase.operations.length])),
+        sharedNoteWrites: compiled.sharedNoteWrites,
+        sharedNoteWritesAssessment: "potential",
         phases: compiled.phases.map((phase) => ({ name: phase.name, operations: phase.operations }))
       }
     };

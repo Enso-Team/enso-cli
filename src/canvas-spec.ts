@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EnsoCliError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
+import { nodeAppearanceSchema } from "./node-appearance.js";
 
 // A canvas spec is a graph JSON: members, edges, clusters, direction. Layout compiles
 // it into a place-only apply patch. Titles are vault files, never mermaid ids.
@@ -14,8 +15,8 @@ const directionHintSchema = z.preprocess(
 
 // A member names a Note that already exists in the Vault, by title or Vault-relative path.
 const memberSchema = z.union([
-  nonEmpty.transform((title) => ({ title })),
-  z.object({ title: nonEmpty }).strict()
+  nonEmpty.transform((title) => ({ title, appearance: undefined as z.infer<typeof nodeAppearanceSchema> | undefined })),
+  z.object({ title: nonEmpty, appearance: nodeAppearanceSchema.optional() }).strict()
 ]);
 
 const edgeSchema = z.object({
@@ -158,7 +159,7 @@ export const canvasSpecContract = {
   graph: {
     canvas: "target Canvas name, or current",
     direction: { values: ["TB", "LR"], aliases: { "top-bottom": "TB", "left-right": "LR" }, default: "TB" },
-    members: "sequence of Notes that already exist in the Vault, each a title or Vault-relative path, or a { title } mapping",
+    members: "sequence of Notes that already exist in the Vault, each a title or Vault-relative path, or a { title, appearance } mapping; a spec whose members are all symbols lays out at symbol density",
     edges: "sequence of { from, to } with optional label, direction, color",
     clusters: "sequence of { name, members } with optional semantic color"
   },

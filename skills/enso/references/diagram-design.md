@@ -30,15 +30,19 @@ Prefer content inside a Note when a relationship is explanatory rather than stru
 
 ## Choose Appearance
 
-`card` is a reading surface. Every other appearance is a diagram form. Give each Node an appearance that matches what it is. Set `appearance` on each place:
+Give each Node an appearance that matches what it is. Set `appearance` on each place. Reuse one appearance for parts that are the same kind.
 
-- people and clients: `user`, `developer`, `player`, `client`, `mobileApp`
-- running software: `service`, `api`, `server`, `component`, `auth`, `terminal`
-- data and traffic: `database`, `queue`, `cache`, `storage`, `cloud`, `loadBalancer`
-- outside the system: `external`
-- a branch or decision: `decision`, `ux`
+Card carries reading text. Symbols put a glyph above the title. Use People Symbols `user`, `developer`, and `client`, Systems Symbols `service`, `api`, `database`, `server`, `queue`, `cache`, `cloud`, `storage`, `external`, `auth`, and `loadBalancer`, and Product Symbols `mobileApp` and `component`. Stored `player` and `ux` values remain supported.
 
-Reuse one appearance for parts that are the same kind. Appearance is complete when a reader can tell what a Node is from its shape without opening it, and `card` is reserved for notes meant to be read as cards.
+Shapes `decision` and `terminal` hold the title inside their outline and scale with the title. Choose them for branching and start/end points. Layout uses card spacing for diagrams containing Shapes or Cards, and compact symbol spacing when every member is a Symbol. `glyphSize: null` derives a Symbol's glyph size from its title font size.
+
+Appearance is complete when a reader can tell what a Node is from its shape without opening it, and `card` is reserved for notes meant to be read as cards.
+
+## Scale
+
+One unit is the card title, 17 World points. Cards carry reading text at 17. Symbol Nodes carry diagram text at 14, the same size as a Link label, under an icon four titles tall, 56 points by default. The app derives the icon from the title, so a title change scales the icon with it and a spec never sets glyph sizes.
+
+The design target is zoom 1, where text is native size. Seven symbol columns at the 200 step fit a Mac window there. Between 0.65 and 1 text still reads and a diagram up to about eleven columns fits. At the 0.4 floor titles drop out and only icons identify Nodes. Give members an appearance in the spec so `enso layout` uses symbol density: 140 by 82 blocks on 200 by 140 steps. A single card member sets card density, 220 by 140 blocks on 300 by 200 steps.
 
 ## Place Geometry
 
@@ -79,3 +83,9 @@ Treat `node_offscreen` as blocking when clipping is accidental in the intended v
 For each repair, choose the smallest typed geometry change that addresses the highest-priority remaining issue. Dry-run it, apply it, and recapture diagnostics before choosing another change. Prefer moving a Node or updating a primitive from inspected IDs and coordinates.
 
 Repair is complete when blocking diagnostics are absent, the arrangement has a clear focal path and grouping, labels are legible, Links avoid unrelated Nodes, and the change introduces no new higher-priority issue.
+
+## Placement and shared Notes
+
+`canvas apply` and `layout --apply` report `placement` in dry-run, apply, and failure results. When `recentered` is true, the CLI translated the input by `dx` and `dy` World points, onto the empty-Canvas `home` when that field is present. Add the offset to input coordinates to get stored World coordinates. Follow-up `node move` and `primitive update` take those World coordinates.
+
+Dry-run `sharedNoteWrites` lists the Notes the app may rewrite, with `sharedNoteWritesAssessment: "potential"`. A `fromNote` Link removal deletes the mentioning sentence from its source. A Link endpoint move rewrites the mention, and the app saves the Notes on both ends, before and after.

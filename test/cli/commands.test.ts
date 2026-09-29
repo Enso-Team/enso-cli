@@ -262,6 +262,15 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("sends a Link label size and rejects one out of range", async () => {
+    await run(["link", "update", "abc", "--label-font-size", "12"]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ labelFontSize: 12, dryRun: false });
+    calls.length = 0;
+    const tooBig = await run(["link", "update", "abc", "--label-font-size", "40"]);
+    expect(tooBig.code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
   it("sends a label-only link update", async () => {
     await run(["link", "update", "abc", "--label", "queries"]);
     expect(JSON.parse(String(calls[0].init.body))).toEqual({
@@ -442,15 +451,15 @@ describe("commands", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ ok: true, data: {
-        nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 } }],
-        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], path: [] }],
+        nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false }],
+        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12, path: [] }],
         diagramPrimitives: []
       } });
     }));
     const result = await run(["context", "--canvas", "current"]);
     const data = JSON.parse(result.stdout).data;
-    expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 } });
-    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."] });
+    expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false });
+    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12 });
   });
 
   it("requests file-backed viewport vision context", async () => {

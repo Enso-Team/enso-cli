@@ -215,6 +215,7 @@ Canvas intents accept optional `glyphSize` and `fontSize` fields on place, creat
 enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-run
 enso link update "<id>" --label syncs --dry-run
 enso link update "<id>" --clear-label
+enso link update "<id>" --label-font-size 12
 enso link update "<id>" --source "Cache" --dry-run
 enso link update "<id>" --target "Database"
 enso link update "<id>" --delink --target-position 320,-180

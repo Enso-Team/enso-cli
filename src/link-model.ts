@@ -44,9 +44,22 @@ export const linkSchema = z.object({
   mentions: z.array(z.string()).optional(),
   direction: linkDirectionSchema.optional(),
   color: z.string().optional(),
+  labelFontSize: z.number().optional(),
   targetPosition: worldPointSchema.optional()
 });
 export type Link = z.infer<typeof linkSchema>;
+
+/** Label size in World points. New Links default to 12 in the app, one step under a 14pt symbol title. */
+export const LABEL_FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
+export const labelFontSizeSchema = z.number().min(LABEL_FONT_SIZE_RANGE.min).max(LABEL_FONT_SIZE_RANGE.max);
+
+export function parseLabelFontSize(value: string): number {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size < LABEL_FONT_SIZE_RANGE.min || size > LABEL_FONT_SIZE_RANGE.max) {
+    throw new Error(`label font size must be a number between ${LABEL_FONT_SIZE_RANGE.min} and ${LABEL_FONT_SIZE_RANGE.max}`);
+  }
+  return size;
+}
 
 export type LinkCreateBody = {
   source: string;
@@ -54,14 +67,18 @@ export type LinkCreateBody = {
   label?: string;
   color?: string;
   direction?: LinkDirection;
+  labelFontSize?: number;
   dryRun: boolean;
 };
+
+export type LinkCreateOptions = Omit<LinkCreateBody, "source" | "target" | "dryRun" | "labelFontSize"> & { labelFontSize?: number | string; dryRun?: boolean };
 
 export type LinkUpdateOptions = {
   label?: string;
   clearLabel?: boolean;
   color?: string;
   direction?: LinkDirection;
+  labelFontSize?: number | string;
   source?: string;
   target?: string;
   delink?: boolean;
@@ -101,7 +118,7 @@ export function parseWorldPoint(value: string): WorldPoint {
 export function buildLinkCreateBody(
   source: string,
   target: string,
-  options: Omit<LinkCreateBody, "source" | "target" | "dryRun"> & { dryRun?: boolean }
+  options: LinkCreateOptions
 ): LinkCreateBody {
   const body: LinkCreateBody = {
     source,
@@ -114,6 +131,7 @@ export function buildLinkCreateBody(
     body.color = options.color;
   }
   if (options.direction !== undefined) body.direction = options.direction;
+  if (options.labelFontSize !== undefined) body.labelFontSize = parseLabelFontSize(String(options.labelFontSize));
   return body;
 }
 
@@ -136,6 +154,7 @@ export function buildLinkUpdateBody(options: LinkUpdateOptions): Record<string, 
     body.color = options.color;
   }
   if (options.direction !== undefined) body.direction = options.direction;
+  if (options.labelFontSize !== undefined) body.labelFontSize = parseLabelFontSize(String(options.labelFontSize));
 
   return body;
 }
@@ -146,6 +165,7 @@ export const linkUpdateOperationSchema = z.object({
   label: z.string().nullable().optional(),
   color: visualColorSchema.optional(),
   direction: linkDirectionSchema.optional(),
+  labelFontSize: labelFontSizeSchema.optional(),
   source: z.string().optional(),
   target: z.string().nullable().optional(),
   targetPosition: worldPointSchema.optional()
