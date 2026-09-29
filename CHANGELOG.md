@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/Enso-Team/enso-cli/compare/v0.7.1...v0.8.0) (2026-09-29)
+
+
+### Features
+
+* **cli:** agents choose how Nodes and Link labels look, and linking uses only the token file ([#81](https://github.com/Enso-Team/enso-cli/issues/81)) ([23deba4](https://github.com/Enso-Team/enso-cli/commit/23deba4eb5a96db8397402924ca841f2d6cb019c))
+* **skill:** agents write the Notes, then draw Links that stand on wikilinks ([#70](https://github.com/Enso-Team/enso-cli/issues/70)) ([de5135e](https://github.com/Enso-Team/enso-cli/commit/de5135e9a0bc28bf17dab324a4f02b4befda9a6c))
+
 ## [0.7.1](https://github.com/Enso-Team/enso-cli/compare/v0.7.0...v0.7.1) (2026-09-03)
 
 
