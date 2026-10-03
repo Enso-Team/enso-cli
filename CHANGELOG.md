@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.1](https://github.com/Enso-Team/enso-cli/compare/v0.8.0...v0.8.1) (2026-10-04)
+
+### Bug Fixes
+
+* **cli:** explain blank and Note-derived Link labels ([#84](https://github.com/Enso-Team/enso-cli/pull/84)) ([fc82f33](https://github.com/Enso-Team/enso-cli/commit/fc82f33f89c61d907bce48b75d53a655e2b0a8ba))
+
 ## [0.8.0](https://github.com/Enso-Team/enso-cli/compare/v0.7.1...v0.8.0) (2026-09-29)
 
 
