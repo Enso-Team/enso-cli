@@ -8,6 +8,7 @@ import { extname, join, relative, sep } from "node:path";
 import { compareStrings } from "./canvas-spec.js";
 import { EnsoCliError } from "./errors.js";
 import { FrontmatterError, hasFrontmatterFence, parseFrontmatter } from "./frontmatter.js";
+import { noteKeys } from "./note-identity.js";
 
 export const MANIFEST_SUFFIX = ".canvas.md";
 /// The first line of every outline Enso writes. Matches `CanvasOutline.headerPrefix` in the app.
@@ -56,7 +57,8 @@ export function checkEnsoFolder(root: string): CheckReport {
   for (const note of notes) byTitle.set(note.title, [...(byTitle.get(note.title) ?? []), note]);
 
   violations.push(...duplicateTitles(byTitle));
-  violations.push(...unresolvedWikilinks(notes, byTitle));
+  const referenceKeys = new Set(notes.flatMap(note => [...noteKeys({ title: note.title, ref: note.file })]));
+  violations.push(...unresolvedWikilinks(notes, referenceKeys));
 
   const outlines = notes.filter((note) => note.generated).length;
   return {
@@ -159,7 +161,7 @@ function duplicateTitles(byTitle: Map<string, NoteFile[]>): CheckFinding[] {
 
 const WIKILINK_PATTERN = /\[\[([^\]]+)\]\]/g;
 
-function unresolvedWikilinks(files: Array<Prose & { file: string; generated?: boolean }>, byTitle: Map<string, NoteFile[]>): CheckFinding[] {
+function unresolvedWikilinks(files: Array<Prose & { file: string; generated?: boolean }>, referenceKeys: Set<string>): CheckFinding[] {
   const findings: CheckFinding[] = [];
   for (const source of files) {
     if (source.generated) continue;
@@ -174,7 +176,7 @@ function unresolvedWikilinks(files: Array<Prose & { file: string; generated?: bo
       const prose = text.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
       for (const match of prose.matchAll(WIKILINK_PATTERN)) {
         const target = wikilinkTarget(match[1]);
-        if (target === "" || byTitle.has(target)) continue;
+        if (target === "" || referenceKeys.has(target.toLowerCase())) continue;
         findings.push({
           code: "unresolved_wikilink",
           file: source.file,
@@ -188,5 +190,5 @@ function unresolvedWikilinks(files: Array<Prose & { file: string; generated?: bo
 }
 
 function wikilinkTarget(raw: string): string {
-  return raw.split("|")[0].split("#")[0].trim();
+  return raw.split("|")[0].replace(/\\$/, "").split("#")[0].trim();
 }

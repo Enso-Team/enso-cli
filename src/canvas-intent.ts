@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
 import { EnsoCliError } from "./errors.js";
-import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
+import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, lineStyleSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
+import { nodeSelector, noteMatches, placementSelector } from "./note-identity.js";
 
 const finite = z.number().finite();
 const positiveFinite = finite.positive();
@@ -45,7 +46,7 @@ const portalUpdate = z.object({ ...nodeVisual, kind: z.literal("portal"), mode: 
 const portalRemove = z.object({ kind: z.literal("portal"), mode: z.literal("remove"), selector }).strict();
 const intentNode = z.union([notePlace, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
 
-const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional(), labelFontSize: labelFontSizeSchema.optional() };
+const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional(), lineStyle: lineStyleSchema.optional(), labelFontSize: labelFontSizeSchema.optional() };
 const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
 const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
   try {
@@ -57,7 +58,7 @@ const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), 
 const linkRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid(), fromNote: z.boolean().optional() }).strict();
 const intentLink = z.union([linkCreate, linkUpdate, linkRemove]);
 
-const primitiveVisual = { title: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), lineStyle: z.enum(["solid", "dashed", "dotted"]).optional(), strokeWidth: positiveFinite.optional() };
+const primitiveVisual = { title: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), lineStyle: lineStyleSchema.optional(), strokeWidth: positiveFinite.optional() };
 const primitiveKinds = ["region", "line"] as const;
 const primitiveKindSchema = z.enum(primitiveKinds);
 const regionCreate = z.object({ kind: z.literal("region"), mode: z.literal("create"), ...coordinates, width: positiveFinite, height: positiveFinite, fillOpacity: finite.min(0).max(0.18).optional(), ...primitiveVisual }).strict();
@@ -94,9 +95,9 @@ export type CanvasPhaseName = "linkRemovals" | "nodePortalRemovals" | "nodePorta
 export type CanvasPhase = { name: CanvasPhaseName; operations: Record<string, unknown>[]; retrySections: string[] };
 export type CompiledCanvasApply = { phases: CanvasPhase[]; sharedNoteWrites: string[]; verification: { nodes: string[]; links: string[]; primitives: string[] } };
 
-type ContextNode = { titleGap?: number; isResizeLocked?: boolean; glyphSize?: number | null; fontSize?: number; appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } };
-type ContextLink = { labelFontSize?: number; id?: string; sourceNodeID?: string; targetNodeID?: string; label?: string | null; color?: string | null; direction?: string };
-type ContextPrimitive = { id?: string; kind?: string };
+type ContextNode = { titleGap?: number; isResizeLocked?: boolean; glyphSize?: number | null; fontSize?: number; appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } } & Record<string, unknown>;
+type ContextLink = { labelFontSize?: number; id?: string; sourceNodeID?: string; targetNodeID?: string | null; label?: string | null; color?: string | null; direction?: string; lineStyle?: string } & Record<string, unknown>;
+type ContextPrimitive = { id?: string; kind?: string; position?: { x?: number; y?: number }; bounds?: { x?: number; y?: number; width?: number; height?: number }; start?: { x?: number; y?: number }; end?: { x?: number; y?: number } } & Record<string, unknown>;
 
 export function compileCanvasApply(intent: CanvasIntent, context: unknown): CompiledCanvasApply {
   const nodes = readArray<ContextNode>(context, "nodes");
@@ -113,7 +114,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   for (const node of intent.nodes) {
     if (node.mode === "place") {
       const canvasMatches = matches(nodes, node.note);
-      const vaultMatches = availableNotes.filter((candidate) => candidate === node.note);
+      const vaultMatches = availableNotes.filter(candidate => noteMatches({ ref: candidate }, node.note));
       if (canvasMatches.length > 1 || vaultMatches.length > 1) fail("ambiguous_selector", `Multiple Notes match '${node.note}'`, `nodes.${node.note}`, "Name the Note by its Vault-relative path");
       if (canvasMatches.length === 0) placed.push(node.note);
     } else if ("selector" in node) {
@@ -132,30 +133,32 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
       const target = matches(nodes, link.target)[0]?.id;
       const existing = source && target ? links.find((candidate) => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source, target)) : undefined;
       if (existing) {
-        const same = existing.label === (link.label ?? existing.label) && existing.color === (link.color ?? existing.color) && existing.direction === (link.direction ?? existing.direction)
-          && (link.labelFontSize === undefined || existing.labelFontSize === link.labelFontSize);
-        if (!same) fail("link_conflict", "A Link already exists for this unordered endpoint pair with different state", "links", "Update the existing Link by id");
+        const mismatches: string[] = [];
+        compareRequestedFields(link, existing, Object.keys(linkVisual), "links", mismatches);
+        if (existing.sourceNodeID !== source || existing.targetNodeID !== target || mismatches.length > 0) {
+          fail("link_conflict", "A Link already exists for this unordered endpoint pair with different state", "links", "Update the existing Link by id");
+        }
       }
     } else {
-      resolveId(links, link.id, "Link");
+      if (link.mode === "update" || link.fromNote === true) resolveId(links, link.id, "Link");
       // A moved endpoint lands on a Node that exists or is created in this intent.
       if (link.mode === "update") {
-        if (link.source !== undefined) resolveEndpoint(link.source, nodes, declaredTitles);
-        if (typeof link.target === "string") resolveEndpoint(link.target, nodes, declaredTitles);
+        if (link.source !== undefined) resolveEndpoint(link.source, nodes, declaredEndpoints);
+        if (typeof link.target === "string") resolveEndpoint(link.target, nodes, declaredEndpoints);
       }
     }
   }
   for (const primitive of intent.primitives) if (primitive.mode !== "create") resolveId(primitives, primitive.id, "DiagramPrimitive");
 
-  const linkRemovals = intent.links.flatMap((link) => link.mode === "remove" ? [{ type: "link.delete", id: link.id, fromNote: link.fromNote ?? false }] : []);
-  const nodePortalRemovals = intent.nodes.flatMap((node) => node.mode === "remove" ? [{ type: "node.delete", selector: node.selector }] : []);
+  const linkRemovals = intent.links.flatMap((link) => link.mode === "remove" && links.some(existing => existing.id === link.id) ? [{ type: "link.delete", id: link.id, fromNote: link.fromNote ?? false }] : []);
+  const nodePortalRemovals = intent.nodes.flatMap((node) => node.mode === "remove" ? [{ type: "node.delete", selector: nodeSelector(resolveOne(nodes, node.selector, "node"), node.selector) }] : []);
   const nodePortalWrites = intent.nodes.flatMap((node) => nodeWriteOperations(node, nodes));
   const linkWrites: Record<string, unknown>[] = [];
   for (const link of intent.links) {
     if (link.mode === "create" && !matchingExistingLink(link, nodes, links)) {
-      linkWrites.push({ type: "link.create", source: link.source, target: link.target, ...defined(linkVisualValues(link)) });
+      linkWrites.push({ type: "link.create", source: endpointSelector(link.source, nodes, intent), target: endpointSelector(link.target, nodes, intent), ...defined(linkVisualValues(link)) });
     }
-    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ source: link.source, target: link.target, targetPosition: link.targetPosition }) });
+    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ source: link.source === undefined ? undefined : endpointSelector(link.source, nodes, intent), target: typeof link.target === "string" ? endpointSelector(link.target, nodes, intent) : link.target, targetPosition: link.targetPosition }) });
   }
   const primitiveOps = intent.primitives.map((primitive) => primitiveOperation(primitive));
   const phases: CanvasPhase[] = [
@@ -171,7 +174,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
     verification: {
       nodes: intent.nodes.map(nodeTarget),
       links: intent.links.map((link) => link.mode === "create" ? `${link.source}↔${link.target}` : link.id),
-      primitives: intent.primitives.flatMap((primitive) => primitive.mode === "create" ? [] : [primitive.id])
+      primitives: intent.primitives.map((primitive, index) => primitive.mode === "create" ? `create:${index}` : primitive.id)
     }
   };
 }
@@ -214,48 +217,98 @@ function matchingExistingLink(
  * every Node and Link, so a requested field that comes back absent means the app did not
  * apply it, and it counts as a mismatch.
  */
-export function verifyCanvasIntent(intent: CanvasIntent, context: unknown): { ok: boolean; mismatches: string[] } {
+export function verifyCanvasIntent(intent: CanvasIntent, context: unknown, results: Record<string, unknown>[] = []): { ok: boolean; mismatches: string[] } {
   const nodes = readArray<ContextNode>(context, "nodes");
   const links = readArray<ContextLink>(context, "links");
   const primitives = readArray<ContextPrimitive>(context, "diagramPrimitives");
   const mismatches: string[] = [];
   for (const node of intent.nodes) {
     const target = nodeTarget(node);
-    const exists = matches(nodes, target).length === 1;
-    if (node.mode === "remove" ? exists : !exists) mismatches.push(`nodes:${target}`);
-    if (node.mode !== "remove") {
-      const actual = matches(nodes, target)[0];
-      if (node.glyphSize !== undefined && actual?.glyphSize !== node.glyphSize) mismatches.push(`nodes:${target}:glyphSize`);
-      if (node.titleGap !== undefined && actual?.titleGap !== node.titleGap) mismatches.push(`nodes:${target}:titleGap`);
-      if (node.isResizeLocked !== undefined && actual?.isResizeLocked !== node.isResizeLocked) mismatches.push(`nodes:${target}:isResizeLocked`);
-      if (node.fontSize !== undefined && actual?.fontSize !== node.fontSize) mismatches.push(`nodes:${target}:fontSize`);
+    const found = matches(nodes, target);
+    const prefix = "nodes:" + target;
+    if (node.mode === "remove") {
+      if (found.length > 0) mismatches.push(prefix);
+      continue;
     }
-    if (node.mode !== "remove" && node.appearance !== undefined && matches(nodes, target)[0]?.appearance !== node.appearance) {
-      mismatches.push(`nodes:${target}:appearance`);
-    }
+    if (found.length !== 1) { mismatches.push(prefix); continue; }
+    const actual = found[0];
+    compareRequestedFields(node, { ...actual, x: actual.position?.x, y: actual.position?.y },
+      ["glyphSize", "titleGap", "isResizeLocked", "fontSize", "appearance", "x", "y", "subcanvasRef"], prefix, mismatches);
   }
   for (const link of intent.links) {
-    if (link.mode !== "remove" && link.labelFontSize !== undefined) {
-      const actual = link.mode === "create" ? matchingExistingLink(link, nodes, links) : links.find(item => item.id === link.id);
-      if (actual?.labelFontSize !== link.labelFontSize) mismatches.push(`links:${link.mode === "create" ? `${link.source}↔${link.target}` : link.id}:labelFontSize`);
+    const prefix = "links:" + (link.mode === "create" ? link.source + "↔" + link.target : link.id);
+    const found = link.mode === "create"
+      ? links.filter(item => {
+        const source = matches(nodes, link.source);
+        const target = matches(nodes, link.target);
+        return source.length === 1 && target.length === 1
+          && unorderedPair(item.sourceNodeID, item.targetNodeID ?? undefined) === unorderedPair(source[0].id, target[0].id);
+      })
+      : links.filter(item => item.id === link.id);
+    if (link.mode === "remove") {
+      if (found.length > 0) mismatches.push(prefix);
+      continue;
     }
-    if (link.mode === "create") {
-      const source = matches(nodes, link.source)[0]?.id;
-      const target = matches(nodes, link.target)[0]?.id;
-      if (!source || !target || !links.some((item) => unorderedPair(item.sourceNodeID, item.targetNodeID) === unorderedPair(source, target))) {
-        mismatches.push(`links:${link.source}↔${link.target}`);
+    if (found.length !== 1) { mismatches.push(prefix); continue; }
+    const actual = found[0];
+    compareRequestedFields(link, actual, Object.keys(linkVisual), prefix, mismatches);
+    for (const end of ["source", "target"] as const) {
+      const selector = link[end];
+      if (selector === undefined) continue;
+      const actualId = actual[end === "source" ? "sourceNodeID" : "targetNodeID"];
+      if (selector === null) {
+        if (actualId !== null) mismatches.push(prefix + ":" + end);
+      } else {
+        const endpoint = matches(nodes, selector);
+        if (endpoint.length !== 1 || actualId !== endpoint[0].id) mismatches.push(prefix + ":" + end);
       }
-    } else {
-      const exists = links.some((item) => item.id === link.id);
-      if (link.mode === "remove" ? exists : !exists) mismatches.push(`links:${link.id}`);
+    }
+    if (link.mode === "update" && link.targetPosition !== undefined) {
+      compareRequestedFields(link.targetPosition, actual.targetPosition as Record<string, unknown> | undefined,
+        ["x", "y"], prefix + ":targetPosition", mismatches);
     }
   }
-  for (const primitive of intent.primitives) {
-    if (primitive.mode === "create") continue;
-    const exists = primitives.some((item) => item.id === primitive.id);
-    if (primitive.mode === "remove" ? exists : !exists) mismatches.push(`primitives:${primitive.id}`);
+  const createdResults = results.filter(result => result.type === "group.create" || result.type === "line.create");
+  let creation = 0;
+  for (const [index, primitive] of intent.primitives.entries()) {
+    const createdId = primitive.mode === "create" ? createdResults[creation++]?.id : undefined;
+    const id = primitive.mode === "create" ? createdId : primitive.id;
+    const prefix = "primitives:" + (primitive.mode === "create" ? "create:" + index : primitive.id);
+    const found = primitives.filter(item => typeof id === "string" && item.id === id);
+    if (primitive.mode === "remove") {
+      if (found.length > 0) mismatches.push(prefix);
+      continue;
+    }
+    if (found.length !== 1) { mismatches.push(prefix); continue; }
+    const actual = found[0];
+    if (actual.kind !== (primitive.kind === "region" ? "group" : "line")) mismatches.push(prefix + ":kind");
+    compareRequestedFields(primitive, {
+      ...actual, x: actual.position?.x, y: actual.position?.y,
+      width: actual.bounds?.width, height: actual.bounds?.height,
+      x1: actual.start?.x, y1: actual.start?.y, x2: actual.end?.x, y2: actual.end?.y
+    }, ["x", "y", "width", "height", "x1", "y1", "x2", "y2", ...Object.keys(primitiveVisual), "fillOpacity"], prefix, mismatches);
   }
   return { ok: mismatches.length === 0, mismatches };
+}
+
+function compareRequestedFields(
+  requested: Record<string, unknown>,
+  actual: Record<string, unknown> | undefined,
+  fields: string[],
+  prefix: string,
+  mismatches: string[]
+): void {
+  for (const field of fields) {
+    const expected = requested[field];
+    if (expected === undefined) continue;
+    const observed = actual?.[field];
+    const equal = typeof expected === "number" && typeof observed === "number"
+      ? Math.abs(expected - observed) <= 0.000001
+      : field === "color" && typeof expected === "string" && typeof observed === "string"
+        ? expected.trim().toLowerCase() === observed.trim().toLowerCase()
+        : expected === observed;
+    if (!equal) mismatches.push(prefix + ":" + field);
+  }
 }
 
 function nodeTarget(node: CanvasIntent["nodes"][number]): string {
@@ -273,16 +326,19 @@ function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: Context
   }
   if (node.mode === "place") {
     const existing = matches(nodes, node.note)[0];
-    if (!existing) return [{ type: "node.create", ...appearance, title: node.note, placeExisting: true, x: node.x, y: node.y }];
+    if (!existing) return [{ type: "node.create", ...appearance, title: placementSelector(node.note), placeExisting: true, x: node.x, y: node.y }];
+    const selector = nodeSelector(existing, node.note);
     return [
-      ...moveIfDisplaced(existing, node.note, node.x, node.y),
-      ...(Object.keys(appearance).length > 0 ? [{ type: "node.update", selector: node.note, ...appearance }] : [])
+      ...moveIfDisplaced(existing, selector, node.x, node.y),
+      ...(Object.keys(appearance).length > 0 ? [{ type: "node.update", selector, ...appearance }] : [])
     ];
   }
   const operations: Record<string, unknown>[] = [];
-  if (Object.keys(appearance).length > 0) operations.push({ type: "node.update", selector: node.selector, ...appearance });
-  if (node.kind === "portal" && node.subcanvasRef !== undefined) operations.push({ type: "portal.changeSubcanvas", selector: node.selector, subcanvasRef: node.subcanvasRef });
-  if (node.x !== undefined && node.y !== undefined) operations.push(...moveIfDisplaced(matches(nodes, node.selector)[0], node.selector, node.x, node.y));
+  const existing = resolveOne(nodes, node.selector, "node");
+  const selector = nodeSelector(existing, node.selector);
+  if (Object.keys(appearance).length > 0) operations.push({ type: "node.update", selector, ...appearance });
+  if (node.kind === "portal" && node.subcanvasRef !== undefined) operations.push({ type: "portal.changeSubcanvas", selector, subcanvasRef: node.subcanvasRef });
+  if (node.x !== undefined && node.y !== undefined) operations.push(...moveIfDisplaced(existing, selector, node.x, node.y));
   return operations;
 }
 
@@ -302,8 +358,8 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
   return { type, ...defined(fields) };
 }
 
-function linkVisualValues(link: { label?: string | null; color?: string | null; direction?: string; labelFontSize?: number }): Record<string, unknown> {
-  return { label: link.label, color: link.color, direction: link.direction, labelFontSize: link.labelFontSize };
+function linkVisualValues(link: { label?: string | null; color?: string | null; direction?: string; lineStyle?: string; labelFontSize?: number }): Record<string, unknown> {
+  return { label: link.label, color: link.color, direction: link.direction, lineStyle: link.lineStyle, labelFontSize: link.labelFontSize };
 }
 function readArray<T>(context: unknown, key: string): T[] {
   if (!context || typeof context !== "object") return [];
@@ -311,7 +367,13 @@ function readArray<T>(context: unknown, key: string): T[] {
   return Array.isArray(value) ? value as T[] : [];
 }
 function matches(nodes: ContextNode[], value: string): ContextNode[] {
-  return nodes.filter((node) => [node.id, node.title, node.displayTitle, node.ref].includes(value));
+  return nodes.filter(node => noteMatches(node, value));
+}
+function endpointSelector(value: string, nodes: ContextNode[], intent: CanvasIntent): string {
+  const existing = matches(nodes, value);
+  if (existing.length === 1) return nodeSelector(existing[0], value);
+  const placed = intent.nodes.find(node => node.mode === "place" && noteMatches({ ref: node.note }, value));
+  return placed?.mode === "place" ? placementSelector(placed.note) : value;
 }
 function resolveOne(nodes: ContextNode[], value: string, noun: string): ContextNode {
   const found = matches(nodes, value);
@@ -320,14 +382,14 @@ function resolveOne(nodes: ContextNode[], value: string, noun: string): ContextN
   return found[0];
 }
 function resolveEndpoint(value: string, nodes: ContextNode[], declared: string[]): void {
-  const count = matches(nodes, value).length + declared.filter((title) => title === value).length;
+  const count = matches(nodes, value).length + declared.filter(title => noteMatches({ ref: title }, value)).length;
   if (count === 0) fail("missing_selector", `No Link endpoint matches '${value}'`, "links", "Declare the endpoint or use an exact existing selector");
   if (count > 1) fail("ambiguous_selector", `Link endpoint '${value}' is ambiguous`, "links", "Choose a distinct title or app UUID");
 }
 function resolveId(items: Array<{ id?: string }>, id: string, noun: string): void {
   if (!items.some((item) => item.id === id)) fail("missing_selector", `${noun} id '${id}' does not exist on the target Canvas`, id, "Inspect the target Canvas and use its app UUID");
 }
-function unorderedPair(a?: string, b?: string): string { return [a ?? "", b ?? ""].sort().join("\u0000"); }
+function unorderedPair(a?: string | null, b?: string | null): string { return [a ?? "", b ?? ""].sort().join("\u0000"); }
 function defined<T extends Record<string, unknown>>(value: T): Record<string, unknown> { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function fail(code: string, message: string, path: string, hint: string): never { throw new EnsoCliError(code, message, { path, expected: "one unambiguous declaration", hint }); }
 
@@ -358,8 +420,9 @@ export const canvasApplyContract = {
     },
     links: {
       direction: ["directed", "undirected", "bidirectional"],
-      create: { identity: "unordered source/target pair", required: ["mode", "source", "target"], optional: ["label", "color", "direction", "labelFontSize"] },
-      update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction", "labelFontSize"] },
+      lineStyle: lineStyleSchema.options,
+      create: { identity: "unordered source/target pair", required: ["mode", "source", "target"], optional: ["label", "color", "direction", "lineStyle", "labelFontSize"] },
+      update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction", "lineStyle", "labelFontSize", "source", "target", "targetPosition"] },
       remove: { identity: "app Link UUID", required: ["mode", "id"], preservesRelationProse: true }
     },
     primitives: {

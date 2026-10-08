@@ -226,6 +226,8 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
   }
 
   if (compiled.phases.length === 0) {
+    const verified = verifyCanvasIntent(intent, contextData);
+    if (!verified.ok) return verificationFailure(verified.mismatches, [], []);
     return {
       ok: true,
       data: {
@@ -269,21 +271,9 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     results.push(...projectResults(result.data));
   }
   const verification = await inspect();
-  const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data) : { ok: false, mismatches: ["target unavailable"] };
+  const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data, results) : { ok: false, mismatches: ["target unavailable"] };
   if (!verification.ok || !verificationResult.ok) {
-    return {
-      ok: false,
-      error: {
-        code: "verification_failed",
-        message: "Canvas mutations succeeded, but targeted verification failed",
-        details: {
-          appliedBatches,
-          returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
-          mismatches: verificationResult.mismatches,
-          retrySections: []
-        }
-      }
-    };
+    return verificationFailure(verificationResult.mismatches, appliedBatches, results);
   }
   return {
     ok: true,
@@ -293,6 +283,22 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
       results,
       placement,
       verification: { status: "verified", target: intent.canvas, requested: compiled.verification }
+    }
+  };
+}
+
+function verificationFailure(mismatches: string[], appliedBatches: Array<{ name: string; count: number }>, results: Record<string, unknown>[]): EnsoEnvelope {
+  return {
+    ok: false,
+    error: {
+      code: "verification_failed",
+      message: "Canvas state does not match the requested change",
+      details: {
+        appliedBatches,
+        returnedIds: results.flatMap(item => typeof item.id === "string" ? [item.id] : []),
+        mismatches,
+        retrySections: []
+      }
     }
   };
 }
@@ -323,14 +329,11 @@ function noteNames(data: unknown): string[] {
   for (const result of (data as { results: unknown[] }).results) {
     if (!result || typeof result !== "object") continue;
     const item = result as { path?: unknown; node?: unknown };
-    if (typeof item.path === "string") {
-      names.push(item.path);
-      const filename = item.path.split("/").pop();
-      if (filename) names.push(filename.replace(/\.md$/i, ""));
-    }
+    if (typeof item.path === "string") { names.push(item.path); continue; }
     if (item.node && typeof item.node === "object") {
       const node = item.node as { title?: unknown; displayTitle?: unknown; ref?: unknown };
-      for (const value of [node.title, node.displayTitle, node.ref]) if (typeof value === "string") names.push(value);
+      const value = node.ref ?? node.title ?? node.displayTitle;
+      if (typeof value === "string") names.push(value);
     }
   }
   return names;

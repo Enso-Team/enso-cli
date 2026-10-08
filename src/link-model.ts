@@ -2,6 +2,12 @@ import { z } from "zod";
 
 export const linkDirectionSchema = z.enum(["directed", "undirected", "bidirectional"]);
 export type LinkDirection = z.infer<typeof linkDirectionSchema>;
+export const lineStyleSchema = z.enum(["solid", "dashed", "dotted"]);
+export type LineStyle = z.infer<typeof lineStyleSchema>;
+
+export function parseLineStyle(value: string): LineStyle {
+  return lineStyleSchema.parse(value);
+}
 
 // Mirrors the released Enso app's visual color grammar: a #RGB,
 // #RRGGBB, or #RRGGBBAA hex value, or one of these names, matched case-insensitively.
@@ -43,6 +49,7 @@ export const linkSchema = z.object({
   /** Every sentence in the source Note that mentions the target. */
   mentions: z.array(z.string()).optional(),
   direction: linkDirectionSchema.optional(),
+  lineStyle: lineStyleSchema.optional(),
   color: z.string().optional(),
   labelFontSize: z.number().optional(),
   targetPosition: worldPointSchema.optional()
@@ -67,6 +74,7 @@ export type LinkCreateBody = {
   label?: string;
   color?: string;
   direction?: LinkDirection;
+  lineStyle?: LineStyle;
   labelFontSize?: number;
   dryRun: boolean;
 };
@@ -78,6 +86,7 @@ export type LinkUpdateOptions = {
   clearLabel?: boolean;
   color?: string;
   direction?: LinkDirection;
+  lineStyle?: LineStyle;
   labelFontSize?: number | string;
   source?: string;
   target?: string;
@@ -131,6 +140,7 @@ export function buildLinkCreateBody(
     body.color = options.color;
   }
   if (options.direction !== undefined) body.direction = options.direction;
+  if (options.lineStyle !== undefined) body.lineStyle = parseLineStyle(options.lineStyle);
   if (options.labelFontSize !== undefined) body.labelFontSize = parseLabelFontSize(String(options.labelFontSize));
   return body;
 }
@@ -154,6 +164,7 @@ export function buildLinkUpdateBody(options: LinkUpdateOptions): Record<string, 
     body.color = options.color;
   }
   if (options.direction !== undefined) body.direction = options.direction;
+  if (options.lineStyle !== undefined) body.lineStyle = parseLineStyle(options.lineStyle);
   if (options.labelFontSize !== undefined) body.labelFontSize = parseLabelFontSize(String(options.labelFontSize));
 
   return body;
@@ -165,6 +176,7 @@ export const linkUpdateOperationSchema = z.object({
   label: z.string().nullable().optional(),
   color: visualColorSchema.optional(),
   direction: linkDirectionSchema.optional(),
+  lineStyle: lineStyleSchema.optional(),
   labelFontSize: labelFontSizeSchema.optional(),
   source: z.string().optional(),
   target: z.string().nullable().optional(),

@@ -50,6 +50,8 @@ describe("skill", () => {
     expect(args[1]).toBe("skills");
     expect(args[2]).toBe("add");
     expect(args[3]).toMatch(/skills\/enso$/);
-    expect(args.slice(4)).toEqual(["-g", "-y", "--copy"]);
+    expect(args.slice(4)).toEqual(["-g", "-y", "--copy", "--agent", "codex"]);
+    await run(["skill", "install", "--agent", "claude-code"]);
+    expect(JSON.parse(readFileSync(argsFile, "utf8")).slice(4)).toEqual(["-g", "-y", "--copy", "--agent", "claude-code"]);
   });
 });

@@ -184,28 +184,37 @@ describe("layout", () => {
   });
 
   it("lands the compiled patch on a live canvas with --apply", async () => {
-    let inspections = 0;
+    const nodes: Record<string, unknown>[] = [];
+    const links: Record<string, unknown>[] = [];
+    const primitives: Record<string, unknown>[] = [];
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
       if (pathname === "/v1/canvases/Request%20Flow/inspect") {
-        inspections += 1;
-        return Response.json({
-          ok: true,
-          data: {
-            nodes: inspections === 1
-              ? []
-              : ["Gateway", "Router", "Store", "Audit Log", "Metrics"].map((title, index) => ({ id: `node-${index}`, title })),
-            links: inspections === 1
-              ? []
-              : [["node-0", "node-1"], ["node-1", "node-2"], ["node-1", "node-3"], ["node-3", "node-4"]]
-                .map(([sourceNodeID, targetNodeID], index) => ({ id: `link-${index}`, sourceNodeID, targetNodeID })),
-            diagramPrimitives: []
-          }
-        });
+        return Response.json({ ok: true, data: { nodes, links, diagramPrimitives: primitives } });
       }
       if (pathname === "/v1/apply") {
-        return Response.json({ ok: true, data: { results: [{ type: "node.create", id: "node-0", status: "created" }] } });
+        const body = JSON.parse(String(init?.body));
+        const results = body.operations.map((operation: Record<string, unknown>) => {
+          if (operation.type === "node.create") {
+            const id = `node-${nodes.length}`;
+            nodes.push({ id, title: operation.title, position: { x: operation.x, y: operation.y }, appearance: operation.appearance });
+            return { type: operation.type, id, status: "created" };
+          }
+          if (operation.type === "link.create") {
+            const id = `link-${links.length}`;
+            links.push({ id, sourceNodeID: nodes.find(node => node.title === operation.source)?.id,
+              targetNodeID: nodes.find(node => node.title === operation.target)?.id,
+              label: operation.label, direction: operation.direction });
+            return { type: operation.type, id, status: "created" };
+          }
+          const id = `primitive-${primitives.length}`;
+          primitives.push({ id, kind: "group", title: operation.title, color: operation.color,
+            position: { x: operation.x, y: operation.y }, bounds: { width: operation.width, height: operation.height },
+            fillOpacity: operation.fillOpacity });
+          return { type: operation.type, id, status: "created" };
+        });
+        return Response.json({ ok: true, data: { results } });
       }
       return Response.json({ ok: true, data: {} });
     });

@@ -4,6 +4,7 @@ import {
   buildLinkCreateBody,
   buildLinkUpdateBody,
   parseWorldPoint,
+  lineStyleSchema,
   type LinkDirection,
   type LinkUpdateOptions,
   type WorldPoint
@@ -12,6 +13,12 @@ import {
 function parseLinkDirection(value: string): LinkDirection {
   if (value === "directed" || value === "undirected" || value === "bidirectional") return value;
   throw new InvalidArgumentError("expected directed, undirected, or bidirectional");
+}
+
+function parseLineStyle(value: string) {
+  const parsed = lineStyleSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new InvalidArgumentError("expected solid, dashed, or dotted");
 }
 
 function parseTargetPosition(value: string): WorldPoint {
@@ -42,6 +49,7 @@ export function registerLink(program: Command): void {
     .option("--label <label>", "label override on the curve; empty displays a blank label; omit to use the Note-derived label")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
+    .option("--line-style <style>", "solid, dashed, or dotted", parseLineStyle)
     .option("--label-font-size <points>", "label size in World points, 8 to 32; new links default to 12")
     .option("--dry-run", "validate without mutating")
     .action(async (source: string, target: string, options: LinkUpdateOptions) =>
@@ -65,6 +73,7 @@ export function registerLink(program: Command): void {
     .option("--clear-label", "clear the override to use the Note-derived label")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
+    .option("--line-style <style>", "solid, dashed, or dotted", parseLineStyle)
     .option("--label-font-size <points>", "label size in World points, 8 to 32; new links default to 12")
     .option("--dry-run", "validate without mutating")
     .action(async (linkId: string, options: LinkUpdateOptions) => {

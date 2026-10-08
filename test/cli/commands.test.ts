@@ -453,13 +453,54 @@ describe("commands", () => {
       return Response.json({ ok: true, data: {
         nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false }],
         links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12, path: [] }],
-        diagramPrimitives: []
+        diagramPrimitives: [{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]
       } });
     }));
     const result = await run(["context", "--canvas", "current"]);
     const data = JSON.parse(result.stdout).data;
     expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false });
     expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12 });
+    expect(JSON.parse(String(calls[0].init.body)).includeContent).toBe(false);
+    expect(data.diagramPrimitives).toEqual([{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]);
+  });
+
+  it("returns diagnostics without the graph or prose and retains issue repair bounds", async () => {
+    const diagnostics = { ok: false, issues: [{ code: "node_overlap", subjects: [{ id: "n1" }], worldBounds: { x: 10, y: 20, width: 100, height: 80 } }] };
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: { canvas: { id: "Trial" }, nodes: [{ id: "n1", markdownContent: "Long prose" }], links: [], vision: { viewport: { scale: 1 }, diagnostics, image: { path: "/tmp/capture.png" } } } });
+    });
+    const result = await run(["context", "--diagnostics"]);
+    expect(JSON.parse(result.stdout).data).toEqual({ canvas: { id: "Trial" }, vision: { viewport: { scale: 1 }, diagnostics } });
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ includeContent: false, vision: { enabled: true } });
+  });
+
+  it("reports unavailable diagnostics and preserves bridge errors", async () => {
+    const missing = await run(["context", "--diagnostics"]);
+    expect(JSON.parse(missing.stderr).error.code).toBe("diagnostics_unavailable");
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "vault_unavailable", message: "Open a Vault", details: {} } }));
+    const unavailable = await run(["context", "--diagnostics"]);
+    expect(JSON.parse(unavailable.stderr).error.code).toBe("vault_unavailable");
+  });
+
+  it("passes optional-extension paths on Note placement and Link line styles", async () => {
+    await run(["node", "place", "DBS/Entry", "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body)).title).toBe("DBS/Entry.md");
+    await run(["link", "create", "A", "B", "--line-style", "dotted"]);
+    expect(JSON.parse(String(calls[1].init.body)).lineStyle).toBe("dotted");
+    await run(["link", "update", "link", "--line-style", "dashed"]);
+    expect(JSON.parse(String(calls[2].init.body)).lineStyle).toBe("dashed");
+  });
+
+  it("requests content for focused context and omits it for focused diagnostics", async () => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: { vision: { diagnostics: { ok: true } } } });
+    });
+    await run(["context", "--node", "Entry"]);
+    await run(["context", "--query", "Entry"]);
+    await run(["context", "--node", "Entry", "--diagnostics"]);
+    expect(calls.map(call => JSON.parse(String(call.init.body)).includeContent)).toEqual([true, true, false]);
   });
 
   it("requests file-backed viewport vision context", async () => {

@@ -24,7 +24,9 @@ function findSkillPath(): string {
 export function registerSkill(program: Command): void {
   const skill = program.command("skill").description("Install the bundled Enso skill");
 
-  skill.command("install").action(async (): Promise<EnsoEnvelope> => {
+  skill.command("install")
+    .option("--agent <agents...>", "target agent names accepted by the skills installer", ["codex"])
+    .action(async (options: { agent: string[] }): Promise<EnsoEnvelope> => {
     const source = findSkillPath();
 
     if (!existsSync(join(source, "SKILL.md"))) {
@@ -39,7 +41,7 @@ export function registerSkill(program: Command): void {
     }
 
     const installer = process.env.ENSO_CLI_SKILL_INSTALLER_BIN ?? (process.platform === "win32" ? "npx.cmd" : "npx");
-    const args = ["--yes", "skills", "add", source, "-g", "-y", "--copy"];
+    const args = ["--yes", "skills", "add", source, "-g", "-y", "--copy", "--agent", ...options.agent];
 
     try {
       const { stdout, stderr } = await execFileAsync(installer, args, { maxBuffer: 1024 * 1024 * 10 });

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { BridgeClient } from "../client.js";
-import type { EnsoEnvelope } from "../errors.js";
+import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
 const maxVisionImageEdge = 1568;
 
@@ -15,11 +15,13 @@ export function registerContext(program: Command): void {
     .option("--depth <n>", "node context depth", "1")
     .option("--query <query>")
     .option("--vision", "include visual viewport context")
+    .option("--diagnostics", "return only Canvas identity, viewport metadata, and visual diagnostics")
     .description("Export agent context from Enso")
-    .action(async (options: { canvas?: string; node?: string; depth: string; query?: string; vision?: boolean }) => {
+    .action(async (options: { canvas?: string; node?: string; depth: string; query?: string; vision?: boolean; diagnostics?: boolean }) => {
       const client = new BridgeClient();
       const target = options.canvas ?? "current";
-      const response = target !== "current" && !options.node && !options.query && !options.vision
+      const vision = Boolean(options.vision || options.diagnostics);
+      const response = target !== "current" && !options.node && !options.query && !vision
         ? await client.request(`/v1/canvases/${encodeURIComponent(target)}/inspect`)
         : await client.request("/v1/context", {
         method: "POST",
@@ -28,7 +30,8 @@ export function registerContext(program: Command): void {
           node: options.node,
           depth: Number(options.depth),
           query: options.query,
-          vision: options.vision
+          includeContent: !options.diagnostics && Boolean(options.node || options.query),
+          vision: vision
             ? {
                 enabled: true,
                 scope: "viewport",
@@ -37,9 +40,24 @@ export function registerContext(program: Command): void {
             : undefined
         }
       });
+      if (options.diagnostics) return diagnosticsContext(response);
       if (options.vision) await downscaleVisionImage(response);
       return options.node || options.query ? response : compactContext(response);
     });
+}
+
+function diagnosticsContext(envelope: EnsoEnvelope): EnsoEnvelope {
+  if (!envelope.ok) return envelope;
+  const data = envelope.data as Record<string, unknown> | undefined;
+  const vision = data?.vision as Record<string, unknown> | undefined;
+  if (!vision?.diagnostics) {
+    throw new EnsoCliError("diagnostics_unavailable", "Enso returns no visual diagnostics", {
+      hint: "Open the intended Canvas in Enso and retry context --diagnostics",
+      vision
+    });
+  }
+  const context = data?.context as Record<string, unknown> | undefined;
+  return { ok: true, data: { canvas: data?.canvas ?? context?.canvas, vision: pick(vision, ["capturedAt", "ok", "scope", "viewport", "diagnostics"]) } };
 }
 
 async function downscaleVisionImage(envelope: EnsoEnvelope): Promise<void> {
@@ -72,8 +90,8 @@ function compactContext(envelope: EnsoEnvelope): EnsoEnvelope {
 function projectContextObject(data: Record<string, unknown>): Record<string, unknown> {
   const projected = { ...data };
   if (Array.isArray(data.nodes)) projected.nodes = data.nodes.map((value) => pick(value, ["id", "kind", "title", "displayTitle", "ref", "position", "bounds", "subcanvasRef", "appearance", "glyphSize", "fontSize", "titleGap", "isResizeLocked"]));
-  if (Array.isArray(data.links)) projected.links = data.links.map((value) => pick(value, ["id", "sourceNodeID", "targetNodeID", "label", "displayLabel", "mentions", "color", "direction", "labelFontSize"]));
-  if (Array.isArray(data.diagramPrimitives)) projected.diagramPrimitives = data.diagramPrimitives.map((value) => pick(value, ["id", "kind", "title", "x", "y", "x1", "y1", "x2", "y2", "width", "height", "bounds", "color", "lineStyle", "strokeWidth", "fillOpacity"]));
+  if (Array.isArray(data.links)) projected.links = data.links.map((value) => pick(value, ["id", "sourceNodeID", "targetNodeID", "targetPosition", "label", "displayLabel", "mentions", "color", "direction", "lineStyle", "arrowheadStyle", "sourceArrow", "targetArrow", "labelFontSize"]));
+  if (Array.isArray(data.diagramPrimitives)) projected.diagramPrimitives = data.diagramPrimitives.map((value) => pick(value, ["id", "kind", "title", "position", "start", "end", "x", "y", "x1", "y1", "x2", "y2", "width", "height", "bounds", "color", "lineStyle", "strokeWidth", "fillOpacity"]));
   if (data.vision && typeof data.vision === "object") projected.vision = pick(data.vision, ["capturedAt", "ok", "scope", "viewport", "diagnostics"]);
   if (data.context && typeof data.context === "object") projected.context = projectContextObject(data.context as Record<string, unknown>);
   return projected;
