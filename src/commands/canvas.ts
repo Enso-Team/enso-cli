@@ -268,7 +268,7 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
       };
     }
     appliedBatches.push({ name: phase.name, count: phase.operations.length });
-    results.push(...projectResults(result.data));
+    results.push(...projectResults(result.data, phase.operations));
   }
   const verification = await inspect();
   const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data, results) : { ok: false, mismatches: ["target unavailable"] };
@@ -311,14 +311,22 @@ function transportError(message: string): EnsoCliError {
   });
 }
 
-function projectResults(data: unknown): Record<string, unknown>[] {
+function projectResults(data: unknown, operations: Record<string, unknown>[]): Record<string, unknown>[] {
   if (!data || typeof data !== "object") return [];
   const values = (data as { results?: unknown }).results;
   if (!Array.isArray(values)) return [];
   const keys = new Set(["type", "id", "status", "binding", "bindingStatus", "relationProsePreserved", "fromNote"]);
-  return values.flatMap((value) => {
+  return values.flatMap((value, index) => {
     if (!value || typeof value !== "object") return [];
-    const projected = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => keys.has(key)));
+    const record = value as Record<string, unknown>;
+    const projected = Object.fromEntries(Object.entries(record).filter(([key]) => keys.has(key)));
+    for (const key of ["node", "link", "diagramPrimitive"]) {
+      const element = record[key];
+      if (element && typeof element === "object" && typeof (element as { id?: unknown }).id === "string") {
+        projected.id = (element as { id: string }).id;
+      }
+    }
+    if (Object.keys(projected).length > 0 && operations[index]) projected.type = operations[index].type;
     return Object.keys(projected).length > 0 ? [projected] : [];
   });
 }

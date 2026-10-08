@@ -131,11 +131,11 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
       resolveEndpoint(link.target, nodes, declaredEndpoints);
       const source = matches(nodes, link.source)[0]?.id;
       const target = matches(nodes, link.target)[0]?.id;
-      const existing = source && target ? links.find((candidate) => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source, target)) : undefined;
+      const existing = matchingLinks(link, nodes, links)[0];
       if (existing) {
         const mismatches: string[] = [];
         compareRequestedFields(link, existing, Object.keys(linkVisual), "links", mismatches);
-        if (existing.sourceNodeID !== source || existing.targetNodeID !== target || mismatches.length > 0) {
+        if (!sameId(existing.sourceNodeID, source) || !sameId(existing.targetNodeID, target) || mismatches.length > 0) {
           fail("link_conflict", "A Link already exists for this unordered endpoint pair with different state", "links", "Update the existing Link by id");
         }
       }
@@ -150,12 +150,12 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   }
   for (const primitive of intent.primitives) if (primitive.mode !== "create") resolveId(primitives, primitive.id, "DiagramPrimitive");
 
-  const linkRemovals = intent.links.flatMap((link) => link.mode === "remove" && links.some(existing => existing.id === link.id) ? [{ type: "link.delete", id: link.id, fromNote: link.fromNote ?? false }] : []);
+  const linkRemovals = intent.links.flatMap((link) => link.mode === "remove" && links.some(existing => sameId(existing.id, link.id)) ? [{ type: "link.delete", id: link.id, fromNote: link.fromNote ?? false }] : []);
   const nodePortalRemovals = intent.nodes.flatMap((node) => node.mode === "remove" ? [{ type: "node.delete", selector: nodeSelector(resolveOne(nodes, node.selector, "node"), node.selector) }] : []);
   const nodePortalWrites = intent.nodes.flatMap((node) => nodeWriteOperations(node, nodes));
   const linkWrites: Record<string, unknown>[] = [];
   for (const link of intent.links) {
-    if (link.mode === "create" && !matchingExistingLink(link, nodes, links)) {
+    if (link.mode === "create" && matchingLinks(link, nodes, links).length === 0) {
       linkWrites.push({ type: "link.create", source: endpointSelector(link.source, nodes, intent), target: endpointSelector(link.target, nodes, intent), ...defined(linkVisualValues(link)) });
     }
     if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ source: link.source === undefined ? undefined : endpointSelector(link.source, nodes, intent), target: typeof link.target === "string" ? endpointSelector(link.target, nodes, intent) : link.target, targetPosition: link.targetPosition }) });
@@ -187,7 +187,7 @@ function sharedNoteWriteCandidates(phases: CanvasPhase[], nodes: ContextNode[], 
     if (node?.kind === "note") writes.add(node.displayTitle ?? node.title ?? node.ref ?? String(selector));
   };
   for (const operation of phases.flatMap(phase => phase.operations)) {
-    const link = links.find(candidate => candidate.id === operation.id);
+    const link = links.find(candidate => typeof operation.id === "string" && sameId(candidate.id, operation.id));
     // Deleting from the Note removes the mentioning sentence from the source.
     if (operation.type === "link.delete" && operation.fromNote === true) add(link?.sourceNodeID);
     // Moving an endpoint rewrites the mention, and the app saves every Note on either end,
@@ -200,16 +200,15 @@ function sharedNoteWriteCandidates(phases: CanvasPhase[], nodes: ContextNode[], 
   return [...writes];
 }
 
-function matchingExistingLink(
+function matchingLinks(
   link: Extract<CanvasIntent["links"][number], { mode: "create" }>,
   nodes: ContextNode[],
   links: ContextLink[]
-): ContextLink | undefined {
-  const source = matches(nodes, link.source)[0]?.id;
-  const target = matches(nodes, link.target)[0]?.id;
-  return source && target
-    ? links.find((candidate) => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source, target))
-    : undefined;
+): ContextLink[] {
+  const source = matches(nodes, link.source);
+  const target = matches(nodes, link.target);
+  if (source.length !== 1 || target.length !== 1 || !source[0].id || !target[0].id) return [];
+  return links.filter(candidate => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source[0].id, target[0].id));
 }
 
 /**
@@ -238,13 +237,8 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown, resul
   for (const link of intent.links) {
     const prefix = "links:" + (link.mode === "create" ? link.source + "↔" + link.target : link.id);
     const found = link.mode === "create"
-      ? links.filter(item => {
-        const source = matches(nodes, link.source);
-        const target = matches(nodes, link.target);
-        return source.length === 1 && target.length === 1
-          && unorderedPair(item.sourceNodeID, item.targetNodeID ?? undefined) === unorderedPair(source[0].id, target[0].id);
-      })
-      : links.filter(item => item.id === link.id);
+      ? matchingLinks(link, nodes, links)
+      : links.filter(item => sameId(item.id, link.id));
     if (link.mode === "remove") {
       if (found.length > 0) mismatches.push(prefix);
       continue;
@@ -260,7 +254,7 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown, resul
         if (actualId !== null) mismatches.push(prefix + ":" + end);
       } else {
         const endpoint = matches(nodes, selector);
-        if (endpoint.length !== 1 || actualId !== endpoint[0].id) mismatches.push(prefix + ":" + end);
+        if (endpoint.length !== 1 || !sameId(actualId, endpoint[0].id)) mismatches.push(prefix + ":" + end);
       }
     }
     if (link.mode === "update" && link.targetPosition !== undefined) {
@@ -274,7 +268,7 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown, resul
     const createdId = primitive.mode === "create" ? createdResults[creation++]?.id : undefined;
     const id = primitive.mode === "create" ? createdId : primitive.id;
     const prefix = "primitives:" + (primitive.mode === "create" ? "create:" + index : primitive.id);
-    const found = primitives.filter(item => typeof id === "string" && item.id === id);
+    const found = primitives.filter(item => typeof id === "string" && sameId(item.id, id));
     if (primitive.mode === "remove") {
       if (found.length > 0) mismatches.push(prefix);
       continue;
@@ -387,9 +381,10 @@ function resolveEndpoint(value: string, nodes: ContextNode[], declared: string[]
   if (count > 1) fail("ambiguous_selector", `Link endpoint '${value}' is ambiguous`, "links", "Choose a distinct title or app UUID");
 }
 function resolveId(items: Array<{ id?: string }>, id: string, noun: string): void {
-  if (!items.some((item) => item.id === id)) fail("missing_selector", `${noun} id '${id}' does not exist on the target Canvas`, id, "Inspect the target Canvas and use its app UUID");
+  if (!items.some((item) => sameId(item.id, id))) fail("missing_selector", `${noun} id '${id}' does not exist on the target Canvas`, id, "Inspect the target Canvas and use its app UUID");
 }
-function unorderedPair(a?: string | null, b?: string | null): string { return [a ?? "", b ?? ""].sort().join("\u0000"); }
+function sameId(a?: string | null, b?: string | null): boolean { return typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase(); }
+function unorderedPair(a?: string | null, b?: string | null): string { return [a?.toLowerCase() ?? "", b?.toLowerCase() ?? ""].sort().join("\u0000"); }
 function defined<T extends Record<string, unknown>>(value: T): Record<string, unknown> { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function fail(code: string, message: string, path: string, hint: string): never { throw new EnsoCliError(code, message, { path, expected: "one unambiguous declaration", hint }); }
 

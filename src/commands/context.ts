@@ -27,9 +27,9 @@ export function registerContext(program: Command): void {
         method: "POST",
         body: {
           canvas: options.canvas,
-          node: options.node,
+          node: options.diagnostics ? undefined : options.node,
           depth: Number(options.depth),
-          query: options.query,
+          query: options.diagnostics ? undefined : options.query,
           includeContent: !options.diagnostics && Boolean(options.node || options.query),
           vision: vision
             ? {
@@ -92,7 +92,7 @@ function projectContextObject(data: Record<string, unknown>): Record<string, unk
   if (Array.isArray(data.nodes)) projected.nodes = data.nodes.map((value) => pick(value, ["id", "kind", "title", "displayTitle", "ref", "position", "bounds", "subcanvasRef", "appearance", "glyphSize", "fontSize", "titleGap", "isResizeLocked"]));
   if (Array.isArray(data.links)) projected.links = data.links.map((value) => pick(value, ["id", "sourceNodeID", "targetNodeID", "targetPosition", "label", "displayLabel", "mentions", "color", "direction", "lineStyle", "arrowheadStyle", "sourceArrow", "targetArrow", "labelFontSize"]));
   if (Array.isArray(data.diagramPrimitives)) projected.diagramPrimitives = data.diagramPrimitives.map((value) => pick(value, ["id", "kind", "title", "position", "start", "end", "x", "y", "x1", "y1", "x2", "y2", "width", "height", "bounds", "color", "lineStyle", "strokeWidth", "fillOpacity"]));
-  if (data.vision && typeof data.vision === "object") projected.vision = pick(data.vision, ["capturedAt", "ok", "scope", "viewport", "diagnostics"]);
+  if (data.vision && typeof data.vision === "object") projected.vision = pick(data.vision, ["capturedAt", "ok", "scope", "viewport", "diagnostics", "image", "warning"]);
   if (data.context && typeof data.context === "object") projected.context = projectContextObject(data.context as Record<string, unknown>);
   return projected;
 }

@@ -67,6 +67,18 @@ describe("Canvas state verification", () => {
     expect(() => compileCanvasApply(intent, context)).toThrow(/different state/);
   });
 
+  it("resolves uppercase serialized UUIDs for removal, updates, and verification", () => {
+    const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const serialized = { ...context, links: [{ ...context.links[0], id: id.toUpperCase() }] };
+    const removal = parseCanvasIntent({ canvas: "current", links: [{ mode: "remove", id }] });
+    expect(compileCanvasApply(removal, serialized).phases[0].operations).toEqual([{ type: "link.delete", id, fromNote: false }]);
+    expect(verifyCanvasIntent(removal, serialized).ok).toBe(false);
+    expect(verifyCanvasIntent(removal, { ...serialized, links: [] }).ok).toBe(true);
+    const update = parseCanvasIntent({ canvas: "current", links: [{ mode: "update", id, lineStyle: "solid" }] });
+    expect(compileCanvasApply(update, serialized).phases).toHaveLength(1);
+    expect(verifyCanvasIntent(update, serialized).ok).toBe(true);
+  });
+
   it("passes normalized placement paths to the bridge and refuses ambiguous endpoints", () => {
     const intent = parseCanvasIntent({ canvas: "current", nodes: [{ kind: "note", mode: "place", note: "DBS/Entry", x: 0, y: 0 }, { kind: "note", mode: "place", note: "DBS/QR", x: 200, y: 0 }], links: [{ mode: "create", source: "DBS/Entry", target: "DBS/QR", lineStyle: "dotted" }] });
     const operations = compileCanvasApply(intent, { nodes: [], availableNotes: ["DBS/Entry.md", "DBS/QR.md"] }).phases.flatMap(phase => phase.operations);

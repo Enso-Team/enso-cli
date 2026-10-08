@@ -247,7 +247,7 @@ describe("canvas apply", () => {
       if (path === "/v1/context") return Response.json({ ok: true, data: { nodes: applied ? [{ id: "node-1", title: "Entry", ref: "DBS/Entry.md", position: { x: 1, y: 2 } }] : [], links: [], diagramPrimitives: [] } });
       if (path === "/v1/apply") {
         applied = true;
-        return Response.json({ ok: true, data: { results: [{ type: "node.create", id: "node-1", status: "created" }] } });
+        return Response.json({ ok: true, data: { results: [{ node: { id: "node-1", title: "Entry" } }] } });
       }
       return Response.json({ ok: true, data: {} });
     });
@@ -561,7 +561,7 @@ describe("canvas apply", () => {
       }
       const operations = init?.body ? JSON.parse(String(init.body)).operations ?? [] : [];
       const results = operations.filter((op: { type: string }) => op.type === "group.create" || op.type === "line.create")
-        .map((op: { type: string }, index: number) => ({ type: op.type, id: "p" + (index + 1) }));
+        .map((_op: { type: string }, index: number) => ({ diagramPrimitive: { id: "p" + (index + 1) } }));
       return Response.json({ ok: true, data: { results } });
     });
     const intent = join(tempDir, "sync-server.json");

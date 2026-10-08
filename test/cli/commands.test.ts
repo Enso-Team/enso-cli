@@ -464,7 +464,7 @@ describe("commands", () => {
     expect(data.diagramPrimitives).toEqual([{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]);
   });
 
-  it("returns diagnostics without the graph or prose and retains issue repair bounds", async () => {
+  it("returns Canvas identity, viewport metadata, diagnostics, and issue repair bounds", async () => {
     const diagnostics = { ok: false, issues: [{ code: "node_overlap", subjects: [{ id: "n1" }], worldBounds: { x: 10, y: 20, width: 100, height: 80 } }] };
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
@@ -501,6 +501,7 @@ describe("commands", () => {
     await run(["context", "--query", "Entry"]);
     await run(["context", "--node", "Entry", "--diagnostics"]);
     expect(calls.map(call => JSON.parse(String(call.init.body)).includeContent)).toEqual([true, true, false]);
+    expect(JSON.parse(String(calls[2].init.body))).not.toHaveProperty("node");
   });
 
   it("requests file-backed viewport vision context", async () => {
@@ -604,7 +605,7 @@ describe("commands", () => {
       viewport: { scale: 1 },
       diagnostics: { score: 1 }
     });
-    expect(vision).not.toHaveProperty("image");
+    expect(vision.image).toEqual({ path: join(tempDir, "missing-capture.png"), width: 2660, height: 1996 });
     expect(vision).not.toHaveProperty("nodes");
     expect(vision).not.toHaveProperty("links");
     expect(vision).not.toHaveProperty("diagramPrimitives");

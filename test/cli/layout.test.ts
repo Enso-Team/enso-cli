@@ -199,20 +199,20 @@ describe("layout", () => {
           if (operation.type === "node.create") {
             const id = `node-${nodes.length}`;
             nodes.push({ id, title: operation.title, position: { x: operation.x, y: operation.y }, appearance: operation.appearance });
-            return { type: operation.type, id, status: "created" };
+            return { node: nodes.at(-1) };
           }
           if (operation.type === "link.create") {
             const id = `link-${links.length}`;
             links.push({ id, sourceNodeID: nodes.find(node => node.title === operation.source)?.id,
               targetNodeID: nodes.find(node => node.title === operation.target)?.id,
               label: operation.label, direction: operation.direction });
-            return { type: operation.type, id, status: "created" };
+            return { link: links.at(-1) };
           }
           const id = `primitive-${primitives.length}`;
           primitives.push({ id, kind: "group", title: operation.title, color: operation.color,
             position: { x: operation.x, y: operation.y }, bounds: { width: operation.width, height: operation.height },
             fillOpacity: operation.fillOpacity });
-          return { type: operation.type, id, status: "created" };
+          return { diagramPrimitive: primitives.at(-1) };
         });
         return Response.json({ ok: true, data: { results } });
       }
