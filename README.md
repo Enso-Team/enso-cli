@@ -38,19 +38,10 @@ Setup:
 2. Launch Enso
 3. enso skill install
 
-Default workflow:
-1. enso status --pretty
-2. enso vault current --pretty
-3. Write markdown in the folder it prints (`path`) that explains each part
-4. enso check "<path>" --pretty
-5. enso canvas apply /tmp/intent.json --dry-run
-6. enso canvas apply /tmp/intent.json
-
-Rules:
-- Write markdown in that folder. Open the file to read it. The file explains the node.
-- Read skills/enso/references/diagram-design.md, pick world x/y, and give each Node an appearance that matches it.
-- Use --dry-run before mutations and read its bridge-validation limits.
-- Read skills/enso/SKILL.md for the full workflow.
+Read skills/enso/SKILL.md for the workflow. Frame the explanation around the
+user's question, then create or revise the Canvas through the CLI. Write Note
+markdown in the Vault folder Enso reports. Each revision edits the affected
+elements and preserves the user's adjustments elsewhere.
 ```
 
 ## Command model
