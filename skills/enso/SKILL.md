@@ -20,11 +20,15 @@ Start with `enso status --pretty`, `enso vault current --pretty`, and `enso canv
 
 Each Note is a durable explanation of its concept in prose. Read and edit its markdown directly. A visible Link rests on a sentence in the source Note containing `[[Target]]`; give the curve a short label when that sentence is long. The app owns Canvas JSON and sidecar state.
 
+A Mark is typed text on the Canvas that labels, decorates, or expands on it without being a concept. Use one where a Note would be hollow, such as a heading, lane label, legend, or callout. Put a question or unverified claim addressed to the user in a Mark connected to its Node, and keep durable reasoning in the Note. When the user answers one of your Marks from this session, fold the answer into the Note or delete the Mark. Leave the user's Marks and Marks from earlier sessions in place unless asked.
+
 Before a first build or a multi-element revision, read [references/canvas-operations.md](references/canvas-operations.md) for file checks, apply, and recovery. Put one coherent creation or revision in one temporary `canvas apply` intent. Use a typed command for a single edit. Dry-run CLI mutations before applying them.
 
 ## Revise the existing explanation
 
 Treat each user revision as an edit to the current Canvas. Inspect its affected elements, reuse their IDs, and preserve unaffected Notes, positions, and user adjustments. Change the organizing structure when the user requests that change. Anchor additions to inspected neighbors. Refresh affected Links after prose edits because changing a mention can change the live Link inventory.
+
+When the user refers to writing on the Canvas, read it with `enso mark list`. Handwriting carries an interpretation. Quote an unapproved interpretation back before acting on it. Move a Mark into a Note with `enso mark add-to-note` or `drop-to-note` when the user asks.
 
 For placement changes, inspect `enso context --canvas <target> --vision --pretty` and use the returned geometry and `data.vision.diagnostics`. All `x` and `y` values are world-space centers. After creation or a layout change, check diagnostics and repair faults that obstruct the intended reading. Keep repairs scoped to the affected area and inspect after a repair to confirm its effect. Report a remaining obstruction when further repair needs a broader redesign.
 

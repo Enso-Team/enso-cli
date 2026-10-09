@@ -2,6 +2,7 @@ import { z } from "zod";
 import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
 import { EnsoCliError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, lineStyleSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
+import { markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
 import { nodeSelector, noteMatches, placementSelector } from "./note-identity.js";
 
 const finite = z.number().finite();
@@ -67,11 +68,28 @@ const primitiveUpdate = z.object({ kind: primitiveKindSchema, mode: z.literal("u
 const primitiveRemove = z.object({ kind: primitiveKindSchema, mode: z.literal("remove"), id: z.string().uuid() }).strict();
 const intentPrimitive = z.union([regionCreate, lineCreate, primitiveUpdate, primitiveRemove]);
 
+// A Mark is typed canvas text with a top-left origin. `connect` draws a connection from each
+// named Node to the Mark, so the Mark comments on those Nodes.
+const markFields = { width: positiveFinite.optional(), textRuns: z.array(markTextRunSchema).optional(), connect: z.array(selector).optional() };
+const markCreate = z.object({ mode: z.literal("create"), text: markTextSchema, ...coordinates, ...markFields }).strict().superRefine((value, ctx) => {
+  if (value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
+});
+const markUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), text: markTextSchema.optional(), ...optionalCoordinates, ...markFields }).strict().superRefine((value, ctx) => {
+  pairedCoordinates(value, ctx);
+  if (value.text === undefined && value.x === undefined && value.width === undefined && value.textRuns === undefined && !value.connect?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "mark update requires text, x and y, width, textRuns, or connect" });
+  }
+  if (value.text !== undefined && value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
+});
+const markRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid() }).strict();
+const intentMark = z.union([markCreate, markUpdate, markRemove]);
+
 export const canvasIntentSchema = z.object({
   canvas: safeString,
   nodes: z.array(intentNode).default([]),
   links: z.array(intentLink).default([]),
-  primitives: z.array(intentPrimitive).default([])
+  primitives: z.array(intentPrimitive).default([]),
+  marks: z.array(intentMark).default([])
 }).strict().superRefine((intent, ctx) => {
   addDuplicates(ctx, "nodes", intent.nodes.flatMap((node) => node.mode === "place" ? [node.note] : "title" in node ? [node.title] : []));
   const linkPairs = intent.links.flatMap((link) => link.mode === "create"
@@ -82,6 +100,7 @@ export const canvasIntentSchema = z.object({
   addDuplicates(ctx, "primitives", intent.primitives.flatMap((primitive) => primitive.mode !== "create" ? [primitive.id] : []));
   const nodeTargets = intent.nodes.flatMap((node) => "selector" in node ? [node.selector] : []);
   addDuplicates(ctx, "nodes", nodeTargets);
+  addDuplicates(ctx, "marks", intent.marks.flatMap((mark) => mark.mode !== "create" ? [mark.id] : []));
 });
 
 function addDuplicates(ctx: z.RefinementCtx, path: string, values: string[]): void {
@@ -91,12 +110,19 @@ function addDuplicates(ctx: z.RefinementCtx, path: string, values: string[]): vo
 }
 
 export type CanvasIntent = z.infer<typeof canvasIntentSchema>;
-export type CanvasPhaseName = "linkRemovals" | "nodePortalRemovals" | "nodePortalWrites" | "linkWrites" | "primitives";
+export type CanvasPhaseName = "linkRemovals" | "nodePortalRemovals" | "nodePortalWrites" | "linkWrites" | "primitives" | "marks" | "markConnections";
 export type CanvasPhase = { name: CanvasPhaseName; operations: Record<string, unknown>[]; retrySections: string[] };
-export type CompiledCanvasApply = { phases: CanvasPhase[]; sharedNoteWrites: string[]; verification: { nodes: string[]; links: string[]; primitives: string[] } };
+export type CompiledCanvasApply = { phases: CanvasPhase[]; sharedNoteWrites: string[]; verification: { nodes: string[]; links: string[]; primitives: string[]; marks: string[] } };
+
+/**
+ * A connection to a Mark this intent creates names it by creation order until the app returns
+ * its id. The apply loop binds the placeholder before sending the connection phase.
+ */
+export const CREATED_MARK_PREFIX = "created:";
 
 type ContextNode = { titleGap?: number; isResizeLocked?: boolean; glyphSize?: number | null; fontSize?: number; appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } } & Record<string, unknown>;
 type ContextLink = { labelFontSize?: number; id?: string; sourceNodeID?: string; targetNodeID?: string | null; label?: string | null; color?: string | null; direction?: string; lineStyle?: string } & Record<string, unknown>;
+type ContextMark = { id?: string; kind?: string; text?: string; position?: { x?: number; y?: number }; width?: number; textRuns?: MarkTextRun[]; connectedNodeIDs?: string[] } & Record<string, unknown>;
 type ContextPrimitive = { id?: string; kind?: string; position?: { x?: number; y?: number }; bounds?: { x?: number; y?: number; width?: number; height?: number }; start?: { x?: number; y?: number }; end?: { x?: number; y?: number } } & Record<string, unknown>;
 
 export function compileCanvasApply(intent: CanvasIntent, context: unknown): CompiledCanvasApply {
@@ -149,6 +175,26 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
     }
   }
   for (const primitive of intent.primitives) if (primitive.mode !== "create") resolveId(primitives, primitive.id, "DiagramPrimitive");
+  const marks = readArray<ContextMark>(context, "marks");
+  const removedNodeIds = intent.nodes.flatMap((node) => node.mode === "remove" ? [resolveOne(nodes, node.selector, "node").id] : []);
+  for (const mark of intent.marks) {
+    if (mark.mode !== "create") resolveId(marks, mark.id, "Mark");
+    if (mark.mode === "update") {
+      const existing = marks.find(item => sameId(item.id, mark.id));
+      if (existing?.kind === "strokes") {
+        fail("invalid_input", `Mark '${mark.id}' is handwriting`, mark.id, "Update typed Marks only. Handwriting belongs to the person who drew it");
+      }
+      if (mark.text === undefined && mark.textRuns && runsOutsideText(existing?.text ?? "", mark.textRuns)) {
+        fail("invalid_input", `Formatting for Mark '${mark.id}' lies outside its text`, mark.id, "Inspect the Mark's text and keep each range inside it");
+      }
+    }
+    for (const node of mark.mode === "remove" ? [] : mark.connect ?? []) {
+      resolveEndpoint(node, nodes, declaredEndpoints);
+      if (removedNodeIds.some((id) => sameId(id, matches(nodes, node)[0]?.id))) {
+        fail("missing_selector", `Mark connection '${node}' targets a Node this intent removes`, "marks", "Connect the Mark to a Node that stays on the Canvas");
+      }
+    }
+  }
 
   const linkRemovals = intent.links.flatMap((link) => link.mode === "remove" && links.some(existing => sameId(existing.id, link.id)) ? [{ type: "link.delete", id: link.id, fromNote: link.fromNote ?? false }] : []);
   const nodePortalRemovals = intent.nodes.flatMap((node) => node.mode === "remove" ? [{ type: "node.delete", selector: nodeSelector(resolveOne(nodes, node.selector, "node"), node.selector) }] : []);
@@ -161,12 +207,27 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
     if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ source: link.source === undefined ? undefined : endpointSelector(link.source, nodes, intent), target: typeof link.target === "string" ? endpointSelector(link.target, nodes, intent) : link.target, targetPosition: link.targetPosition }) });
   }
   const primitiveOps = intent.primitives.map((primitive) => primitiveOperation(primitive));
+  const markOps = [
+    ...intent.marks.flatMap((mark) => mark.mode === "remove" ? [{ type: "mark.delete", id: mark.id }] : []),
+    ...intent.marks.flatMap((mark) => mark.mode === "remove" ? [] : [markWriteOperation(mark)].filter((operation) => operation !== undefined))
+  ];
+  let created = 0;
+  const markConnections = intent.marks.flatMap((mark) => {
+    if (mark.mode === "remove") return [];
+    const id = mark.mode === "create" ? CREATED_MARK_PREFIX + created++ : mark.id;
+    const connected = mark.mode === "update" ? marks.find(item => sameId(item.id, mark.id))?.connectedNodeIDs ?? [] : [];
+    return (mark.connect ?? [])
+      .filter((node) => !connected.some((nodeId) => sameId(nodeId, matches(nodes, node)[0]?.id)))
+      .map((node) => ({ type: "mark.connect", id, node: endpointSelector(node, nodes, intent) }));
+  });
   const phases: CanvasPhase[] = [
     { name: "linkRemovals", operations: linkRemovals, retrySections: ["links.remove"] },
     { name: "nodePortalRemovals", operations: nodePortalRemovals, retrySections: ["nodes.remove"] },
     { name: "nodePortalWrites", operations: nodePortalWrites, retrySections: ["nodes.place", "nodes.create", "nodes.update"] },
     { name: "linkWrites", operations: linkWrites, retrySections: ["links.create", "links.update"] },
-    { name: "primitives", operations: primitiveOps, retrySections: ["primitives"] }
+    { name: "primitives", operations: primitiveOps, retrySections: ["primitives"] },
+    { name: "marks", operations: markOps, retrySections: ["marks"] },
+    { name: "markConnections", operations: markConnections, retrySections: ["marks.connect"] }
   ].filter((phase) => phase.operations.length > 0) as CanvasPhase[];
   return {
     phases,
@@ -174,7 +235,8 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
     verification: {
       nodes: intent.nodes.map(nodeTarget),
       links: intent.links.map((link) => link.mode === "create" ? `${link.source}↔${link.target}` : link.id),
-      primitives: intent.primitives.map((primitive, index) => primitive.mode === "create" ? `create:${index}` : primitive.id)
+      primitives: intent.primitives.map((primitive, index) => primitive.mode === "create" ? `create:${index}` : primitive.id),
+      marks: intent.marks.map((mark, index) => mark.mode === "create" ? `create:${index}` : mark.id)
     }
   };
 }
@@ -282,7 +344,53 @@ export function verifyCanvasIntent(intent: CanvasIntent, context: unknown, resul
       x1: actual.start?.x, y1: actual.start?.y, x2: actual.end?.x, y2: actual.end?.y
     }, ["x", "y", "width", "height", "x1", "y1", "x2", "y2", ...Object.keys(primitiveVisual), "fillOpacity"], prefix, mismatches);
   }
+  verifyMarks(intent, nodes, readArray<ContextMark>(context, "marks"), results, mismatches);
   return { ok: mismatches.length === 0, mismatches };
+}
+
+function verifyMarks(intent: CanvasIntent, nodes: ContextNode[], marks: ContextMark[], results: Record<string, unknown>[], mismatches: string[]): void {
+  const createdIds = createdMarkIds(results);
+  let creation = 0;
+  for (const [index, mark] of intent.marks.entries()) {
+    const id = mark.mode === "create" ? createdIds[creation++] : mark.id;
+    const prefix = "marks:" + (mark.mode === "create" ? "create:" + index : mark.id);
+    const found = marks.filter(item => typeof id === "string" && sameId(item.id, id));
+    if (mark.mode === "remove") {
+      if (found.length > 0) mismatches.push(prefix);
+      continue;
+    }
+    if (found.length !== 1) { mismatches.push(prefix); continue; }
+    const actual = found[0];
+    compareRequestedFields(mark, { ...actual, x: actual.position?.x, y: actual.position?.y }, ["text", "x", "y", "width"], prefix, mismatches);
+    if (mark.textRuns !== undefined && textRunsKey(mark.textRuns) !== textRunsKey(actual.textRuns ?? [])) mismatches.push(prefix + ":textRuns");
+    for (const node of mark.connect ?? []) {
+      const endpoint = matches(nodes, node);
+      if (endpoint.length !== 1 || !(actual.connectedNodeIDs ?? []).some((nodeId) => sameId(nodeId, endpoint[0].id))) mismatches.push(prefix + ":connect:" + node);
+    }
+  }
+}
+
+function textRunsKey(runs: MarkTextRun[]): string {
+  return JSON.stringify(runs.map((run) => [run.location, run.length, [...run.styles].sort()]));
+}
+
+/**
+ * Ids of the Marks an apply created, one slot per creation in the order the intent declared
+ * them. A creation the app returned no id for keeps an empty slot.
+ */
+export function createdMarkIds(results: Record<string, unknown>[]): Array<string | undefined> {
+  return results.flatMap((result) => result.type === "mark.create" ? [typeof result.id === "string" ? result.id : undefined] : []);
+}
+
+/** Replace created-Mark placeholders with the ids the app returned. */
+export function bindCreatedMarks(operations: Record<string, unknown>[], createdIds: Array<string | undefined>): Record<string, unknown>[] {
+  return operations.map((operation) => {
+    const id = operation.id;
+    if (typeof id !== "string" || !id.startsWith(CREATED_MARK_PREFIX)) return operation;
+    const bound = createdIds[Number(id.slice(CREATED_MARK_PREFIX.length))];
+    if (bound === undefined) fail("operation_failed", "The app returned no id for a created Mark", id, "Inspect the Canvas and connect the Mark by its id");
+    return { ...operation, id: bound };
+  });
 }
 
 function compareRequestedFields(
@@ -350,6 +458,12 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
   const type = primitive.kind === "region" ? "group.create" : "line.create";
   const { kind: _kind, mode: _mode, ...fields } = primitive;
   return { type, ...defined(fields) };
+}
+
+function markWriteOperation(mark: Exclude<CanvasIntent["marks"][number], { mode: "remove" }>): Record<string, unknown> | undefined {
+  const fields = defined({ text: mark.text, x: mark.x, y: mark.y, width: mark.width, textRuns: mark.textRuns });
+  if (mark.mode === "create") return { type: "mark.create", ...fields };
+  return Object.keys(fields).length > 0 ? { type: "mark.update", id: mark.id, ...fields } : undefined;
 }
 
 function linkVisualValues(link: { label?: string | null; color?: string | null; direction?: string; lineStyle?: string; labelFontSize?: number }): Record<string, unknown> {
@@ -432,12 +546,21 @@ export const canvasApplyContract = {
       },
       update: { identity: "app DiagramPrimitive UUID", required: ["kind", "mode", "id"] },
       remove: { identity: "app DiagramPrimitive UUID", required: ["kind", "mode", "id"] }
+    },
+    marks: {
+      purpose: "typed canvas text that labels, decorates, or comments without becoming a Note: headings, legends, callouts, questions to the reader",
+      position: "x and y are the World-space top-left of the text block, unlike Node centres",
+      textRuns: { location: "UTF-16 offset", length: "positive UTF-16 length", styles: markStyleSchema.options },
+      connect: "Node selectors; each draws a connection from that Node to the Mark",
+      create: { identity: "app-returned UUID", required: ["mode", "text", "x", "y"], optional: ["width", "textRuns", "connect"] },
+      update: { identity: "app Mark UUID of a typed Mark", required: ["mode", "id"], optional: ["text", "x", "y", "width", "textRuns", "connect"] },
+      remove: { identity: "app Mark UUID", required: ["mode", "id"] }
     }
   },
   content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
   sharedNoteWrites: "Existing Notes the app may rewrite: the source of a fromNote Link removal, and every Note on either end of a Link endpoint move, before and after.",
   validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase for current-Canvas dry-run", deferredUntilApply: "later phases, or every phase for a named-Canvas dry-run" },
-  partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives"] },
+  partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives", "marks", "markConnections"] },
   success: { ok: true, data: { applied: true, appliedBatches: [], results: [], verification: "targeted" } },
   error: { ok: false, error: { code: "string", message: "string", details: {} } },
   example: { canvas: "current", nodes: [{ kind: "note", mode: "place", note: "docs/Service.md", x: 0, y: 0 }] }
