@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
+import { placementSelector } from "../note-identity.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -38,7 +39,7 @@ export function registerNode(program: Command): void {
         method: "POST",
         body: {
           kind: "note",
-          title: note,
+          title: placementSelector(note),
           ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
           ...(options.glyphSize !== undefined ? { glyphSize: options.glyphSize } : {}),
           ...(options.fontSize !== undefined ? { fontSize: options.fontSize } : {}),

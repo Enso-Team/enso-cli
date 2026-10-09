@@ -23,8 +23,11 @@ Install the bundled agent skill:
 
 ```sh
 enso skill install
+enso skill install --agent codex claude-code
 npx skills list -g
 ```
+
+`enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. The reply reports each target's installation status and any failures.
 
 ## For agents
 
@@ -112,7 +115,7 @@ Each violation carries a `code` in the envelope:
 | `duplicate_title`      | Each title is claimed by one file               |
 | `unresolved_wikilink`  | Every wikilink resolves to a Note in the folder |
 
-Wikilinks resolve in Note bodies, and a wikilink inside a fenced code block is a sample rather than a link. A `duplicate_title` violation lands on every file sharing the value and names the whole set. A clean run prints `ok: true` with the file counts. A failing run prints a `check_failed` envelope whose `details.violations` names every violation in the folder. One broken file never hides the rest.
+Wikilinks resolve case-insensitively by filename stem or folder-relative markdown path, with or without `.md`. Aliases and headings identify the same Note; escaped alias pipes work in tables. Fenced code blocks hold literal examples. A `duplicate_title` violation lands on every file sharing the value and names the whole set. A clean run prints `ok: true` with the file counts. A failing run prints a `check_failed` envelope whose `details.violations` names every violation in the folder.
 
 ## canvas apply
 
@@ -143,14 +146,19 @@ rm -f auth-flow.json
 
 Use a temporary JSON file so dry-run and apply read the same inspectable bytes, then remove it after verification. Inline JSON and `--json -` remain available for automation.
 
+Note placement accepts folder-relative paths with or without `.md`. Verification checks requested coordinates, presentation, Portal destinations, Link endpoints, and DiagramPrimitive geometry against inspected state. Created primitives use their returned IDs. A mismatch returns `verification_failed` with field-specific `mismatches`, `appliedBatches`, and `returnedIds`; use those details to prepare the correction. An already absent Link satisfies a Canvas removal; `fromNote: true` requires a live Link to identify the mentioning sentence.
+
 ## Context and vision
 
 ```sh
 enso context --canvas current --pretty
 enso context --canvas current --vision --pretty
+enso context --canvas current --diagnostics --pretty
 ```
 
 Vision adds a viewport PNG path (downscaled to at most 1568 px on the long edge), the visible rectangle, and layout diagnostics (overlaps, crossings, offscreen nodes). Element world geometry stays in the structural context sections. Use both the screenshot and diagnostics — neither alone is enough to judge layout.
+
+Default Canvas context requests structure with Note content omitted. `--node` and `--query` request focused content. `--diagnostics` returns only Canvas identity, viewport metadata, and visual diagnostics, including issue subjects and repair bounds. It reports `diagnostics_unavailable` when the app supplies no diagnostics.
 
 ## Atomic commands
 
@@ -207,6 +215,7 @@ enso link create "Source" "Target" --direction directed --color "#3B82F6" --dry-
 enso link update "<id>" --label syncs --dry-run
 enso link update "<id>" --clear-label
 enso link update "<id>" --label-font-size 12
+enso link update "<id>" --line-style dashed
 enso link update "<id>" --source "Cache" --dry-run
 enso link update "<id>" --target "Database"
 enso link update "<id>" --delink --target-position 320,-180

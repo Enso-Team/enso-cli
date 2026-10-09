@@ -226,6 +226,8 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
   }
 
   if (compiled.phases.length === 0) {
+    const verified = verifyCanvasIntent(intent, contextData);
+    if (!verified.ok) return verificationFailure(verified.mismatches, [], []);
     return {
       ok: true,
       data: {
@@ -266,24 +268,12 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
       };
     }
     appliedBatches.push({ name: phase.name, count: phase.operations.length });
-    results.push(...projectResults(result.data));
+    results.push(...projectResults(result.data, phase.operations));
   }
   const verification = await inspect();
-  const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data) : { ok: false, mismatches: ["target unavailable"] };
+  const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data, results) : { ok: false, mismatches: ["target unavailable"] };
   if (!verification.ok || !verificationResult.ok) {
-    return {
-      ok: false,
-      error: {
-        code: "verification_failed",
-        message: "Canvas mutations succeeded, but targeted verification failed",
-        details: {
-          appliedBatches,
-          returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
-          mismatches: verificationResult.mismatches,
-          retrySections: []
-        }
-      }
-    };
+    return verificationFailure(verificationResult.mismatches, appliedBatches, results);
   }
   return {
     ok: true,
@@ -297,6 +287,22 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
   };
 }
 
+function verificationFailure(mismatches: string[], appliedBatches: Array<{ name: string; count: number }>, results: Record<string, unknown>[]): EnsoEnvelope {
+  return {
+    ok: false,
+    error: {
+      code: "verification_failed",
+      message: "Canvas state does not match the requested change",
+      details: {
+        appliedBatches,
+        returnedIds: results.flatMap(item => typeof item.id === "string" ? [item.id] : []),
+        mismatches,
+        retrySections: []
+      }
+    }
+  };
+}
+
 function transportError(message: string): EnsoCliError {
   return new EnsoCliError("invalid_input", message, {
     path: "transport",
@@ -305,14 +311,22 @@ function transportError(message: string): EnsoCliError {
   });
 }
 
-function projectResults(data: unknown): Record<string, unknown>[] {
+function projectResults(data: unknown, operations: Record<string, unknown>[]): Record<string, unknown>[] {
   if (!data || typeof data !== "object") return [];
   const values = (data as { results?: unknown }).results;
   if (!Array.isArray(values)) return [];
   const keys = new Set(["type", "id", "status", "binding", "bindingStatus", "relationProsePreserved", "fromNote"]);
-  return values.flatMap((value) => {
+  return values.flatMap((value, index) => {
     if (!value || typeof value !== "object") return [];
-    const projected = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => keys.has(key)));
+    const record = value as Record<string, unknown>;
+    const projected = Object.fromEntries(Object.entries(record).filter(([key]) => keys.has(key)));
+    for (const key of ["node", "link", "diagramPrimitive"]) {
+      const element = record[key];
+      if (element && typeof element === "object" && typeof (element as { id?: unknown }).id === "string") {
+        projected.id = (element as { id: string }).id;
+      }
+    }
+    if (Object.keys(projected).length > 0 && operations[index]) projected.type = operations[index].type;
     return Object.keys(projected).length > 0 ? [projected] : [];
   });
 }
@@ -323,14 +337,11 @@ function noteNames(data: unknown): string[] {
   for (const result of (data as { results: unknown[] }).results) {
     if (!result || typeof result !== "object") continue;
     const item = result as { path?: unknown; node?: unknown };
-    if (typeof item.path === "string") {
-      names.push(item.path);
-      const filename = item.path.split("/").pop();
-      if (filename) names.push(filename.replace(/\.md$/i, ""));
-    }
+    if (typeof item.path === "string") { names.push(item.path); continue; }
     if (item.node && typeof item.node === "object") {
       const node = item.node as { title?: unknown; displayTitle?: unknown; ref?: unknown };
-      for (const value of [node.title, node.displayTitle, node.ref]) if (typeof value === "string") names.push(value);
+      const value = node.ref ?? node.title ?? node.displayTitle;
+      if (typeof value === "string") names.push(value);
     }
   }
   return names;

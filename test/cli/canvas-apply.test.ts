@@ -152,7 +152,7 @@ describe("canvas apply", () => {
       calls.push({ url: String(url), init: init ?? {} });
       if (new URL(String(url)).pathname === "/v1/context") {
         inspections += 1;
-        return Response.json({ ok: true, data: { nodes: inspections === 1 ? [] : [{ id: "node-1", title: "A" }], links: [], diagramPrimitives: [] } });
+        return Response.json({ ok: true, data: { nodes: inspections === 1 ? [] : [{ id: "node-1", title: "A", position: { x: 25000, y: 25000 } }], links: [], diagramPrimitives: [] } });
       }
       return Response.json({ ok: true, data: { results: [{ operation: "created", value: "node-1" }] } });
     });
@@ -193,7 +193,7 @@ describe("canvas apply", () => {
       const pathname = new URL(String(url)).pathname;
       if (pathname === "/v1/canvases/Roadmap/inspect") {
         inspections += 1;
-        return Response.json({ ok: true, data: { nodes: inspections === 1 ? [] : [{ id: "node-1", title: "API" }], links: [], diagramPrimitives: [] } });
+        return Response.json({ ok: true, data: { nodes: inspections === 1 ? [] : [{ id: "node-1", title: "API", position: { x: 25000, y: 25000 } }], links: [], diagramPrimitives: [] } });
       }
       if (pathname === "/v1/apply") {
         return Response.json({ ok: true, data: { results: [{ type: "node.create", id: "node-1", status: "created" }] } });
@@ -239,6 +239,26 @@ describe("canvas apply", () => {
     });
   });
 
+  it("reports landed batches when a successful bridge operation leaves incorrect coordinates", async () => {
+    let applied = false;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/context") return Response.json({ ok: true, data: { nodes: applied ? [{ id: "node-1", title: "Entry", ref: "DBS/Entry.md", position: { x: 1, y: 2 } }] : [], links: [], diagramPrimitives: [] } });
+      if (path === "/v1/apply") {
+        applied = true;
+        return Response.json({ ok: true, data: { results: [{ node: { id: "node-1", title: "Entry" } }] } });
+      }
+      return Response.json({ ok: true, data: {} });
+    });
+    const result = await run(["canvas", "apply", "--json", JSON.stringify({ canvas: "current", nodes: [{ kind: "note", mode: "place", note: "DBS/Entry", x: 100, y: 200 }] })]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ error: { code: "verification_failed", details: {
+      mismatches: ["nodes:DBS/Entry:x", "nodes:DBS/Entry:y"], appliedBatches: [{ name: "nodePortalWrites", count: 1 }], returnedIds: ["node-1"]
+    } } });
+    expect(calls.filter(call => new URL(call.url).pathname === "/v1/apply")).toHaveLength(1);
+  });
+
   it("rejects reversed duplicate Link pairs before contacting the bridge", async () => {
     const result = await run(["canvas", "apply", "--json", JSON.stringify({
       canvas: "current",
@@ -259,13 +279,15 @@ describe("canvas apply", () => {
     const a = "00000000-0000-4000-8000-000000000001";
     const b = "00000000-0000-4000-8000-000000000002";
     const link = "00000000-0000-4000-8000-000000000003";
+    let detached = false;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       if (new URL(String(url)).pathname === "/v1/context") return Response.json({ ok: true, data: {
         nodes: [{ id: a, title: "A" }, { id: b, title: "B" }],
-        links: [{ id: link, sourceNodeID: a, targetNodeID: b }],
+        links: [{ id: link, sourceNodeID: a, targetNodeID: detached ? null : b, ...(detached ? { targetPosition: { x: 320, y: -180 } } : {}) }],
         diagramPrimitives: []
       } });
+      if (new URL(String(url)).pathname === "/v1/apply") detached = true;
       return Response.json({ ok: true, data: { results: [] } });
     });
     const intent = (links: unknown[]) => JSON.stringify({ canvas: "current", nodes: [], links, primitives: [] });
@@ -528,12 +550,19 @@ describe("canvas apply", () => {
         return Response.json({ ok: true, data: inspections === 1
           ? { nodes: [{ id: "vault", title: "Vault Manager", position: { x: 900, y: 2000 } }], links: [], diagramPrimitives: [] }
           : {
-              nodes: [{ id: "cli", title: "CLI" }, { id: "vault", title: "Vault Manager" }, { id: "portal", title: "Sync Detail", kind: "portal" }],
-              links: [{ id: "l1", sourceNodeID: "cli", targetNodeID: "vault" }, { id: "l2", sourceNodeID: "vault", targetNodeID: "portal" }],
-              diagramPrimitives: []
+              nodes: [{ id: "cli", title: "CLI", position: { x: 550, y: 2000 } }, { id: "vault", title: "Vault Manager", position: { x: 1000, y: 2000 } }, { id: "portal", title: "Sync Detail", kind: "portal", position: { x: 1450, y: 2000 }, subcanvasRef: "Canvases/Sync Detail.json" }],
+              links: [{ id: "l1", sourceNodeID: "cli", targetNodeID: "vault", label: "writes through", direction: "directed" }, { id: "l2", sourceNodeID: "vault", targetNodeID: "portal", label: "syncs", direction: "directed" }],
+              diagramPrimitives: [
+                { id: "p1", kind: "group", title: "Persistence", position: { x: 1225, y: 2000 }, bounds: { width: 830, height: 300 } },
+                { id: "p2", kind: "line", title: "Control Plane", start: { x: 390, y: 1820 }, end: { x: 1610, y: 1820 } },
+                { id: "p3", kind: "line", title: "Section split", start: { x: 800, y: 2300 }, end: { x: 1700, y: 2300 }, color: "#6B7280" }
+              ]
             } });
       }
-      return Response.json({ ok: true, data: { results: [] } });
+      const operations = init?.body ? JSON.parse(String(init.body)).operations ?? [] : [];
+      const results = operations.filter((op: { type: string }) => op.type === "group.create" || op.type === "line.create")
+        .map((_op: { type: string }, index: number) => ({ diagramPrimitive: { id: "p" + (index + 1) } }));
+      return Response.json({ ok: true, data: { results } });
     });
     const intent = join(tempDir, "sync-server.json");
     writeFileSync(intent, JSON.stringify({
@@ -616,11 +645,13 @@ describe("canvas apply", () => {
   });
 
   it("retargets an existing portal with explicit update mode", async () => {
+    let inspections = 0;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       if (new URL(String(url)).pathname === "/v1/canvases/Sync%20Server/inspect") {
+        inspections += 1;
         return Response.json({ ok: true, data: {
-          nodes: [{ id: "portal-1", title: "Sync Detail", position: { x: 1450, y: 2000 } }],
+          nodes: [{ id: "portal-1", title: "Sync Detail", position: { x: 1450, y: 2000 }, subcanvasRef: inspections === 1 ? "Canvases/Sync Detail.json" : "Canvases/New Detail.json" }],
           links: [],
           diagramPrimitives: []
         } });
@@ -674,6 +705,7 @@ describe("canvas apply", () => {
   it("updates existing primitives by app UUID and sends dryRun=false", async () => {
     const group = "00000000-0000-4000-8000-000000000011";
     const line = "00000000-0000-4000-8000-000000000013";
+    let applied = false;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       if (new URL(String(url)).pathname === "/v1/context") {
@@ -681,11 +713,12 @@ describe("canvas apply", () => {
           nodes: [],
           links: [],
           diagramPrimitives: [
-            { id: group, kind: "group" },
-            { id: line, kind: "line" }
+            { id: group, kind: "group", ...(applied ? { title: "Persistence", position: { x: 1, y: 2 }, bounds: { width: 100, height: 50 } } : {}) },
+            { id: line, kind: "line", ...(applied ? { title: "Boundary", start: { x: 1, y: 2 }, end: { x: 3, y: 4 } } : {}) }
           ]
         } });
       }
+      if (new URL(String(url)).pathname === "/v1/apply") applied = true;
       return Response.json({ ok: true, data: {} });
     });
     const intent = join(tempDir, "dedupe.json");

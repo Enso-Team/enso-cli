@@ -114,6 +114,15 @@ describe("check", () => {
   });
 
   describe("wikilinks resolve", () => {
+    it("resolves case-insensitive paths with optional extensions and escaped table aliases", async () => {
+      const root = fixture({
+        "Entry.md": "[[DBS/Scan and Pay]]\n[[dbs/scan and pay.MD#Options|QR]]\n| [[DBS/Scan and Pay\\|scan]] |\n[[SCAN AND PAY]]\n",
+        "DBS/Scan and Pay.md": "A QR payment destination.\n"
+      });
+      const result = await run(["check", root]);
+      expect(result.code).toBe(0);
+      expect(calls).toHaveLength(0);
+    });
     it("rejects a wikilink with no matching Note", async () => {
       const root = fixture({ ...CLEAN, "Gateway.md": note("Gateway", "The Gateway calls [[Ghost Service]].") });
       const result = await run(["check", root]);
