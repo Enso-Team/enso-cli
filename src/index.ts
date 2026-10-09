@@ -10,6 +10,7 @@ import { registerPrimitive } from "./commands/primitive.js";
 import { registerGraph } from "./commands/graph.js";
 import { registerLayout } from "./commands/layout.js";
 import { registerLink } from "./commands/link.js";
+import { registerMark } from "./commands/mark.js";
 import { registerNode } from "./commands/node.js";
 import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
@@ -39,6 +40,7 @@ export function buildProgram(): Command {
   registerPortal(program);
   registerLink(program);
   registerPrimitive(program);
+  registerMark(program);
   registerGraph(program);
   registerContext(program);
   registerSkill(program);

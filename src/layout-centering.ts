@@ -3,6 +3,7 @@
 // cluster — nodes and primitives together — to a world position the app is looking at.
 
 import type { CanvasIntent } from "./canvas-intent.js";
+import { markWorldBox } from "./mark-model.js";
 import { LAYOUT_GEOMETRY, SYMBOL_GEOMETRY, isSymbolAppearance, type LayoutGeometry } from "./layout.js";
 
 /**
@@ -32,7 +33,8 @@ export function existingContent(context: unknown): ExistingContent | undefined {
   if (!data) return undefined;
   const boxes = [
     ...readArray(data, "nodes").flatMap(nodeBox),
-    ...readArray(data, "diagramPrimitives").flatMap(primitiveBox)
+    ...readArray(data, "diagramPrimitives").flatMap(primitiveBox),
+    ...readArray(data, "marks").flatMap(contextMarkBox)
   ];
   const bounds = unionBoxes(boxes);
   return bounds === undefined ? undefined : { boxes, bounds };
@@ -70,7 +72,8 @@ export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry): Wor
     return x === undefined || y === undefined ? [] : [box(x, y, size.nodeWidth, size.nodeHeight)];
   });
   const primitives = patch.primitives.flatMap((primitive) => primitiveBox(primitive as Record<string, unknown>));
-  return unionBoxes([...nodes, ...primitives]);
+  const marks = patch.marks.flatMap((mark) => mark.mode === "create" ? [markWorldBox(mark)] : []);
+  return unionBoxes([...nodes, ...primitives, ...marks]);
 }
 
 /**
@@ -82,7 +85,8 @@ export function translatePatch(patch: CanvasIntent, offset: WorldOffset): Canvas
   return {
     ...patch,
     nodes: patch.nodes.map((node) => shiftCoordinates(node, offset)),
-    primitives: patch.primitives.map((primitive) => shiftCoordinates(primitive, offset))
+    primitives: patch.primitives.map((primitive) => shiftCoordinates(primitive, offset)),
+    marks: patch.marks.map((mark) => shiftCoordinates(mark, offset))
   };
 }
 
@@ -110,7 +114,8 @@ export function centerPatchOnCanvas(patch: CanvasIntent, context: unknown): Canv
  */
 export function isPureCreation(intent: CanvasIntent): boolean {
   return intent.nodes.every((node) => node.mode === "place" || node.mode === "create")
-    && intent.primitives.every((primitive) => primitive.mode === "create");
+    && intent.primitives.every((primitive) => primitive.mode === "create")
+    && intent.marks.every((mark) => mark.mode === "create");
 }
 
 function coordinate(value: unknown, key: string): number | undefined {
@@ -150,6 +155,15 @@ function primitiveBox(primitive: Record<string, unknown>): WorldBox[] {
   if (finiteNumber(x1) && finiteNumber(y1) && finiteNumber(x2) && finiteNumber(y2)) return [pointsBox(x1, y1, x2, y2)];
   if (finiteNumber(x) && finiteNumber(y)) return [box(x, y, finiteNumber(width) ? width : 0, finiteNumber(height) ? height : 0)];
   return [];
+}
+
+/** A typed Mark covers its text block from a top-left origin. Handwriting reports no position. */
+function contextMarkBox(mark: Record<string, unknown>): WorldBox[] {
+  const position = mark.position;
+  if (!position || typeof position !== "object") return [];
+  const { x, y } = position as { x?: unknown; y?: unknown };
+  if (!finiteNumber(x) || !finiteNumber(y)) return [];
+  return [markWorldBox({ x, y, width: finiteNumber(mark.width) ? mark.width : undefined, text: typeof mark.text === "string" ? mark.text : undefined })];
 }
 
 function boundsBox(value: unknown): WorldBox | undefined {

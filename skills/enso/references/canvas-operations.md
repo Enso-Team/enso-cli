@@ -18,7 +18,7 @@ Read the contract when constructing an intent:
 enso canvas apply --schema
 ```
 
-Write the intent with a filesystem editing tool to a temporary JSON file outside the Vault. Include the Nodes, Links, and regions or lines needed for this change. For an existing Canvas, use inspected IDs for updates and removals, and keep creation sections limited to additions.
+Write the intent with a filesystem editing tool to a temporary JSON file outside the Vault. Include the Nodes, Links, regions or lines, and Marks needed for this change. A Mark's `connect` list connects each named Node to it. For an existing Canvas, use inspected IDs for updates and removals, and keep creation sections limited to additions.
 
 ```sh
 enso canvas apply /tmp/enso-<task>-intent.json --dry-run

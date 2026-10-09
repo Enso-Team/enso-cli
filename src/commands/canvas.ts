@@ -1,7 +1,8 @@
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { canvasApplyContract, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
+import { bindCreatedMarks, canvasApplyContract, compileCanvasApply, createdMarkIds, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
+import { marksUnsupported } from "../mark-model.js";
 import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
@@ -186,6 +187,10 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
   const inspect = () => requestCanvasContext(client, intent.canvas);
   const context = preflightContext ?? await inspect();
   if (!context.ok) return context;
+  // An app that predates Marks serializes no marks array on the Canvas it reports.
+  if (intent.marks.length > 0 && !Array.isArray((context.data as { marks?: unknown } | undefined)?.marks)) {
+    throw marksUnsupported({ path: "marks" });
+  }
   const availableNotes: string[] = [];
   const vaultQueries = new Set(intent.nodes.flatMap((node) => node.kind === "note" && node.mode === "place" ? [node.note] : []));
   // Vault lookups are independent, so they run together; results accumulate in query
@@ -247,11 +252,17 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
   const appliedBatches: Array<{ name: string; count: number }> = [];
   const results: Record<string, unknown>[] = [];
   for (const phase of compiled.phases) {
-    const result = await client.request("/v1/apply", {
-      method: "POST",
-      body: { operations: phase.operations, dryRun: false },
-      dryRun: false
-    });
+    let result: EnsoEnvelope;
+    try {
+      result = await client.request("/v1/apply", {
+        method: "POST",
+        body: { operations: bindCreatedMarks(phase.operations, createdMarkIds(results)), dryRun: false },
+        dryRun: false
+      });
+    } catch (error) {
+      if (!(error instanceof EnsoCliError)) throw error;
+      result = { ok: false, error: error.body };
+    }
     if (!result.ok) {
       return {
         ok: false,
@@ -320,14 +331,16 @@ function projectResults(data: unknown, operations: Record<string, unknown>[]): R
     if (!value || typeof value !== "object") return [];
     const record = value as Record<string, unknown>;
     const projected = Object.fromEntries(Object.entries(record).filter(([key]) => keys.has(key)));
-    for (const key of ["node", "link", "diagramPrimitive"]) {
+    for (const key of ["node", "link", "diagramPrimitive", "mark"]) {
       const element = record[key];
       if (element && typeof element === "object" && typeof (element as { id?: unknown }).id === "string") {
         projected.id = (element as { id: string }).id;
       }
     }
-    if (Object.keys(projected).length > 0 && operations[index]) projected.type = operations[index].type;
-    return Object.keys(projected).length > 0 ? [projected] : [];
+    // A created Mark keeps its slot even without an id, so later connections bind by position.
+    const keep = Object.keys(projected).length > 0 || operations[index]?.type === "mark.create";
+    if (keep && operations[index]) projected.type = operations[index].type;
+    return keep ? [projected] : [];
   });
 }
 

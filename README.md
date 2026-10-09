@@ -56,11 +56,23 @@ Three layers. Compile a whole diagram from a graph, batch a hand-written patch, 
 | ----------- | ------------------------------------- | --------------------------------------------------------- |
 | **Compile** | Building a diagram from a graph       | `enso layout <graph.json>`                                |
 | **Batch**   | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
-| **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive` |
+| **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive`, `enso mark` |
 | **Verify**  | Linting a Vault folder                | `enso check [folder]`                                     |
 
 
 `canvas apply` runs complete local preflight, then applies dependency phases. Each phase is app-atomic; successful earlier phases remain when a later phase fails. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
+
+## mark
+
+A Mark is typed text on the open Canvas that labels, decorates, or comments without becoming a Note. `x` and `y` place the top-left of the text block. Text wraps at `--width`, or at 420 World points when unset.
+
+```sh
+enso mark create "Open question: does the retry reuse the token?" --at 120,-40 --width 260
+enso mark connect <mark-id> Auth
+enso mark list
+```
+
+`enso mark update` edits a typed Mark. Handwritten Marks belong to the person who drew them, and `mark list` reports each one's interpretation and approval. `add-to-note` moves a Mark's writing into a Note as an Excerpt, and `drop-to-note` appends it to the Note and removes the Mark. `canvas apply` takes the same Marks in its `marks` section. An app without Marks answers with `app_outdated`.
 
 ## layout
 
