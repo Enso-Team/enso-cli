@@ -11,6 +11,12 @@ npm install -g @enso-app/cli
 enso status --pretty
 ```
 
+Run `enso update` to install the latest release for a global npm installation, or
+`enso update --check` to inspect the installed and available versions. Interactive
+commands check npm at most once per day and print update notifications to stderr.
+Set `ENSO_CLI_NO_UPDATE_CHECK=1` to disable these checks. Checks use a 5-second
+timeout; CI and piped commands keep their structured output.
+
 With the Enso app open, the first command links itself by reading the token
 file the app provisions. `enso auth link` relinks the same way.
 
