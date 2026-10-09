@@ -12,6 +12,15 @@ export function registerCanvas(program: Command): void {
 
   canvas.command("list").action(async () => new BridgeClient().request("/v1/canvases"));
   canvas.command("current").action(async () => new BridgeClient().request("/v1/canvases/current"));
+  canvas.command("fit")
+    .argument("[selector]", "open canvas name, id, or ref", "current")
+    .option("--dry-run", "compute the fitted viewport without moving it")
+    .description("Fit the open canvas content into the visible viewport")
+    .action(async (selector: string, options: { dryRun?: boolean }) =>
+      new BridgeClient().request(`/v1/canvases/${encodeURIComponent(selector)}/fit`, {
+        method: "POST", body: { dryRun: Boolean(options.dryRun) }, dryRun: Boolean(options.dryRun)
+      })
+    );
   canvas
     .command("create")
     .argument("<name>")

@@ -49,6 +49,10 @@ elements and preserves the user's adjustments elsewhere.
 
 ## Command model
 
+`enso vault open <path>` opens an existing folder as the vault and waits for its canvas to load. Relative paths and `~` resolve on the CLI. The sandboxed Mac app remembers folder grants; a folder needing access opens a native permission panel for that exact folder. `--dry-run` checks access without switching vaults or presenting a panel.
+
+`enso canvas fit [selector]` frames all content on the open canvas inside the visible area, including sidebars and editor insets. The selector defaults to `current`. `--dry-run` returns the proposed viewport. The reply reports `fits: false` when the app's minimum zoom keeps some content outside the frame.
+
 Three layers. Compile a whole diagram from a graph, batch a hand-written patch, or edit one element.
 
 
