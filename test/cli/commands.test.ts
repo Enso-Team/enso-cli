@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { writeConfig } from "../../src/config.js";
 import { buildProgram } from "../../src/index.js";
@@ -27,10 +28,13 @@ describe("commands", () => {
     [["status"], "/v1/status", "GET"],
     [["vault", "current"], "/v1/vault/current", "GET"],
     [["vault", "tree"], "/v1/vault/tree", "GET"],
+    [["vault", "open", "."], "/v1/vault/open?dryRun=false", "POST"],
     [["search", "auth"], "/v1/search?q=auth", "GET"],
     [["search", "auth link"], "/v1/search?q=auth%20link", "GET"],
     [["canvas", "list"], "/v1/canvases", "GET"],
     [["canvas", "current"], "/v1/canvases/current", "GET"],
+    [["canvas", "fit"], "/v1/canvases/current/fit?dryRun=false", "POST"],
+    [["canvas", "fit", "Flow Map", "--dry-run"], "/v1/canvases/Flow%20Map/fit?dryRun=true", "POST"],
     [["canvas", "create", "Roadmap"], "/v1/canvases?dryRun=false", "POST"],
     [["canvas", "open", "Roadmap"], "/v1/canvases/Roadmap/open?dryRun=false", "POST"],
     [["canvas", "inspect", "Roadmap"], "/v1/canvases/Roadmap/inspect", "GET"],
@@ -68,6 +72,24 @@ describe("commands", () => {
     expect(new URL(request.url).pathname + new URL(request.url).search).toBe(path);
     expect(request.init.method ?? "GET").toBe(method);
     expect((request.init.headers as Record<string, string>).Authorization).toBe("Bearer test-token");
+  });
+
+  it("opens a resolved vault folder and passes dry-run", async () => {
+    await run(["vault", "open", tempDir, "--dry-run"]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: tempDir, dryRun: true });
+    await run(["vault", "open", "~"]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ path: homedir(), dryRun: false });
+  });
+
+  it("rejects files and missing vault folders before contacting the app", async () => {
+    const file = join(tempDir, "note.md");
+    writeFileSync(file, "# Note");
+    for (const path of [file, join(tempDir, "missing")]) {
+      const result = await run(["vault", "open", path]);
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+    }
+    expect(calls).toHaveLength(0);
   });
 
   it("passes Appearance on node place", async () => {
