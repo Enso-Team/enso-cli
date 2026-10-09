@@ -23,11 +23,11 @@ Install the bundled agent skill:
 
 ```sh
 enso skill install
-enso skill install --agent claude-code
+enso skill install --agent codex claude-code
 npx skills list -g
 ```
 
-Skill installation targets Codex by default. `--agent` accepts one or more agent names supported by the skills installer.
+`enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. The reply reports each target's installation status and any failures.
 
 ## For agents
 
