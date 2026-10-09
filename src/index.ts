@@ -16,6 +16,8 @@ import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSkill } from "./commands/skill.js";
 import { registerStatus } from "./commands/status.js";
+import { registerUpdate } from "./commands/update.js";
+import { notifyUpdate } from "./update.js";
 import { registerVault } from "./commands/vault.js";
 import { errorEnvelope, printEnvelope, type EnsoEnvelope } from "./errors.js";
 import { cliVersion } from "./version.js";
@@ -44,12 +46,14 @@ export function buildProgram(): Command {
   registerGraph(program);
   registerContext(program);
   registerSkill(program);
+  registerUpdate(program);
 
-  program.hook("postAction", (thisCommand, actionCommand) => {
+  program.hook("postAction", async (thisCommand, actionCommand) => {
     const result = actionCommand.getOptionValue("__ensoResult") as EnsoEnvelope | undefined;
     if (result) {
       const pretty = Boolean(thisCommand.optsWithGlobals().pretty);
       printEnvelope(result, pretty, result.ok ? process.stdout : process.stderr);
+      if (result.ok && actionCommand.name() !== "update") await notifyUpdate();
     }
   });
 
