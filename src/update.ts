@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { configDir } from "./config.js";
 import { EnsoCliError } from "./errors.js";
+import { inspectInstallation, type Installation } from "./installation.js";
 import { cliVersion } from "./version.js";
 
 const execute = promisify(execFile);
@@ -82,33 +83,27 @@ export async function notifyUpdate(): Promise<void> {
   }
 }
 
-export async function updateCli(checkOnly: boolean): Promise<{ installedVersion: string; latestVersion: string; updateAvailable: boolean; updated: boolean }> {
+export async function updateCli(checkOnly: boolean): Promise<{ installedVersion: string; latestVersion: string; updateAvailable: boolean; updated: boolean; installation?: Installation }> {
   const latest = await latestVersion();
   writeCache(latest);
   const updateAvailable = isNewerVersion(latest, cliVersion);
-  const result = { installedVersion: cliVersion, latestVersion: latest, updateAvailable, updated: false };
+  const installation = await inspectInstallation();
+  const result = { installedVersion: cliVersion, latestVersion: latest, updateAvailable, updated: false, installation };
   if (checkOnly || !updateAvailable) return result;
 
+  if (!installation.automatic) throw new EnsoCliError("update_install_location", "Use the installation's local update action", { ...installation, hint: installation.updateCommand });
   try {
-    const { stdout } = await execute("npm", ["root", "--global"], { timeout: 5000 });
-    const globalPackageDirectory = join(stdout.trim(), packageName);
-    if (realpathSync(globalPackageDirectory) !== realpathSync(packageDirectory) || lstatSync(globalPackageDirectory).isSymbolicLink()) {
-      throw new EnsoCliError("update_install_location", "Use npm to update this installation", {
-        hint: "Run `npm install -g @enso-app/cli@latest` with the npm prefix that owns this installation. For a project dependency, run `npm install @enso-app/cli@latest` in that project."
-      });
-    }
-    await execute("npm", ["install", "--global", `${packageName}@${latest}`, "--registry", registry, "--engine-strict"], {
-      cwd: dirname(packageDirectory),
-      timeout: 120000,
-      maxBuffer: 4 * 1024 * 1024
-    });
+    const binary = installation.owner === "bun" ? "bun" : "npm";
+    const args = binary === "bun" ? ["add", "--global", `${packageName}@${latest}`, "--registry", registry]
+      : ["install", "--global", `${packageName}@${latest}`, "--registry", registry, "--engine-strict"];
+    await execute(binary, args, { cwd: dirname(packageDirectory), timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
     const installed = z.object({ version: stableVersion }).parse(JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")));
     if (installed.version !== latest) throw new Error("The installed version differs from the requested version");
-    return { installedVersion: installed.version, latestVersion: latest, updateAvailable: false, updated: true };
+    return { installedVersion: installed.version, latestVersion: latest, updateAvailable: false, updated: true, installation };
   } catch (error) {
     if (error instanceof EnsoCliError) throw error;
-    throw new EnsoCliError("update_failed", "npm could not update the CLI installation", {
-      hint: "Run `npm install -g @enso-app/cli@latest` using the npm prefix and permissions that own this installation"
+    throw new EnsoCliError("update_failed", `${installation.owner} could not update the CLI installation`, {
+      hint: installation.updateCommand
     });
   }
 }

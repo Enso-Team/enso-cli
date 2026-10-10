@@ -9,6 +9,32 @@ const context = {
 };
 
 describe("Canvas state verification", () => {
+  it("preserves safe punctuation in authored portal filenames", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [{ kind: "portal", mode: "create", title: "設計 & API #1?", subcanvasRef: "Canvases/Next.json", x: 0, y: 0 }] });
+    expect(intent.nodes[0]).toMatchObject({ title: "設計 & API #1?" });
+  });
+  it("validates relative note paths and authored portal names during local preflight", () => {
+    expect(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "note", mode: "place", note: "../Escape.md", x: 0, y: 0 }] }))
+      .toThrow(/Invalid nodes.0.note/);
+    expect(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "portal", mode: "create", title: "Bad/Name", subcanvasRef: "Canvases/Next.json", x: 0, y: 0 }] }))
+      .toThrow(/Invalid nodes.0.title/);
+    expect(parseCanvasIntent({ canvas: "current", nodes: [{ kind: "note", mode: "place", note: "設計/API & UI.md", x: 0, y: 0 }] }).nodes).toHaveLength(1);
+  });
+  it("identifies an invalid primitive kind with its field, value, and allowed kinds", () => {
+    try {
+      parseCanvasIntent({ canvas: "current", primitives: [{ kind: "cluster", mode: "remove", id: linkId }] });
+      throw new Error("Expected invalid input");
+    } catch (error) {
+      expect(error).toMatchObject({ body: { code: "invalid_input", details: { path: "primitives.0.kind", value: "cluster", expected: "region, group, line" } } });
+    }
+  });
+  it("applies a region inspected with its stored group kind", () => {
+    const id = "00000000-0000-4000-8000-000000000004";
+    const intent = parseCanvasIntent({ canvas: "current", primitives: [{ kind: "group", mode: "remove", id }] });
+    expect(compileCanvasApply(intent, { diagramPrimitives: [{ id, kind: "group" }] }).phases[0].operations)
+      .toEqual([{ type: "diagramPrimitive.delete", id }]);
+    expect(verifyCanvasIntent(intent, { diagramPrimitives: [] }).ok).toBe(true);
+  });
   it("detects a position mismatch while resolving an extensionless Note path", () => {
     const intent = parseCanvasIntent({ canvas: "current", nodes: [{ kind: "note", mode: "update", selector: "dbs/a", x: 300, y: 400 }] });
     expect(verifyCanvasIntent(intent, context).mismatches).toEqual(["nodes:dbs/a:x", "nodes:dbs/a:y"]);

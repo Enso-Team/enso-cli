@@ -2,8 +2,9 @@ import { z } from "zod";
 import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
 import { EnsoCliError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, lineStyleSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
-import { markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
+import { markFontSizeSchema, markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
 import { nodeSelector, noteMatches, placementSelector } from "./note-identity.js";
+import { validateFilename, validateNotePath } from "./filenames.js";
 
 const finite = z.number().finite();
 const positiveFinite = finite.positive();
@@ -13,9 +14,8 @@ const safeString = z.string().min(1).superRefine((value, ctx) => {
   }
 });
 export const safeTitle = safeString.superRefine((value, ctx) => {
-  if (/[/:?#]/.test(value) || /%[0-9a-fA-F]{2}/.test(value)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "titles cannot contain /, :, ?, #, or pre-encoded path fragments" });
-  }
+  try { validateFilename(value, "title"); }
+  catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, message: error instanceof Error ? error.message : "invalid filename" }); }
 });
 const selector = safeString;
 const coordinates = { x: finite, y: finite };
@@ -66,18 +66,23 @@ const regionCreate = z.object({ kind: z.literal("region"), mode: z.literal("crea
 const lineCreate = z.object({ kind: z.literal("line"), mode: z.literal("create"), x1: finite, y1: finite, x2: finite, y2: finite, ...primitiveVisual }).strict();
 const primitiveUpdate = z.object({ kind: primitiveKindSchema, mode: z.literal("update"), id: z.string().uuid(), ...optionalCoordinates, x1: finite.optional(), y1: finite.optional(), x2: finite.optional(), y2: finite.optional(), width: positiveFinite.optional(), height: positiveFinite.optional(), fillOpacity: finite.min(0).max(0.18).optional(), ...primitiveVisual }).strict();
 const primitiveRemove = z.object({ kind: primitiveKindSchema, mode: z.literal("remove"), id: z.string().uuid() }).strict();
-const intentPrimitive = z.union([regionCreate, lineCreate, primitiveUpdate, primitiveRemove]);
+const intentPrimitive = z.preprocess((value) => {
+  if (value && typeof value === "object" && "kind" in value && value.kind === "group") {
+    return { ...value, kind: "region" };
+  }
+  return value;
+}, z.union([regionCreate, lineCreate, primitiveUpdate, primitiveRemove]));
 
 // A Mark is typed canvas text with a top-left origin. `connect` draws a connection from each
 // named Node to the Mark, so the Mark comments on those Nodes.
-const markFields = { width: positiveFinite.optional(), textRuns: z.array(markTextRunSchema).optional(), connect: z.array(selector).optional() };
+const markFields = { fontSize: markFontSizeSchema.optional(), width: positiveFinite.optional(), textRuns: z.array(markTextRunSchema).optional(), connect: z.array(selector).optional() };
 const markCreate = z.object({ mode: z.literal("create"), text: markTextSchema, ...coordinates, ...markFields }).strict().superRefine((value, ctx) => {
   if (value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
 });
 const markUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), text: markTextSchema.optional(), ...optionalCoordinates, ...markFields }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
-  if (value.text === undefined && value.x === undefined && value.width === undefined && value.textRuns === undefined && !value.connect?.length) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "mark update requires text, x and y, width, textRuns, or connect" });
+  if (value.text === undefined && value.x === undefined && value.width === undefined && value.fontSize === undefined && value.textRuns === undefined && !value.connect?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "mark update requires text, x and y, width, fontSize, textRuns, or connect" });
   }
   if (value.text !== undefined && value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
 });
@@ -361,7 +366,7 @@ function verifyMarks(intent: CanvasIntent, nodes: ContextNode[], marks: ContextM
     }
     if (found.length !== 1) { mismatches.push(prefix); continue; }
     const actual = found[0];
-    compareRequestedFields(mark, { ...actual, x: actual.position?.x, y: actual.position?.y }, ["text", "x", "y", "width"], prefix, mismatches);
+    compareRequestedFields(mark, { ...actual, x: actual.position?.x, y: actual.position?.y }, ["text", "x", "y", "width", "fontSize"], prefix, mismatches);
     if (mark.textRuns !== undefined && textRunsKey(mark.textRuns) !== textRunsKey(actual.textRuns ?? [])) mismatches.push(prefix + ":textRuns");
     for (const node of mark.connect ?? []) {
       const endpoint = matches(nodes, node);
@@ -461,7 +466,7 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
 }
 
 function markWriteOperation(mark: Exclude<CanvasIntent["marks"][number], { mode: "remove" }>): Record<string, unknown> | undefined {
-  const fields = defined({ text: mark.text, x: mark.x, y: mark.y, width: mark.width, textRuns: mark.textRuns });
+  const fields = defined({ text: mark.text, x: mark.x, y: mark.y, width: mark.width, fontSize: mark.fontSize, textRuns: mark.textRuns });
   if (mark.mode === "create") return { type: "mark.create", ...fields };
   return Object.keys(fields).length > 0 ? { type: "mark.update", id: mark.id, ...fields } : undefined;
 }
@@ -536,6 +541,8 @@ export const canvasApplyContract = {
     },
     primitives: {
       kinds: primitiveKinds,
+      acceptedKinds: ["region", "group", "line"],
+      storedKind: { region: "group" },
       create: {
         identity: "app-returned UUID",
         commonOptional: ["title", "color", "lineStyle", "strokeWidth"],
@@ -550,10 +557,11 @@ export const canvasApplyContract = {
     marks: {
       purpose: "typed canvas text that labels, decorates, or comments without becoming a Note: headings, legends, callouts, questions to the reader",
       position: "x and y are the World-space top-left of the text block, unlike Node centres",
+      fontSize: { unit: "world points", default: 17, minimum: 8, maximum: 96 },
       textRuns: { location: "UTF-16 offset", length: "positive UTF-16 length", styles: markStyleSchema.options },
       connect: "Node selectors; each draws a connection from that Node to the Mark",
-      create: { identity: "app-returned UUID", required: ["mode", "text", "x", "y"], optional: ["width", "textRuns", "connect"] },
-      update: { identity: "app Mark UUID of a typed Mark", required: ["mode", "id"], optional: ["text", "x", "y", "width", "textRuns", "connect"] },
+      create: { identity: "app-returned UUID", required: ["mode", "text", "x", "y"], optional: ["width", "fontSize", "textRuns", "connect"] },
+      update: { identity: "app Mark UUID of a typed Mark", required: ["mode", "id"], optional: ["text", "x", "y", "width", "fontSize", "textRuns", "connect"] },
       remove: { identity: "app Mark UUID", required: ["mode", "id"] }
     }
   },
@@ -567,6 +575,23 @@ export const canvasApplyContract = {
 } as const;
 
 export function parseCanvasIntent(input: unknown): CanvasIntent {
+  if (input && typeof input === "object" && "nodes" in input && Array.isArray(input.nodes)) {
+    input.nodes.forEach((node: unknown, index: number) => {
+      if (!node || typeof node !== "object") return;
+      if ("note" in node && typeof node.note === "string") validateNotePath(node.note, `nodes.${index}.note`);
+      if ("kind" in node && node.kind === "portal" && "title" in node && typeof node.title === "string") validateFilename(node.title, `nodes.${index}.title`);
+    });
+  }
+  if (input && typeof input === "object" && "primitives" in input && Array.isArray(input.primitives)) {
+    input.primitives.forEach((primitive: unknown, index: number) => {
+      if (primitive && typeof primitive === "object" && "kind" in primitive && !["region", "group", "line"].includes(String(primitive.kind))) {
+        throw new EnsoCliError("invalid_input", `Primitive kind '${String(primitive.kind)}' must be region, group, or line`, {
+          path: `primitives.${index}.kind`, value: primitive.kind, expected: "region, group, line",
+          hint: "Use region for a region; context reports its stored kind as group"
+        });
+      }
+    });
+  }
   const parsed = canvasIntentSchema.safeParse(input);
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];

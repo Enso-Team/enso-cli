@@ -163,7 +163,7 @@ function contextMarkBox(mark: Record<string, unknown>): WorldBox[] {
   if (!position || typeof position !== "object") return [];
   const { x, y } = position as { x?: unknown; y?: unknown };
   if (!finiteNumber(x) || !finiteNumber(y)) return [];
-  return [markWorldBox({ x, y, width: finiteNumber(mark.width) ? mark.width : undefined, text: typeof mark.text === "string" ? mark.text : undefined })];
+  return [markWorldBox({ x, y, width: finiteNumber(mark.width) ? mark.width : undefined, fontSize: finiteNumber(mark.fontSize) ? mark.fontSize : undefined, text: typeof mark.text === "string" ? mark.text : undefined })];
 }
 
 function boundsBox(value: unknown): WorldBox | undefined {

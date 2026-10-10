@@ -11,8 +11,7 @@ npm install -g @enso-app/cli
 enso status --pretty
 ```
 
-Run `enso update` to install the latest release for a global npm installation, or
-`enso update --check` to inspect the installed and available versions. Interactive
+Run `enso update` to install the latest release through the owning global npm or Bun installation. `enso update --check` reports the installed and available versions, installation owner, and update command. Project and linked installations report the exact local command to run. Interactive
 commands check npm at most once per day and print update notifications to stderr.
 Set `ENSO_CLI_NO_UPDATE_CHECK=1` to disable these checks. Checks use a 5-second
 timeout; CI and piped commands keep their structured output.
@@ -28,12 +27,15 @@ naming the side to update.
 Install the bundled agent skill:
 
 ```sh
-enso skill install
-enso skill install --agent codex claude-code
+enso setup
+enso setup --agent codex claude-code
+enso skill install --installer bun --agent codex
 npx skills list -g
 ```
 
-`enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. The reply reports each target's installation status and any failures.
+`enso setup` launches the installed Mac app when its bridge needs discovery, pairs through the app token file, checks the bridge contract, and installs the bundled skill. It reports the app version and capabilities when the app provides them, and marks missing information as unknown. Disabled Local agent access requires the person to enable it in Enso Settings. Vault folder grants require the person to approve the app's permission panel when opening that vault.
+
+`enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. Both installation commands run without prompts and report each target's status, skipped project-only targets, failures, and package-owned skill provenance. Explicit targets use supported ids such as `codex` and `claude-code`.
 
 ## For agents
 
@@ -44,8 +46,8 @@ Use the Enso CLI to work with canvases in the Enso Mac app.
 
 Setup:
 1. npm install -g @enso-app/cli
-2. Launch Enso
-3. enso skill install
+2. enso setup
+3. Report any structured blocker and its hint to the person
 
 Read skills/enso/SKILL.md for the workflow. Frame the explanation around the
 user's question, then create or revise the Canvas through the CLI. Write Note
@@ -79,16 +81,19 @@ A Mark is typed text on the open Canvas that labels, decorates, or comments with
 ```sh
 enso mark create "Open question: does the retry reuse the token?" --at 120,-40 --width 260
 enso mark connect <mark-id> Auth
+enso mark update <mark-id> --font-size 32
+enso mark update <mark-id> --reset-size
+enso excerpt update <excerpt-id> --font-size 24
 enso mark list
 ```
 
-`enso mark update` edits a typed Mark. Handwritten Marks belong to the person who drew them, and `mark list` reports each one's interpretation and approval. `add-to-note` moves a Mark's writing into a Note as an Excerpt, and `drop-to-note` appends it to the Note and removes the Mark. `canvas apply` takes the same Marks in its `marks` section. An app without Marks answers with `app_outdated`.
+`enso mark update` edits a typed mark. `--font-size` sets a finite size from 8 to 96 world points; the default is 17. `--width` changes wrapping. `--reset-size` sets size to 17 and preserves width. Excerpts expose the same size and width controls through `enso excerpt update`. Canvas mark intents accept numeric `fontSize`. Handwritten Marks belong to the person who drew them, and `mark list` reports each one's interpretation and approval. `add-to-note` moves a Mark's writing into a Note as an Excerpt, and `drop-to-note` appends it to the Note and removes the Mark. `canvas apply` takes the same Marks in its `marks` section. An app without Marks answers with `app_outdated`.
 
 ## layout
 
 `enso layout` compiles graph JSON into a `canvas apply` patch. Declare the graph; the CLI owns every coordinate.
 
-The JSON is a command input, not a Vault file. Members are Notes that already exist, named by title or vault-relative path. Edges become Links. Clusters become regions. `direction` is `TB` or `LR`.
+The JSON is a command input, not a Vault file. Members are Notes that already exist, named by title or vault-relative path. Edges become Links. Clusters become regions. Canvas intents accept `region` and the stored `group` kind for the same region. `direction` is `TB` or `LR`.
 
 ```json
 {
