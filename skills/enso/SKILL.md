@@ -16,9 +16,9 @@ For a new arrangement or a substantial layout change, read [references/diagram-d
 
 Use the Enso CLI for app inspection and edits, and filesystem tools for markdown and temporary intents. Discover operations through focused `enso <command> --help` or `enso canvas apply --schema`. Computer use is reserved for an explicit request to operate the native UI.
 
-Start with `enso status --pretty`, `enso vault current --pretty`, and `enso canvas list --pretty`. Use the returned Vault `path` for markdown. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it.
+For agent onboarding, run `enso setup` and report any structured blocker and its hint to the person. Start with `enso status --pretty`, `enso vault current --pretty`, and `enso canvas list --pretty`. Use the returned Vault `path` for markdown. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it.
 
-Each Note is a durable explanation of its concept in prose. Read and edit its markdown directly. A visible Link rests on a sentence in the source Note containing `[[Target]]`; give the curve a short label when that sentence is long. The app owns Canvas JSON and sidecar state.
+Each Note is a durable explanation of its concept in prose. Read and edit its markdown directly. Before creating a note, validate its filename and folder components using [references/canvas-operations.md](references/canvas-operations.md). A visible Link rests on a sentence in the source Note containing `[[Target]]`; give the curve a short label when that sentence is long. The app owns Canvas JSON and sidecar state.
 
 A Mark is typed text on the Canvas that labels, decorates, or expands on it without being a concept. Use one where a Note would be hollow, such as a heading, lane label, legend, or callout. Put a question or unverified claim addressed to the user in a Mark connected to its Node, and keep durable reasoning in the Note. When the user answers one of your Marks from this session, fold the answer into the Note or delete the Mark. Leave the user's Marks and Marks from earlier sessions in place unless asked.
 

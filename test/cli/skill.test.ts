@@ -31,6 +31,63 @@ function mockInstaller(stdout?: string, exitCode = 0, failedAgent?: string): str
 }
 
 describe("skill", () => {
+  it("validates setup targets before contacting or launching the app", async () => {
+    const result = await run(["setup", "--agent", "claude"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("invalid_agent");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+  it("reports unknown app capabilities explicitly", async () => {
+    mockInstaller();
+    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, data: { contractVersion: 2 } }));
+    const result = await run(["setup", "--agent", "codex"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data).toMatchObject({ appVersion: "unknown", buildVersion: "unknown", capabilities: { status: "unknown", values: [] } });
+  });
+  it("preserves disabled agent access and reports the app blocker without installing", async () => {
+    const argsFile = mockInstaller();
+    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: false, error: { code: "access_disabled", message: "Local agent access is disabled", details: { hint: "Enable Local agent access in Enso Settings" } } }));
+    const result = await run(["setup", "--agent", "codex"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "access_disabled", details: { stage: "app", hint: "Enable Local agent access in Enso Settings" } });
+    expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual([]);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+  it("completes setup with pairing, installed skill provenance, and explicit capability status", async () => {
+    mockInstaller();
+    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, data: { appVersion: "1.5", contractVersion: 2, capabilities: ["mark.update"] } }));
+    const result = await run(["setup", "--agent", "codex"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data).toMatchObject({ ready: true, pairing: "linked", cliVersion: "0.8.1", capabilities: { status: "reported", values: ["mark.update"] }, skill: { installed: true } });
+  });
+  it("uses Bun's executable without npx-specific flags when requested", async () => {
+    const argsFile = mockInstaller();
+    const result = await run(["skill", "install", "--agent", "codex", "--installer", "bun"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(readFileSync(argsFile, "utf8"))[0].slice(0, 2)).toEqual(["skills@1.7.1", "add"]);
+  });
+  it("installs the package-owned skill when the working directory contains another Enso skill", async () => {
+    const argsFile = mockInstaller();
+    const projectSkill = join(tempDir, "skills", "enso");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(join(projectSkill, "SKILL.md"), "# Project skill");
+    const cwd = process.cwd();
+    try {
+      process.chdir(tempDir);
+      const result = await run(["skill", "install", "--agent", "codex"]);
+      expect(result.code).toBe(0);
+      expect(JSON.parse(readFileSync(argsFile, "utf8"))[0][3]).toBe(join(cwd, "skills", "enso"));
+      expect(JSON.parse(result.stdout).data.provenance).toMatchObject({ cliVersion: "0.8.1", source: join(cwd, "skills", "enso") });
+    } finally { process.chdir(cwd); }
+  });
+  it("rejects unknown explicit targets before installation", async () => {
+    const argsFile = mockInstaller();
+    const result = await run(["skill", "install", "--agent", "claude"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_agent", details: { agent: "claude" } });
+    expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual([]);
+  });
   it("does not expose the raw apply command", () => {
     expect(buildProgram().commands.map(command => command.name())).not.toContain("apply");
   });

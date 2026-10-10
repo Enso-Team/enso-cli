@@ -5,6 +5,9 @@ import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 // handwriting a person draws. It labels, decorates, or expands on the Canvas without being a
 // concept, so it has no Note file. Agents write typed Marks only.
 
+export const MARK_DEFAULT_FONT_SIZE = 17;
+export const markFontSizeSchema = z.number().finite().min(8).max(96);
+
 export const markStyleSchema = z.enum(["bold", "italic", "highlight", "strikethrough", "code"]);
 
 /** A styled range of Mark text, in UTF-16 code units, which is JavaScript string indexing. */
@@ -21,8 +24,6 @@ export const markTextSchema = z.string().refine((value) => value.trim().length >
 export const MARK_NATURAL_WIDTH = 420;
 /** World height of one line of Mark text. Source: MarkTextLayout.lineHeightWorld. */
 export const MARK_LINE_HEIGHT = 17 * 1.35;
-/** Generous average glyph advance for the 17-point Mark face, so estimates err toward more lines. */
-const MARK_CHARACTER_WIDTH = 17 * 0.6;
 
 export function runsOutsideText(text: string, runs: MarkTextRun[]): boolean {
   return runs.some((run) => run.location + run.length > text.length);
@@ -44,11 +45,11 @@ export function parseMarkTextRuns(value: string): MarkTextRun[] {
  * World box a typed Mark can occupy: its top-left origin, its wrap width, and an estimate of
  * the lines its text wraps onto. The app measures the real block. This errs toward larger.
  */
-export function markWorldBox(mark: { x: number; y: number; width?: number | null; text?: string }): { minX: number; minY: number; maxX: number; maxY: number } {
+export function markWorldBox(mark: { x: number; y: number; width?: number | null; fontSize?: number; text?: string }): { minX: number; minY: number; maxX: number; maxY: number } {
   const width = mark.width ?? MARK_NATURAL_WIDTH;
-  const perLine = Math.max(1, Math.floor(width / MARK_CHARACTER_WIDTH));
+  const perLine = Math.max(1, Math.floor(width / ((mark.fontSize ?? MARK_DEFAULT_FONT_SIZE) * 0.6)));
   const lines = (mark.text ?? "").split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(line.length / perLine)), 0);
-  return { minX: mark.x, minY: mark.y, maxX: mark.x + width, maxY: mark.y + Math.max(1, lines) * MARK_LINE_HEIGHT };
+  return { minX: mark.x, minY: mark.y, maxX: mark.x + width, maxY: mark.y + Math.max(1, lines) * (mark.fontSize ?? MARK_DEFAULT_FONT_SIZE) * 1.35 };
 }
 
 export function marksUnsupported(details: Record<string, unknown> = {}): EnsoCliError {

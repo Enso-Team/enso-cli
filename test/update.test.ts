@@ -111,15 +111,35 @@ describe("notifications", () => {
 });
 
 describe("installation", () => {
+  it("reports the owning update action during a version check", async () => {
+    const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+    execute.mockResolvedValue({ stdout: `${directory}\n` });
+    vi.spyOn(fs, "realpathSync").mockReturnValue(packageDirectory);
+    vi.spyOn(fs, "lstatSync").mockReturnValue({ isSymbolicLink: () => false } as fs.Stats);
+    expect(await updateCli(true)).toMatchObject({ updated: false, installation: { owner: "npm", automatic: true, updateCommand: "npm install -g @enso-app/cli@latest" } });
+    expect(execute.mock.calls.some(([, args]) => args[0] === "install")).toBe(false);
+  });
+  it("updates a Bun-owned global package through Bun", async () => {
+    const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+    execute.mockImplementation(async (binary, args) => {
+      if (binary === "npm") throw new Error("npm unavailable");
+      return { stdout: args[0] === "pm" ? "/bun/bin\n" : "" };
+    });
+    vi.spyOn(fs, "realpathSync").mockImplementation(path => String(path) === "/bun/bin/enso" ? "/bun/global/node_modules/@enso-app/cli/dist/index.js" : String(path) === packageDirectory ? "/bun/global/node_modules/@enso-app/cli" : String(path));
+    vi.spyOn(fs, "lstatSync").mockReturnValue({ isSymbolicLink: () => false } as fs.Stats);
+    vi.spyOn(fs, "readFileSync").mockReturnValue(JSON.stringify({ version: nextVersion }));
+    expect(await updateCli(false)).toMatchObject({ updated: true, installation: { owner: "bun", automatic: true } });
+    expect(execute).toHaveBeenLastCalledWith("bun", ["add", "--global", `@enso-app/cli@${nextVersion}`, "--registry", "https://registry.npmjs.org"], expect.objectContaining({ timeout: 120000 }));
+  });
   it("checks versions independently of the Enso app", async () => {
-    expect(await updateCli(true)).toEqual({ installedVersion: cliVersion, latestVersion: nextVersion, updateAvailable: true, updated: false });
-    expect(execute).not.toHaveBeenCalled();
+    expect(await updateCli(true)).toMatchObject({ installedVersion: cliVersion, latestVersion: nextVersion, updateAvailable: true, updated: false });
+    expect(execute.mock.calls.some(([, args]) => args[0] === "install" || args[0] === "add")).toBe(false);
   });
 
   it("keeps a current or higher installed version", async () => {
     vi.mocked(fetch).mockResolvedValue(Response.json({ version: "0.0.1" }));
     expect(await updateCli(false)).toMatchObject({ updated: false, updateAvailable: false });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute.mock.calls.some(([, args]) => args[0] === "install" || args[0] === "add")).toBe(false);
   });
 
   it("asks project and linked installations to use their owning package manager", async () => {
@@ -127,7 +147,7 @@ describe("installation", () => {
     const realpath = vi.spyOn(fs, "realpathSync");
     realpath.mockReturnValueOnce(directory).mockReturnValueOnce("/project");
     await expect(updateCli(false)).rejects.toMatchObject({ body: { code: "update_install_location" } });
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls.some(([, args]) => args[0] === "install" || args[0] === "add")).toBe(false);
   });
 
   it("keeps npm-linked development checkouts intact", async () => {
@@ -135,7 +155,7 @@ describe("installation", () => {
     vi.spyOn(fs, "realpathSync").mockReturnValue(directory);
     vi.spyOn(fs, "lstatSync").mockReturnValue({ isSymbolicLink: () => true } as fs.Stats);
     await expect(updateCli(false)).rejects.toMatchObject({ body: { code: "update_install_location" } });
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls.some(([, args]) => args[0] === "install" || args[0] === "add")).toBe(false);
   });
 
   it("installs the exact checked version and verifies its package manifest", async () => {
@@ -149,7 +169,10 @@ describe("installation", () => {
   });
 
   it("reports npm failures with an actionable command", async () => {
-    execute.mockRejectedValue(new Error("EACCES"));
+    const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+    execute.mockResolvedValueOnce({ stdout: `${directory}\n` }).mockRejectedValue(new Error("EACCES"));
+    vi.spyOn(fs, "realpathSync").mockReturnValue(packageDirectory);
+    vi.spyOn(fs, "lstatSync").mockReturnValue({ isSymbolicLink: () => false } as fs.Stats);
     await expect(updateCli(false)).rejects.toMatchObject({ body: { code: "update_failed", details: { hint: expect.stringContaining("npm install -g") } } });
   });
 });

@@ -2,6 +2,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
 import { placementSelector } from "../note-identity.js";
+import { validateNotePath } from "../filenames.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -33,6 +34,7 @@ export function registerNode(program: Command): void {
     .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
     .option("--dry-run", "validate without mutating")
     .action(async (note: string, options: { appearance?: string; glyphSize?: number; fontSize?: number; titleGap?: number; lockRatio?: boolean; canvas?: string; x?: string; y?: string; dryRun?: boolean }) => {
+      validateNotePath(note, "note");
       const x = parseCoord(options.x, "x");
       const y = parseCoord(options.y, "y");
       return new BridgeClient().request("/v1/nodes", {

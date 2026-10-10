@@ -8,6 +8,16 @@ import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
+it("validates authored canvas names before contacting the bridge", async () => {
+  for (const name of ["WaveSpeed / APIs", ".", "..", "", "x\\y", "x\u0000y", "é".repeat(128)]) {
+    const result = await run(["canvas", "create", name]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_filename", details: { path: "name", value: name } });
+  }
+  expect(calls).toHaveLength(0);
+  expect((await run(["canvas", "create", "設計 & APIs"])).code).toBe(0);
+});
+
 describe("commands", () => {
   it("exposes only the new surgical removal names", () => {
     const program = buildProgram();

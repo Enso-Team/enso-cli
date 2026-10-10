@@ -50,7 +50,7 @@ function packageJsonHasDependency(packageJsonPath: string, dependencyName: strin
 }
 
 /** Find installed agents and separate those with project-only skill locations. */
-export function discoverSkillAgents(options: AgentDiscoveryEnvironment = {}): { agents: string[]; skippedAgents: string[] } {
+function agentProbes(options: AgentDiscoveryEnvironment = {}): Record<string, () => boolean> {
   const homeDirectory = options.homeDirectory ?? homedir();
   const workingDirectory = options.workingDirectory ?? process.cwd();
   const environment = options.environment ?? process.env;
@@ -152,6 +152,15 @@ export function discoverSkillAgents(options: AgentDiscoveryEnvironment = {}): { 
     "adal": () => pathExists(join(homeDirectory, '.adal')),
     "universal": () => false,
   };
+  return probes;
+}
+
+export function supportedSkillAgents(): string[] {
+  return Object.keys(agentProbes());
+}
+
+export function discoverSkillAgents(options: AgentDiscoveryEnvironment = {}): { agents: string[]; skippedAgents: string[] } {
+  const probes = agentProbes(options);
   const projectOnly = new Set(["eve","promptscript"]);
   const installed = Object.entries(probes).filter(([, probe]) => probe()).map(([name]) => name);
   return {
