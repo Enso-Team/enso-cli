@@ -74,7 +74,7 @@ Acceptance: record a completed Greptile check or bot review that identifies the 
 
 ## Validation at audited head
 
-- `npm test`: 326 passing tests across 19 files.
+- `npm test`: 327 passing tests across 19 files.
 - `npm run typecheck`: pass.
 - `npm run build`: pass.
 - Packaged CLI help and invalid-agent smoke checks: pass.
@@ -90,7 +90,7 @@ Body:
 
 > Agents need predictable setup, editable context regions, and clear filename errors before canvas mutations. The CLI validates those edits, installs its bundled skill for detected or explicit agent targets, reports installation ownership and setup blockers, and exposes mark/excerpt font size with reset-to-17 behavior.
 >
-> Verification: 326 tests pass; typecheck, build, packaged CLI smoke checks, and installer boundary tests pass. Native bridge font-size persistence and real disposable npm/Bun installation/update checks remain coordinated acceptance items. Governing design: **Enso 1.5 release**, with the CLI contracts, Writing resize, Release contract, and Review gate notes in the agreed development vault.
+> Verification: 327 tests pass; typecheck, build, packaged CLI smoke checks, and installer boundary tests pass. Native bridge font-size persistence and real disposable npm/Bun installation/update checks remain coordinated acceptance items. Governing design: **Enso 1.5 release**, with the CLI contracts, Writing resize, Release contract, and Review gate notes in the agreed development vault.
 >
 > Related: Enso-Team/enso-cli#93, #94, #95, #96; Enso-Team/enso#559. Automatic Greptile review of the final head is required before this checkpoint passes.
 

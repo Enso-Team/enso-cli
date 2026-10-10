@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readConfig } from "../../src/config.js";
 import { run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
@@ -10,6 +10,9 @@ vi.mock("node:child_process", async () => {
   return { execFile: Object.assign(vi.fn(), { [promisify.custom]: execute }) };
 });
 setupCliTest();
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+beforeEach(() => Object.defineProperty(process, "platform", { value: "darwin", configurable: true }));
+afterEach(() => Object.defineProperty(process, "platform", platformDescriptor));
 
 describe("agent setup app discovery", () => {
   it("launches the installed Mac app and pairs through its token file", async () => {
@@ -41,5 +44,17 @@ describe("agent setup app discovery", () => {
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr).error).toMatchObject({ code: "app_missing", details: { stage: "app", hint: "Install or launch Enso, then run enso setup" } });
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the Mac setup requirement before app launch on Linux", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    execute.mockReset();
+    vi.mocked(fetch).mockRejectedValue(new Error("Connection refused"));
+    const result = await run(["setup", "--agent", "codex"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({
+      code: "app_launch_required", details: { stage: "app", hint: "Run setup on the Mac that has Enso installed" }
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 });
