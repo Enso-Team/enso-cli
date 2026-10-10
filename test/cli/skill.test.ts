@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/index.js";
@@ -31,6 +32,22 @@ function mockInstaller(stdout?: string, exitCode = 0, failedAgent?: string): str
 }
 
 describe("skill", () => {
+  it("requires the packaged skill inside its own installation", async () => {
+    execFileSync("npm", ["run", "build"], { cwd: process.cwd(), stdio: "pipe" });
+    const fixture = join(tempDir, "package");
+    mkdirSync(join(fixture, "dist"), { recursive: true });
+    writeFileSync(join(fixture, "dist/index.js"), readFileSync("dist/index.js"));
+    writeFileSync(join(fixture, "package.json"), readFileSync("package.json"));
+    symlinkSync(join(process.cwd(), "node_modules"), join(fixture, "node_modules"));
+    const otherSkill = join(tempDir, "skills/enso");
+    mkdirSync(otherSkill, { recursive: true });
+    writeFileSync(join(otherSkill, "SKILL.md"), "# Another source");
+    const argsFile = mockInstaller();
+    const result = spawnSync(process.execPath, [join(fixture, "dist/index.js"), "skill", "install", "--agent", "codex", "--installer", "npm"], { encoding: "utf8", env: { ...process.env, ENSO_CLI_NO_UPDATE_CHECK: "1" } });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("skill_not_found");
+    expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual([]);
+  }, 30000);
   it("validates setup targets before contacting or launching the app", async () => {
     const result = await run(["setup", "--agent", "claude"]);
     expect(result.code).toBe(1);

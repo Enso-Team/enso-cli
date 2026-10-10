@@ -1,11 +1,10 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { cliVersion } from "../version.js";
-import { inspectInstallation } from "../installation.js";
+import { inspectInstallation, packageDirectory } from "../installation.js";
 import { configDir } from "../config.js";
 import { Command } from "commander";
 import { z } from "zod";
@@ -41,12 +40,7 @@ function installerResults(stdout: string): z.infer<typeof installerResultsSchema
 }
 
 function findSkillPath(): string {
-  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const candidates = [
-    resolve(packageRoot, "skills", "enso"),
-    resolve(packageRoot, "..", "skills", "enso")
-  ];
-  return candidates.find(candidate => existsSync(join(candidate, "SKILL.md"))) ?? candidates[0];
+  return join(packageDirectory, "skills", "enso");
 }
 
 async function installAgent(source: string, installer: string, agent: string, manager: "npm" | "bun"): Promise<AgentInstallation> {
