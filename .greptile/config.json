@@ -1,0 +1,8 @@
+{
+  "autoReview": ["open", "push", "rebase"],
+  "triggerOnDrafts": false,
+  "statusCheck": true,
+  "statusCommentsEnabled": true,
+  "shouldUpdateDescription": false,
+  "hideFooter": false
+}
