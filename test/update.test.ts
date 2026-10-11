@@ -158,6 +158,25 @@ describe("installation", () => {
     expect(execute.mock.calls.some(([, args]) => args[0] === "install" || args[0] === "add")).toBe(false);
   });
 
+  it("reports a Bun-linked checkout when its global registry has no package manifest", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(fs.realpathSync).mockImplementation(actual.realpathSync);
+    vi.mocked(fs.lstatSync).mockImplementation(actual.lstatSync);
+    vi.mocked(fs.readFileSync).mockImplementation(actual.readFileSync);
+    const source = fs.realpathSync(fileURLToPath(new URL("../", import.meta.url)));
+    const globalDirectory = join(directory, "bun-global");
+    fs.mkdirSync(join(globalDirectory, "node_modules", "@enso-app"), { recursive: true });
+    fs.symlinkSync(source, join(globalDirectory, "node_modules", "@enso-app", "cli"), "dir");
+    vi.stubEnv("BUN_INSTALL_GLOBAL_DIR", globalDirectory);
+    execute.mockRejectedValue(new Error("No global package manifest"));
+
+    const installation = { owner: "linked", automatic: false, installer: "bunx", updateCommand: `bun run --cwd '${source}' build` };
+    expect(await updateCli(true)).toMatchObject({ updated: false, installation });
+    await expect(updateCli(false)).rejects.toMatchObject({ body: { code: "update_install_location", details: { ...installation, hint: installation.updateCommand } } });
+    expect(fs.existsSync(join(globalDirectory, "package.json"))).toBe(false);
+    expect(execute.mock.calls.some(([, args]) => args[0] === "install" || args[0] === "add")).toBe(false);
+  });
+
   it("installs the exact checked version and verifies its package manifest", async () => {
     const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
     execute.mockResolvedValue({ stdout: `${directory}\n` });

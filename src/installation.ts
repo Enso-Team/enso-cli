@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -22,15 +23,23 @@ export async function inspectInstallation(): Promise<Installation> {
     }
   } catch { /* A missing npm global package leaves Bun ownership to inspect. */ }
   try {
+    const globalDirectory = process.env.BUN_INSTALL_GLOBAL_DIR
+      || join(process.env.BUN_INSTALL || join(homedir(), ".bun"), "install", "global");
+    const registered = join(globalDirectory, "node_modules", "@enso-app/cli");
+    if (lstatSync(registered).isSymbolicLink() && realpathSync(registered) === current) {
+      return { owner: "linked", automatic: false, updateCommand: `bun run --cwd ${shellQuote(current)} build`, installer: "bunx" };
+    }
+  } catch { /* Bun's link registry is optional for installed packages. */ }
+  try {
     const { stdout } = await execute("bun", ["pm", "bin", "-g"], { timeout: 5000 });
     if (realpathSync(join(stdout.trim(), "enso")) === join(current, "dist/index.js")) {
       const automatic = current.endsWith("node_modules/@enso-app/cli") && !lstatSync(packageDirectory).isSymbolicLink();
-      return { owner: automatic ? "bun" : "linked", automatic, updateCommand: automatic ? "bun add -g @enso-app/cli@latest" : `bun --cwd ${shellQuote(current)} run build`, installer: "bunx" };
+      return { owner: automatic ? "bun" : "linked", automatic, updateCommand: automatic ? "bun add -g @enso-app/cli@latest" : `bun run --cwd ${shellQuote(current)} build`, installer: "bunx" };
     }
   } catch { /* Project and linked installations receive an explicit local action. */ }
   const project = current.endsWith("node_modules/@enso-app/cli") ? dirname(dirname(dirname(current))) : current;
   const bun = existsSync(join(project, "bun.lock")) || existsSync(join(project, "bun.lockb"));
   return { owner: "project", automatic: false, updateCommand: current.endsWith("node_modules/@enso-app/cli")
     ? bun ? `bun add --cwd ${shellQuote(project)} @enso-app/cli@latest` : `npm install --prefix ${shellQuote(project)} @enso-app/cli@latest`
-    : `${bun ? "bun" : "npm"} --${bun ? "cwd" : "prefix"} ${shellQuote(project)} run build`, installer: bun ? "bunx" : "npx" };
+    : bun ? `bun run --cwd ${shellQuote(project)} build` : `npm --prefix ${shellQuote(project)} run build`, installer: bun ? "bunx" : "npx" };
 }
