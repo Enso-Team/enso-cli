@@ -1,9 +1,15 @@
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient, type RequestOptions } from "../client.js";
 import { parseWorldPoint, type WorldPoint } from "../link-model.js";
-import { MARK_DEFAULT_FONT_SIZE, markFontSizeSchema, parseMarkTextRuns, requireMarkSupport, runsOutsideText, type MarkTextRun } from "../mark-model.js";
+import { MARK_DEFAULT_FONT_SIZE, markFontSizeSchema, writingTextAlignmentSchema, parseMarkTextRuns, requireMarkSupport, runsOutsideText, type MarkTextRun, type WritingTextAlignment } from "../mark-model.js";
 
-type MarkWriteOptions = { at?: WorldPoint; width?: number; fontSize?: number; resetSize?: boolean; runs?: MarkTextRun[]; dryRun?: boolean };
+type MarkWriteOptions = { at?: WorldPoint; width?: number; fontSize?: number; align?: WritingTextAlignment; resetSize?: boolean; runs?: MarkTextRun[]; dryRun?: boolean };
+
+function parseAlignment(value: string): WritingTextAlignment {
+  const parsed = writingTextAlignmentSchema.safeParse(value);
+  if (!parsed.success) throw new InvalidArgumentError("alignment must be left, center, right, or justified");
+  return parsed.data;
+}
 
 function parseAt(value: string): WorldPoint {
   try {
@@ -44,6 +50,7 @@ function markBody(text: string | undefined, options: MarkWriteOptions): Record<s
     ...(text !== undefined ? { text } : {}),
     ...(options.at ? { x: options.at.x, y: options.at.y } : {}),
     ...(options.width !== undefined ? { width: options.width } : {}),
+    ...(options.align !== undefined ? { textAlignment: options.align } : {}),
     ...(options.runs ? { textRuns: options.runs } : {}),
     dryRun: Boolean(options.dryRun)
   };
@@ -78,6 +85,7 @@ export function registerMark(program: Command): void {
   mark
     .command("create")
     .description("Write typed text on the open Canvas")
+    .option("--align <alignment>", "Whole-placement alignment: left, center, right, or justified", parseAlignment)
     .argument("<text>", "the Mark's text; newlines break lines")
     .requiredOption("--at <x,y>", "World-space top-left of the text block", parseAt)
     .option("--width <points>", "wrap width in World points; omit for natural width up to 420", parseWidth)
@@ -90,6 +98,7 @@ export function registerMark(program: Command): void {
   mark
     .command("update")
     .description("Edit a typed Mark's text, position, width, or formatting. Handwritten Marks belong to the person who drew them.")
+    .option("--align <alignment>", "Whole-placement alignment: left, center, right, or justified", parseAlignment)
     .argument("<mark-id>")
     .option("--reset-size", "Reset text size to 17 world points, retaining wrap width")
     .option("--text <text>", "replacement text")
@@ -99,8 +108,8 @@ export function registerMark(program: Command): void {
     .option("--runs <json>", "replacement formatting as [{location, length, styles}]; [] clears it", parseRuns)
     .option("--dry-run", "validate without mutating")
     .action(async (id: string, options: MarkWriteOptions & { text?: string }) => {
-      if (options.text === undefined && !options.at && options.width === undefined && options.fontSize === undefined && !options.resetSize && !options.runs) {
-        throw new InvalidArgumentError("mark update requires --text, --at, --width, --font-size, --reset-size, or --runs");
+      if (options.text === undefined && !options.at && options.width === undefined && options.fontSize === undefined && options.align === undefined && !options.resetSize && !options.runs) {
+        throw new InvalidArgumentError("mark update requires --text, --at, --width, --font-size, --align, --reset-size, or --runs");
       }
       return request(`/v1/marks/${encodeURIComponent(id)}`, {
         method: "PUT",
@@ -148,13 +157,14 @@ export function registerExcerpt(program: Command): void {
   excerpt.command("list").action(async () => request("/v1/excerpts"));
   excerpt.command("get").argument("<excerpt-id>").action(async (id: string) => request(`/v1/excerpts/${encodeURIComponent(id)}`));
   excerpt.command("update").argument("<excerpt-id>")
+    .option("--align <alignment>", "Whole-placement alignment: left, center, right, or justified", parseAlignment)
     .option("--font-size <points>", "Placement text size in world points, 8–96", parseFontSize)
     .option("--reset-size", "Reset placement text size to 17 world points, retaining wrap width")
     .option("--width <points>", "Wrap width in world points", parseWidth)
     .option("--at <x,y>", "World-space top-left", parseAt)
     .option("--dry-run", "validate without mutating")
     .action(async (id: string, options: MarkWriteOptions) => {
-      if (options.fontSize === undefined && !options.resetSize && options.width === undefined && !options.at) throw new InvalidArgumentError("Provide font-size, reset-size, width, or at");
+      if (options.fontSize === undefined && options.align === undefined && !options.resetSize && options.width === undefined && !options.at) throw new InvalidArgumentError("Provide font-size, align, reset-size, width, or at");
       return request(`/v1/excerpts/${encodeURIComponent(id)}`, { method: "PUT", body: markBody(undefined, options), dryRun: Boolean(options.dryRun) });
     });
 }

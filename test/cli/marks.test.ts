@@ -5,6 +5,22 @@ import { calls, run, setupCliTest } from "../support/cli-harness.js";
 
 setupCliTest();
 
+it("writes placement alignment through commands and canvas intent verification", async () => {
+  for (const alignment of ["left", "center", "right", "justified"]) {
+    await run(["mark", "update", MARK, "--align", alignment]);
+    expect(body(calls.length - 1)).toEqual({ textAlignment: alignment, dryRun: false });
+    await run(["excerpt", "update", MARK, "--align", alignment]);
+    expect(body(calls.length - 1)).toEqual({ textAlignment: alignment, dryRun: false });
+  }
+  await run(["mark", "create", "Aligned", "--at", "0,0", "--align", "right"]);
+  expect(body(calls.length - 1)).toEqual({ text: "Aligned", x: 0, y: 0, textAlignment: "right", dryRun: false });
+  const intent = parseCanvasIntent({ canvas: "current", marks: [{ mode: "update", id: MARK, textAlignment: "justified" }] });
+  const context = { marks: [{ id: MARK, kind: "text", text: "A thought", textAlignment: "left" }] };
+  expect(compileCanvasApply(intent, context).phases[0].operations).toEqual([{ type: "mark.update", id: MARK, textAlignment: "justified" }]);
+  expect(verifyCanvasIntent(intent, context).mismatches).toEqual([`marks:${MARK}:textAlignment`]);
+  expect(verifyCanvasIntent(intent, { marks: [{ ...context.marks[0], textAlignment: "justified" }] }).ok).toBe(true);
+});
+
 it("estimates sized text and updates excerpt size at the public route", async () => {
   expect(markWorldBox({ x: 0, y: 0, width: 204, fontSize: 34, text: "12345678901" })).toEqual({ minX: 0, minY: 0, maxX: 204, maxY: 91.80000000000001 });
   await run(["excerpt", "update", MARK, "--font-size", "34"]);
@@ -35,6 +51,12 @@ function body(index: number): unknown {
 }
 
 describe("mark commands", () => {
+  it.each(["natural", "justify", "RIGHT", "", "17"])("rejects alignment %s before mutation", async value => {
+    await expect(run(["mark", "update", MARK, "--align", value])).rejects.toThrow("left, center, right, or justified");
+    await expect(run(["excerpt", "update", MARK, "--align", value])).rejects.toThrow("left, center, right, or justified");
+    expect(() => parseCanvasIntent({ canvas: "current", marks: [{ mode: "update", id: MARK, textAlignment: value }] })).toThrow();
+    expect(calls).toHaveLength(0);
+  });
   it.each(["7", "97", "NaN", "Infinity"])("rejects font size %s before mutation", async value => {
     await expect(run(["mark", "update", MARK, "--font-size", value])).rejects.toThrow("8–96 finite world points");
     await expect(run(["excerpt", "update", MARK, "--font-size", value])).rejects.toThrow("8–96 finite world points");
