@@ -12,9 +12,11 @@ Let the subject determine the form: a journey, state model, comparison, architec
 
 For a new arrangement or a substantial layout change, read [references/diagram-design.md](references/diagram-design.md). Choose grouping, appearance, and color for their explanatory value.
 
+For a repository or software architecture map, read [references/codebase-maps.md](references/codebase-maps.md). Gather source evidence for the concepts and relationships that answer the requested question.
+
 ## Work through the CLI
 
-Use the Enso CLI for app inspection and edits, and filesystem tools for markdown and temporary intents. Discover operations through focused `enso <command> --help` or `enso canvas apply --schema`. Computer use is reserved for an explicit request to operate the native UI.
+Use the Enso CLI for app inspection and edits, and filesystem tools for markdown and temporary intents. Use focused `enso <command> --help` or the chosen command's schema when its contract is unfamiliar. Reuse loaded instructions, contracts, and target information within the active context; refresh live IDs and geometry after relevant edits. Computer use is reserved for an explicit request to operate the native UI.
 
 Start with `enso status --pretty`, `enso vault current --pretty`, and `enso canvas list --pretty`. Use the returned Vault `path` for markdown. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it.
 
@@ -22,7 +24,7 @@ Each Note is a durable explanation of its concept in prose. Read and edit its ma
 
 A Mark is typed text on the Canvas that labels, decorates, or expands on it without being a concept. Use one where a Note would be hollow, such as a heading, lane label, legend, or callout. Put a question or unverified claim addressed to the user in a Mark connected to its Node, and keep durable reasoning in the Note. When the user answers one of your Marks from this session, fold the answer into the Note or delete the Mark. Leave the user's Marks and Marks from earlier sessions in place unless asked.
 
-Before a first build or a multi-element revision, read [references/canvas-operations.md](references/canvas-operations.md) for file checks, apply, and recovery. Put one coherent creation or revision in one temporary `canvas apply` intent. Use a typed command for a single edit. Dry-run CLI mutations before applying them.
+Before a first build or a multi-element revision, read [references/canvas-operations.md](references/canvas-operations.md) for file checks, creation, and recovery. Use `enso layout` for a new arrangement of Notes whose relationships, direction, and clusters determine placement. Use `canvas apply` for precise geometry, mixed elements, or multi-element revisions, collecting a coherent change in one temporary intent. Use a typed command for a single edit. Dry-run CLI mutations before applying them.
 
 ## Revise the existing explanation
 
@@ -30,6 +32,6 @@ Treat each user revision as an edit to the current Canvas. Inspect its affected 
 
 When the user refers to writing on the Canvas, read it with `enso mark list`. Handwriting carries an interpretation. Quote an unapproved interpretation back before acting on it. Move a Mark into a Note with `enso mark add-to-note` or `drop-to-note` when the user asks.
 
-For placement changes, inspect `enso context --canvas <target> --vision --pretty` and use the returned geometry and `data.vision.diagnostics`. All `x` and `y` values are world-space centers. After creation or a layout change, check diagnostics and repair faults that obstruct the intended reading. Keep repairs scoped to the affected area and inspect after a repair to confirm its effect. Report a remaining obstruction when further repair needs a broader redesign.
+For placement changes, use `enso context --canvas <target> --pretty` for IDs and geometry. Node positions are world-space centers; a Mark's position is its text's top-left. After creation or a layout change, use `enso context --canvas <target> --diagnostics --pretty` for routine mechanical checks. Use `--vision --pretty` and inspect the returned image when a concrete visual question needs rendered appearance, such as whether color or scale conveys the intended grouping. Repair faults that obstruct the intended reading, collect related repairs, and check affected diagnostics to confirm their effect. Report a remaining obstruction when further repair needs a broader redesign.
 
 Finish when the Canvas expresses the requested explanation and the affected elements have the requested structure and appearance. Successful apply and clear diagnostics support mechanical verification; assess the explanation against the user's question as well.

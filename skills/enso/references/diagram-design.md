@@ -14,7 +14,7 @@ The structure works when a reader can find the focal concept or path and underst
 
 Notes carry durable concepts, Links carry visible relationships, and Portals navigate to detail Canvases. Marks carry text that is not a concept: headings, legends, and callouts. Regions clarify meaningful boundaries around nearby elements. Lines can separate lanes or mark a threshold. Proximity and whitespace often communicate grouping on their own.
 
-Set an `appearance` that helps identify each Node. Use `card` for reading text, Symbols for recognizable concepts, and `decision` or `terminal` for branching or endpoints. Reuse an appearance for concepts of the same kind. Read the apply schema for the available values.
+Set an `appearance` that helps identify each Node. Use `card` for reading text, Symbols for recognizable concepts, and `decision` or `terminal` for branching or endpoints. Reuse an appearance for concepts of the same kind. Consult the chosen command's schema for unfamiliar appearance values.
 
 Use color when it distinguishes a meaningful group or repeated relationship class. Keep the palette learnable. A region's low `fillOpacity`, typically 0.06 to 0.12, keeps its members legible. Neutral Links work for relationships that need only a label and direction.
 
@@ -30,7 +30,7 @@ Place Nodes so Links travel through whitespace. Short predicates make curve labe
 
 ## Inspect and repair
 
-Use CLI context geometry and `data.vision.diagnostics` for mechanical inspection. Each issue includes element IDs in `subjects`, viewport-space `bounds`, and world-space `worldBounds`. Choose moves from inspected positions and world-space bounds.
+Use plain CLI context for element geometry and `context --diagnostics` for mechanical inspection. Each issue includes element IDs in `subjects`, viewport-space `bounds`, and world-space `worldBounds`. Choose moves from inspected positions and world-space bounds. Use `context --vision` when rendered appearance answers a concrete visual question.
 
 Prioritize faults that obstruct reading, such as overlapping Nodes, Links through unrelated Nodes, and unreadable labels. Judge low gaps and crossings by the intended path. Offscreen elements matter when the user requests a single-screen overview or necessary content is clipped; a navigable Canvas can have intentional offscreen content.
 

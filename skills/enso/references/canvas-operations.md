@@ -1,6 +1,6 @@
 # Canvas operations
 
-Read this before a first build or a multi-element revision, and when recovering from an apply failure. Use focused command help for individual edits.
+Read this before a first build or a multi-element revision, and when recovering from an apply failure.
 
 ## Files and target
 
@@ -10,9 +10,20 @@ Continue from `enso status` when `ok: true`. If Enso is closed, launch it and re
 
 Use an exact Canvas selector from `enso canvas list`. A named `canvas apply` opens its target. Typed commands such as `enso node move` act on the open Canvas; use `enso canvas open <target>` before editing a different target through those commands.
 
+## Lay out a new graph
+
+Use `enso layout` when new Notes and their relationships determine placement. Read `enso layout --schema` when constructing an unfamiliar graph contract. Write a temporary graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`. The CLI computes Node positions and cluster bounds.
+
+```sh
+enso layout /tmp/enso-<task>-graph.json --apply --dry-run
+enso layout /tmp/enso-<task>-graph.json --apply
+```
+
+Layout uses the apply pipeline below. Its `data.applied` contains that pipeline's result, including preflight, verification, and returned IDs. Read `validation.locallyValidatedOnly` for phases that receive app validation during apply. Add any Marks or other mixed elements through a focused apply intent. Use inspected IDs and `canvas apply` for revisions to existing placements. Delete the temporary graph after success.
+
 ## Apply a coherent change
 
-Read the contract when constructing an intent:
+Read the contract when constructing an unfamiliar intent:
 
 ```sh
 enso canvas apply --schema
@@ -30,6 +41,8 @@ Continue from dry-run when `ok: true`, `preflightPassed` is true, and each valid
 Read `data.placement`. When `recentered` is true, the CLI translates the creation onto the empty-Canvas home. Use the compiled phase coordinates from dry-run or add the returned `dx` and `dy` to input coordinates for subsequent edits.
 
 Delete the temporary file after success. Retain a failed intent only while using it for recovery, then clean it up.
+
+For a requested overview, `enso canvas fit <target>` frames the open Canvas content. Dry-run it first and read the proposed viewport and `fits`. If framing fails, report the bridge error and retain the diagram's geometry. App-route investigation belongs to an implementation request.
 
 ## Link and removal semantics
 
