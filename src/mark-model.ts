@@ -7,6 +7,8 @@ import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 
 export const MARK_DEFAULT_FONT_SIZE = 17;
 export const markFontSizeSchema = z.number().finite().min(8).max(96);
+export const writingTextAlignmentSchema = z.enum(["left", "center", "right", "justified"]);
+export type WritingTextAlignment = z.infer<typeof writingTextAlignmentSchema>;
 
 export const markStyleSchema = z.enum(["bold", "italic", "highlight", "strikethrough", "code"]);
 

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
 import { EnsoCliError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, lineStyleSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
-import { markFontSizeSchema, markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
+import { markFontSizeSchema, writingTextAlignmentSchema, markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
 import { nodeSelector, noteMatches, placementSelector } from "./note-identity.js";
 import { validateFilename, validateNotePath } from "./filenames.js";
 
@@ -75,14 +75,14 @@ const intentPrimitive = z.preprocess((value) => {
 
 // A Mark is typed canvas text with a top-left origin. `connect` draws a connection from each
 // named Node to the Mark, so the Mark comments on those Nodes.
-const markFields = { fontSize: markFontSizeSchema.optional(), width: positiveFinite.optional(), textRuns: z.array(markTextRunSchema).optional(), connect: z.array(selector).optional() };
+const markFields = { fontSize: markFontSizeSchema.optional(), textAlignment: writingTextAlignmentSchema.optional(), width: positiveFinite.optional(), textRuns: z.array(markTextRunSchema).optional(), connect: z.array(selector).optional() };
 const markCreate = z.object({ mode: z.literal("create"), text: markTextSchema, ...coordinates, ...markFields }).strict().superRefine((value, ctx) => {
   if (value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
 });
 const markUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), text: markTextSchema.optional(), ...optionalCoordinates, ...markFields }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
-  if (value.text === undefined && value.x === undefined && value.width === undefined && value.fontSize === undefined && value.textRuns === undefined && !value.connect?.length) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "mark update requires text, x and y, width, fontSize, textRuns, or connect" });
+  if (value.text === undefined && value.x === undefined && value.width === undefined && value.fontSize === undefined && value.textAlignment === undefined && value.textRuns === undefined && !value.connect?.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "mark update requires text, x and y, width, fontSize, textAlignment, textRuns, or connect" });
   }
   if (value.text !== undefined && value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
 });
@@ -366,7 +366,7 @@ function verifyMarks(intent: CanvasIntent, nodes: ContextNode[], marks: ContextM
     }
     if (found.length !== 1) { mismatches.push(prefix); continue; }
     const actual = found[0];
-    compareRequestedFields(mark, { ...actual, x: actual.position?.x, y: actual.position?.y }, ["text", "x", "y", "width", "fontSize"], prefix, mismatches);
+    compareRequestedFields(mark, { ...actual, x: actual.position?.x, y: actual.position?.y }, ["text", "x", "y", "width", "fontSize", "textAlignment"], prefix, mismatches);
     if (mark.textRuns !== undefined && textRunsKey(mark.textRuns) !== textRunsKey(actual.textRuns ?? [])) mismatches.push(prefix + ":textRuns");
     for (const node of mark.connect ?? []) {
       const endpoint = matches(nodes, node);
@@ -466,7 +466,7 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
 }
 
 function markWriteOperation(mark: Exclude<CanvasIntent["marks"][number], { mode: "remove" }>): Record<string, unknown> | undefined {
-  const fields = defined({ text: mark.text, x: mark.x, y: mark.y, width: mark.width, fontSize: mark.fontSize, textRuns: mark.textRuns });
+  const fields = defined({ text: mark.text, x: mark.x, y: mark.y, width: mark.width, fontSize: mark.fontSize, textAlignment: mark.textAlignment, textRuns: mark.textRuns });
   if (mark.mode === "create") return { type: "mark.create", ...fields };
   return Object.keys(fields).length > 0 ? { type: "mark.update", id: mark.id, ...fields } : undefined;
 }
@@ -558,10 +558,11 @@ export const canvasApplyContract = {
       purpose: "typed canvas text that labels, decorates, or comments without becoming a Note: headings, legends, callouts, questions to the reader",
       position: "x and y are the World-space top-left of the text block, unlike Node centres",
       fontSize: { unit: "world points", default: 17, minimum: 8, maximum: 96 },
+      textAlignment: { default: "left", values: writingTextAlignmentSchema.options, scope: "whole placement" },
       textRuns: { location: "UTF-16 offset", length: "positive UTF-16 length", styles: markStyleSchema.options },
       connect: "Node selectors; each draws a connection from that Node to the Mark",
-      create: { identity: "app-returned UUID", required: ["mode", "text", "x", "y"], optional: ["width", "fontSize", "textRuns", "connect"] },
-      update: { identity: "app Mark UUID of a typed Mark", required: ["mode", "id"], optional: ["text", "x", "y", "width", "fontSize", "textRuns", "connect"] },
+      create: { identity: "app-returned UUID", required: ["mode", "text", "x", "y"], optional: ["width", "fontSize", "textAlignment", "textRuns", "connect"] },
+      update: { identity: "app Mark UUID of a typed Mark", required: ["mode", "id"], optional: ["text", "x", "y", "width", "fontSize", "textAlignment", "textRuns", "connect"] },
       remove: { identity: "app Mark UUID", required: ["mode", "id"] }
     }
   },
