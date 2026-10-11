@@ -5,6 +5,7 @@ import { bindCreatedMarks, canvasApplyContract, compileCanvasApply, createdMarkI
 import { marksUnsupported } from "../mark-model.js";
 import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
+import { validateFilename } from "../filenames.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
 export function registerCanvas(program: Command): void {
@@ -25,13 +26,14 @@ export function registerCanvas(program: Command): void {
     .command("create")
     .argument("<name>")
     .option("--dry-run", "validate without mutating")
-    .action(async (name: string, options: { dryRun?: boolean }) =>
-      new BridgeClient().request("/v1/canvases", {
+    .action(async (name: string, options: { dryRun?: boolean }) => {
+      validateFilename(name, "name", ".json");
+      return new BridgeClient().request("/v1/canvases", {
         method: "POST",
         body: { name, dryRun: Boolean(options.dryRun) },
         dryRun: Boolean(options.dryRun)
-      })
-    );
+      });
+    });
   canvas
     .command("open")
     .argument("<selector>")

@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
+import { validateFilename } from "../filenames.js";
 import { BridgeClient } from "../client.js";
 
 export function registerPortal(program: Command): void {
@@ -16,8 +17,9 @@ export function registerPortal(program: Command): void {
     .requiredOption("--subcanvas-ref <canvas-ref>")
     .option("--canvas <selector|current>", "target canvas", "current")
     .option("--dry-run", "validate without mutating")
-    .action(async (options: { appearance?: string; glyphSize?: number; fontSize?: number; titleGap?: number; lockRatio?: boolean; title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) =>
-      new BridgeClient().request("/v1/nodes", {
+    .action(async (options: { appearance?: string; glyphSize?: number; fontSize?: number; titleGap?: number; lockRatio?: boolean; title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) => {
+      validateFilename(options.title, "title");
+      return new BridgeClient().request("/v1/nodes", {
         method: "POST",
         body: {
           kind: "portal",
@@ -32,8 +34,8 @@ export function registerPortal(program: Command): void {
           dryRun: Boolean(options.dryRun)
         },
         dryRun: Boolean(options.dryRun)
-      })
-    );
+      });
+    });
 
   portal
     .command("open")

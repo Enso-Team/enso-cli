@@ -10,12 +10,13 @@ import { registerPrimitive } from "./commands/primitive.js";
 import { registerGraph } from "./commands/graph.js";
 import { registerLayout } from "./commands/layout.js";
 import { registerLink } from "./commands/link.js";
-import { registerMark } from "./commands/mark.js";
+import { registerMark, registerExcerpt } from "./commands/mark.js";
 import { registerNode } from "./commands/node.js";
 import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSkill } from "./commands/skill.js";
 import { registerStatus } from "./commands/status.js";
+import { registerSetup } from "./commands/setup.js";
 import { registerUpdate } from "./commands/update.js";
 import { notifyUpdate } from "./update.js";
 import { registerVault } from "./commands/vault.js";
@@ -32,6 +33,7 @@ export function buildProgram(): Command {
     .exitOverride();
 
   registerStatus(program);
+  registerSetup(program);
   registerAuth(program);
   registerVault(program);
   registerSearch(program);
@@ -43,6 +45,7 @@ export function buildProgram(): Command {
   registerLink(program);
   registerPrimitive(program);
   registerMark(program);
+  registerExcerpt(program);
   registerGraph(program);
   registerContext(program);
   registerSkill(program);
