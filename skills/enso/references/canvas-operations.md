@@ -12,7 +12,7 @@ Use an exact Canvas selector from `enso canvas list`. A named `canvas apply` ope
 
 ## Lay out a new graph
 
-Use `enso layout` when new Notes and their relationships determine placement. Read `enso layout --schema` when constructing an unfamiliar graph contract. Write a temporary graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`. The CLI computes Node positions and cluster bounds.
+Use `enso layout` when new Notes and their relationships determine placement. Read `enso layout --schema` when constructing an unfamiliar graph contract. Write a temporary graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`. The CLI computes Node positions and cluster bounds, keeping each cluster's members together and its region clear of other regions and non-member Nodes at any `--spacing`.
 
 ```sh
 enso layout /tmp/enso-<task>-graph.json --apply --dry-run
