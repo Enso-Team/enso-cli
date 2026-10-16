@@ -23,7 +23,7 @@ Build a **crosswalk**: one row per source element with its Enso counterpart.
 - nested sub-diagram → Portal;
 - merged or dropped element → the reason.
 
-Each source group becomes a `layout` cluster, and the source's flow direction becomes the layout `direction`. Where the source is ambiguous, such as an unlabeled arrow or an overloaded box, connect a question Mark to the affected Node and keep the source's wording until the user answers. When the user also wants the design checked against code, gather repository evidence as well and record each mismatch in the Note as an observation.
+Each source group becomes a `layout` cluster, and the source's flow direction becomes the layout `direction`. A Node belongs to one cluster, so for nested boundaries such as subnets inside a VPC, lay out the innermost boundaries as clusters, then draw each enclosing region with `canvas apply` from the inner regions' bounds plus padding. Where the source is ambiguous, such as an unlabeled arrow or an overloaded box, connect a question Mark to the affected Node and keep the source's wording until the user answers. When the user also wants the design checked against code, gather repository evidence as well and record each mismatch in the Note as an observation.
 
 The crosswalk is complete when every source box, arrow, boundary, and annotation has a row.
 

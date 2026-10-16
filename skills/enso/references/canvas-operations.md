@@ -19,7 +19,7 @@ enso layout /tmp/enso-<task>-graph.json --apply --dry-run
 enso layout /tmp/enso-<task>-graph.json --apply
 ```
 
-Layout uses the apply pipeline below. Its `data.applied` contains that pipeline's result, including preflight, verification, and returned IDs. Read `validation.locallyValidatedOnly` for phases that receive app validation during apply. Add any Marks or other mixed elements through a focused apply intent. Use inspected IDs and `canvas apply` for revisions to existing placements. Delete the temporary graph after success.
+Continue from the dry-run when `data.warnings` is empty; each region warning names the regions and Nodes involved and carries a `hint` for its repair. Layout uses the apply pipeline below. Its `data.applied` contains that pipeline's result, including preflight, verification, and returned IDs. Read `validation.locallyValidatedOnly` for phases that receive app validation during apply. Add any Marks or other mixed elements through a focused apply intent. Use inspected IDs and `canvas apply` for revisions to existing placements. Delete the temporary graph after success.
 
 ## Apply a coherent change
 

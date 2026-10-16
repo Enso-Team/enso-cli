@@ -22,7 +22,7 @@ Use color when it distinguishes a meaningful group or repeated relationship clas
 
 Coordinates are world-space centers, except a Mark's `x` and `y`, which place the top-left of its text. On an empty Canvas, place a coherent cluster. On an existing Canvas, inspect element positions and bounds, then anchor changes to neighbors and preserve user adjustments outside the requested change.
 
-Align the main path and place secondary branches nearby. Keep related elements closer together than separate groups. Derive region bounds from member bounds plus padding. Favor compact spacing that leaves titles and curves readable. A Canvas can extend beyond one viewport when the explanation needs the space.
+Align the main path and place secondary branches nearby. Keep related elements closer together than separate groups. Derive region bounds from member bounds plus padding. A region holds exactly its members: it meets another region only by nesting inside it, and every non-member Node sits clear of it. Favor compact spacing that leaves titles and curves readable. A Canvas can extend beyond one viewport when the explanation needs the space.
 
 The app's default text sizes are 17 World points for Cards and 14 for Symbol titles and Link labels. Symbol glyphs derive their size from the title font size unless explicitly set. Use proportional scaling when the user requests a size adjustment across the diagram.
 
@@ -31,6 +31,8 @@ Place Nodes so Links travel through whitespace. Short predicates make curve labe
 ## Inspect and repair
 
 Use plain CLI context for element geometry and `context --diagnostics` for mechanical inspection. Each issue includes element IDs in `subjects`, viewport-space `bounds`, and world-space `worldBounds`. Choose moves from inspected positions and world-space bounds. Use `context --vision` when rendered appearance answers a concrete visual question.
+
+Diagnostics measure Nodes, Links, and labels. Check regions against the plain context geometry: compare each region's bounds with the other regions and with every non-member Node. Repair a crossing by moving the stray Node clear or redrawing the region from its members' bounds.
 
 Prioritize faults that obstruct reading, such as overlapping Nodes, Links through unrelated Nodes, and unreadable labels. Judge low gaps and crossings by the intended path. Offscreen elements matter when the user requests a single-screen overview or necessary content is clipped; a navigable Canvas can have intentional offscreen content.
 

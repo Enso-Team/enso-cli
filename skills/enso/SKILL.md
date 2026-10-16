@@ -38,4 +38,4 @@ When the user refers to writing on the Canvas, read it with `enso mark list`. Ha
 
 After every build, layout change, or placement revision, run `enso context --canvas <target> --diagnostics --pretty` and follow "Inspect and repair" in [references/diagram-design.md](references/diagram-design.md). Use `--vision --pretty` and inspect the returned image when a concrete visual question needs rendered appearance, such as whether color or scale conveys the intended grouping, or whether a port matches its source.
 
-Finish when the Canvas answers the user's question, the affected elements have the requested structure and appearance, and diagnostics show no fault that obstructs the intended reading. For a port, every crosswalk row is on the Canvas or carries a stated reason.
+Finish when the Canvas answers the user's question, the affected elements have the requested structure and appearance, and diagnostics show no fault that obstructs the intended reading, and every region holds exactly its members. For a port, every crosswalk row is on the Canvas or carries a stated reason.

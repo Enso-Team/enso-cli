@@ -141,6 +141,54 @@ describe("layout", () => {
     expect(patch.primitives.every((primitive) => primitive.width > 0 && primitive.height > 0)).toBe(true);
   });
 
+  it("warns when neighbouring cluster padding overlaps and clears once --spacing opens the gap", async () => {
+    const spec = writeSpec({
+      canvas: "Chain",
+      direction: "LR",
+      members: ["A", "B", "C", "D"],
+      edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }, { from: "C", to: "D" }],
+      clusters: [{ name: "X", members: ["A", "B"] }, { name: "Y", members: ["C", "D"] }]
+    });
+    const tight = JSON.parse((await run(["layout", spec])).stdout).data.warnings;
+    expect(tight).toEqual([expect.objectContaining({ code: "region_overlap", details: { regions: ["X", "Y"] } })]);
+    const spaced = JSON.parse((await run(["layout", spec, "--spacing", "1.5"])).stdout).data.warnings;
+    expect(spaced).toEqual([]);
+  });
+
+  it("warns when cluster regions overlap or enclose a non-member", async () => {
+    const edges = [["Web", "Gateway"], ["Mobile", "Gateway"], ["Gateway", "Auth"], ["Gateway", "Orders"], ["Gateway", "Users"],
+      ["Orders", "OrdersDB"], ["Users", "UsersDB"], ["Orders", "Queue"], ["Auth", "Users"]];
+    const spec = writeSpec({
+      canvas: "Three Tier",
+      direction: "TB",
+      members: ["Web", "Mobile", "Gateway", "Auth", "Orders", "Users", "OrdersDB", "UsersDB", "Queue"],
+      edges: edges.map(([from, to]) => ({ from, to })),
+      clusters: [
+        { name: "Clients", members: ["Web", "Mobile"] },
+        { name: "Services", members: ["Auth", "Orders", "Users"] },
+        { name: "Data", members: ["OrdersDB", "UsersDB", "Queue"] }
+      ]
+    });
+    const warnings = JSON.parse((await run(["layout", spec])).stdout).data.warnings;
+    expect(warnings).toContainEqual(expect.objectContaining({ code: "region_overlap", details: { regions: ["Services", "Data"] } }));
+    expect(warnings).toContainEqual(expect.objectContaining({ code: "region_contains_nonmember", details: { region: "Services", member: "OrdersDB" } }));
+    expect(warnings.some((warning: { details: { region?: string } }) => warning.details.region === "Clients")).toBe(false);
+  });
+
+  it("warns when a cluster spans a rank that holds a non-member, including on --apply --dry-run", async () => {
+    const spec = writeSpec({
+      canvas: "Skip Rank",
+      members: ["A", "B", "C"],
+      edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
+      clusters: [{ name: "Edge", members: ["A", "C"] }]
+    });
+    const result = await run(["layout", spec, "--apply", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).data.warnings).toEqual([
+      expect.objectContaining({ code: "region_contains_nonmember", details: { region: "Edge", member: "B" } })
+    ]);
+  });
+
   it("compiles members as placements and edge visuals into the apply patch", async () => {
     const spec = writeSpec({
       canvas: "current",
