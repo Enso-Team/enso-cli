@@ -6,7 +6,7 @@ Read this when creating an arrangement or changing its structure. Let the explan
 
 A dominant journey or control flow often benefits from a spine with optional branches beside it. Layers can form columns; parallel modes can form rows; ownership can form clusters. A comparison benefits from corresponding concepts aligned across alternatives. Use a Portal when a separate detail Canvas helps the reader navigate the explanation.
 
-Choose what each Node represents consistently within a part of the diagram. A state model centers on states and transitions. A navigation map centers on destinations and actions. Include the intermediate behavior that matters to the user's question. Distinguish observations from hypothesized causes through wording and Note content.
+Choose what each Node represents consistently within a part of the diagram. A state model centers on states and transitions. A navigation map centers on destinations and actions.
 
 The structure works when a reader can find the focal concept or path and understand the major relationships from the Canvas.
 

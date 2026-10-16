@@ -4,7 +4,7 @@ Read this before a first build or a multi-element revision, and when recovering 
 
 ## Files and target
 
-Write Notes in the Vault `path` returned by `enso vault current --pretty`. Identity is the filename stem or Vault-relative path. Place members must exist as markdown files. Before placing new Notes or adding wikilinks, run `enso check "<path>" --pretty` on that folder, where links resolve across files. Wikilink examples inside backticks or fenced blocks are literal text.
+A Note's identity is the filename stem or Vault-relative path. Place members must exist as markdown files. Before placing new Notes or adding wikilinks, run `enso check "<path>" --pretty` on that folder, where links resolve across files. Wikilink examples inside backticks or fenced blocks are literal text.
 
 Continue from `enso status` when `ok: true`. If Enso is closed, launch it and retry. For unavailable Local agent access or incompatible CLI/app versions, report `error.details.hint` so the user can resolve setup.
 
@@ -42,7 +42,7 @@ Read `data.placement`. When `recentered` is true, the CLI translates the creatio
 
 Delete the temporary file after success. Retain a failed intent only while using it for recovery, then clean it up.
 
-For a requested overview, `enso canvas fit <target>` frames the open Canvas content. Dry-run it first and read the proposed viewport and `fits`. If framing fails, report the bridge error and retain the diagram's geometry. App-route investigation belongs to an implementation request.
+For a requested overview, `enso canvas fit <target>` frames the open Canvas content. Dry-run it first and read the proposed viewport and `fits`. If framing fails, report the bridge error, keep the diagram's geometry, and continue with the rest of the request.
 
 ## Link and removal semantics
 
