@@ -78,6 +78,49 @@ export function computeCanvasLayout(spec: CanvasSpec, spacing = 1): CanvasLayout
   return { nodes, regions };
 }
 
+export type RegionWarning = { code: "region_overlap" | "region_contains_nonmember"; message: string; details: Record<string, unknown>; hint: string };
+
+/**
+ * Cluster regions are member bounding boxes, and crossing reduction may interleave
+ * clusters within a rank, so a region can cross another or enclose a non-member. Region
+ * padding on both sides exceeds the gap between neighbouring ranks at spacing 1, so
+ * clusters in adjacent ranks overlap until --spacing opens the gap.
+ * Regions placed inside one another are never compiled: a member belongs to one cluster.
+ */
+export function regionWarnings(spec: CanvasSpec, layout: CanvasLayout): RegionWarning[] {
+  const geometry = layoutGeometry(spec);
+  const owner = new Map(spec.clusters.flatMap((cluster) => cluster.members.map((member) => [member, cluster.name] as const)));
+  const warnings: RegionWarning[] = [];
+  layout.regions.forEach((region, index) => {
+    for (const other of layout.regions.slice(index + 1)) {
+      if (!boxesIntersect(region, other)) continue;
+      warnings.push({
+        code: "region_overlap",
+        message: `Regions '${region.name}' and '${other.name}' overlap`,
+        details: { regions: [region.name, other.name] },
+        hint: "Rerun with --spacing 1.5 when only the padding overlaps; when members interleave, regroup the clusters or redraw a region with canvas apply"
+      });
+    }
+    for (const node of layout.nodes) {
+      if (owner.get(node.title) === region.name) continue;
+      if (!boxesIntersect(region, { x: node.x, y: node.y, width: geometry.nodeWidth, height: geometry.nodeHeight })) continue;
+      warnings.push({
+        code: "region_contains_nonmember",
+        message: `'${node.title}' sits inside region '${region.name}' without being a member`,
+        details: { region: region.name, member: node.title },
+        hint: "Add it to the cluster if it belongs there; otherwise move it clear of the region or redraw the region with canvas apply"
+      });
+    }
+  });
+  return warnings;
+}
+
+type CenteredBox = { x: number; y: number; width: number; height: number };
+
+function boxesIntersect(a: CenteredBox, b: CenteredBox): boolean {
+  return Math.abs(a.x - b.x) < (a.width + b.width) / 2 && Math.abs(a.y - b.y) < (a.height + b.height) / 2;
+}
+
 /** Compile a canvas spec into an apply patch with final create geometry. */
 // Spacing scales the distance between node centers and nothing else, so every extra
 // point goes into the gaps where link labels render. Node and region sizes stay fixed.
