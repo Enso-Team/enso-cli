@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { canvasSpecContract, parseCanvasSpec, specError } from "../canvas-spec.js";
-import { compileCanvasSpec, computeCanvasLayout, layoutGeometry, regionWarnings } from "../layout.js";
+import { compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, regionWarnings } from "../layout.js";
 import { centeringOffset, patchBounds, existingContent, translatePatch } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
@@ -36,7 +36,9 @@ export function registerLayout(program: Command): void {
       const spec = parseCanvasSpec(source);
       const spacing = spacingFactor(options.spacing);
       const compiled = compileCanvasSpec(spec, spacing);
-      const warnings = regionWarnings(spec, computeCanvasLayout(spec, spacing));
+      const layout = computeCanvasLayout(spec, spacing);
+      const warnings = regionWarnings(spec, layout);
+      const crossings = linkCrossings(spec, layout);
       // Compiled geometry is relative to the origin. Applying it reads the target Canvas
       // first and moves the whole cluster to where the app looks; --dry-run reports the
       // same translated coordinates the apply would write.
@@ -62,13 +64,14 @@ export function registerLayout(program: Command): void {
           data: {
             ...summary(spec.canvas, spec.direction, patch),
             warnings,
+            crossings,
             placement,
             ...validationSummary(applied.data),
             applied: applied.data
           }
         };
       }
-      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch), warnings, patch } };
+      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch), warnings, crossings, patch } };
     });
 }
 

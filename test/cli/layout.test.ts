@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { computeCanvasLayout, LAYOUT_GEOMETRY, layoutGeometry, regionWarnings, SYMBOL_GEOMETRY, type CanvasLayout } from "../../src/layout.js";
+import { computeCanvasLayout, LAYOUT_GEOMETRY, layoutGeometry, linkCrossings, regionWarnings, SYMBOL_GEOMETRY, type CanvasLayout } from "../../src/layout.js";
 import { parseCanvasSpec } from "../../src/canvas-spec.js";
 import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
@@ -216,6 +216,35 @@ describe("layout", () => {
       expect.objectContaining({ code: "region_contains_nonmember", details: { region: "X", member: "C" } }),
       expect.objectContaining({ code: "region_contains_nonmember", details: { region: "Y", member: "B" } })
     ]);
+  });
+
+  it("reports unrelated Links whose straight paths cross, apart from the warnings", async () => {
+    const spec = writeSpec({
+      canvas: "Bipartite",
+      members: ["A", "B", "C", "D"],
+      edges: [{ from: "A", to: "C" }, { from: "A", to: "D" }, { from: "B", to: "C" }, { from: "B", to: "D" }]
+    }, "bipartite.json");
+    const data = JSON.parse((await run(["layout", spec])).stdout).data;
+    expect(data.warnings).toEqual([]);
+    expect(data.crossings).toEqual([{ links: [{ from: "A", to: "D" }, { from: "B", to: "C" }] }]);
+    const applied = JSON.parse((await run(["layout", spec, "--apply", "--dry-run"])).stdout).data;
+    expect(applied.crossings).toEqual(data.crossings);
+    expect(JSON.parse((await run(["layout", writeSpec(CHAIN_SPEC)])).stdout).data.crossings).toEqual([]);
+  });
+
+  it("counts only proper crossings between Links that share no Node", () => {
+    const spec = parseCanvasSpec(JSON.stringify({
+      canvas: "Cross",
+      members: ["A", "B", "C", "D", "E", "F"],
+      edges: [{ from: "A", to: "B" }, { from: "C", to: "D" }, { from: "A", to: "D" }, { from: "E", to: "F" }]
+    }));
+    const layout: CanvasLayout = { regions: [], nodes: [
+      { title: "A", x: 0, y: 0 }, { title: "B", x: 100, y: 100 }, { title: "C", x: 100, y: 0 },
+      { title: "D", x: 0, y: 100 }, { title: "E", x: 200, y: 0 }, { title: "F", x: 200, y: 100 }
+    ] };
+    expect(linkCrossings(spec, layout)).toEqual([{ links: [{ from: "A", to: "B" }, { from: "C", to: "D" }] }]);
+    const touching: CanvasLayout = { ...layout, nodes: layout.nodes.map((node) => node.title === "B" ? { ...node, x: 50, y: 50 } : node) };
+    expect(linkCrossings(spec, touching)).toEqual([]);
   });
 
   describe.each([

@@ -120,6 +120,35 @@ export function regionWarnings(spec: CanvasSpec, layout: CanvasLayout): RegionWa
   return warnings;
 }
 
+export type LinkCrossing = { links: [{ from: string; to: string }, { from: string; to: string }] };
+
+/**
+ * Pairs of unrelated Links whose straight paths between Node centers cross. Links that
+ * share a Node never count. The app draws curves, so this estimates the crossings its
+ * diagnostics will report; pairs come in edge declaration order.
+ */
+export function linkCrossings(spec: CanvasSpec, layout: CanvasLayout): LinkCrossing[] {
+  const at = new Map(layout.nodes.map((node) => [node.title, node]));
+  const edges = spec.edges.filter((edge) => edge.from !== edge.to);
+  const crossings: LinkCrossing[] = [];
+  edges.forEach((edge, index) => {
+    for (const other of edges.slice(index + 1)) {
+      if ([other.from, other.to].some((end) => end === edge.from || end === edge.to)) continue;
+      if (!segmentsCross(at.get(edge.from)!, at.get(edge.to)!, at.get(other.from)!, at.get(other.to)!)) continue;
+      crossings.push({ links: [{ from: edge.from, to: edge.to }, { from: other.from, to: other.to }] });
+    }
+  });
+  return crossings;
+}
+
+type Point = { x: number; y: number };
+
+/** Proper crossing only: segments that touch or run collinear do not count. */
+function segmentsCross(a: Point, b: Point, c: Point, d: Point): boolean {
+  const side = (p: Point, q: Point, r: Point): number => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+  return side(c, d, a) * side(c, d, b) < 0 && side(a, b, c) * side(a, b, d) < 0;
+}
+
 type CenteredBox = { x: number; y: number; width: number; height: number };
 
 function boxesIntersect(a: CenteredBox, b: CenteredBox): boolean {
