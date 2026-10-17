@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.10.0](https://github.com/Enso-Team/enso-cli/compare/v0.9.0...v0.10.0) (2026-10-17)
+## [0.9.1](https://github.com/Enso-Team/enso-cli/compare/v0.9.0...v0.9.1) (2026-10-17)
 
 
 ### Features
