@@ -12,14 +12,14 @@ Use an exact Canvas selector from `enso canvas list`. A named `canvas apply` ope
 
 ## Lay out a new graph
 
-Use `enso layout` when new Notes and their relationships determine placement. Read `enso layout --schema` when constructing an unfamiliar graph contract. Write a temporary graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`. The CLI computes Node positions and cluster bounds.
+Use `enso layout` when new Notes and their relationships determine placement. Read `enso layout --schema` when constructing an unfamiliar graph contract. Write a temporary graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`. The CLI computes Node positions and cluster bounds, keeping each cluster's members together and its region clear of other regions and non-member Nodes at any `--spacing`.
 
 ```sh
 enso layout /tmp/enso-<task>-graph.json --apply --dry-run
 enso layout /tmp/enso-<task>-graph.json --apply
 ```
 
-Continue from the dry-run when `data.warnings` is empty; each region warning names the regions and Nodes involved and carries a `hint` for its repair. Layout uses the apply pipeline below. Its `data.applied` contains that pipeline's result, including preflight, verification, and returned IDs. Read `validation.locallyValidatedOnly` for phases that receive app validation during apply. Add any Marks or other mixed elements through a focused apply intent. Use inspected IDs and `canvas apply` for revisions to existing placements. Delete the temporary graph after success.
+Continue from the dry-run when `data.warnings` is empty; each region warning names the regions and Nodes involved and carries a `hint` for its repair. `data.crossings` lists pairs of unrelated Links whose straight paths cross, an estimate of the crossings the app's diagnostics report, and it does not block continuing. When a crossing cuts the main path, resolve it in the graph before applying: change the member or edge order, the `direction`, or the clusters, or leave out a Link whose relationship the Note's prose already states. Accept crossings off the main path rather than repairing them after apply. Layout uses the apply pipeline below. Its `data.applied` contains that pipeline's result, including preflight, verification, and returned IDs. Read `validation.locallyValidatedOnly` for phases that receive app validation during apply. Add any Marks or other mixed elements through a focused apply intent. Use inspected IDs and `canvas apply` for revisions to existing placements. Delete the temporary graph after success.
 
 ## Apply a coherent change
 

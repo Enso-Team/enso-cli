@@ -1,7 +1,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { LAYOUT_GEOMETRY, SYMBOL_GEOMETRY } from "../../src/layout.js";
+import { computeCanvasLayout, LAYOUT_GEOMETRY, layoutGeometry, linkCrossings, regionWarnings, SYMBOL_GEOMETRY, type CanvasLayout } from "../../src/layout.js";
+import { parseCanvasSpec } from "../../src/canvas-spec.js";
 import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
@@ -21,6 +22,45 @@ const FLOW_SPEC = {
     { name: "Edge", color: "#6B7280", members: ["Gateway", "Router"] },
     { name: "Observability", members: ["Audit Log", "Metrics"] }
   ]
+};
+
+const THREE_TIER_SPEC = {
+  canvas: "Three Tier",
+  direction: "TB",
+  members: ["Web", "Mobile", "Gateway", "Auth", "Orders", "Users", "OrdersDB", "UsersDB", "Queue"],
+  edges: [["Web", "Gateway"], ["Mobile", "Gateway"], ["Gateway", "Auth"], ["Gateway", "Orders"], ["Gateway", "Users"],
+    ["Orders", "OrdersDB"], ["Users", "UsersDB"], ["Orders", "Queue"], ["Auth", "Users"]].map(([from, to]) => ({ from, to })),
+  clusters: [
+    { name: "Clients", members: ["Web", "Mobile"] },
+    { name: "Services", members: ["Auth", "Orders", "Users"] },
+    { name: "Data", members: ["OrdersDB", "UsersDB", "Queue"] }
+  ]
+};
+
+const SKIP_RANK_SPEC = {
+  canvas: "Skip Rank",
+  members: ["A", "B", "C"],
+  edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
+  clusters: [{ name: "Edge", members: ["A", "C"] }]
+};
+
+const CHAIN_SPEC = {
+  canvas: "Chain",
+  direction: "LR",
+  members: ["A", "B", "C", "D"],
+  edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }, { from: "C", to: "D" }],
+  clusters: [{ name: "X", members: ["A", "B"] }, { name: "Y", members: ["C", "D"] }]
+};
+
+const SYMBOL_SPEC = {
+  canvas: "Symbol Tiers",
+  direction: "TB",
+  members: [
+    { title: "Balancer", appearance: "loadBalancer" }, { title: "API", appearance: "api" }, { title: "Worker", appearance: "server" },
+    { title: "Primary", appearance: "database" }, { title: "Replica", appearance: "database" }, { title: "Cache", appearance: "cache" }
+  ],
+  edges: [["Balancer", "API"], ["Balancer", "Worker"], ["API", "Primary"], ["Worker", "Cache"], ["Primary", "Replica"]].map(([from, to]) => ({ from, to })),
+  clusters: [{ name: "Compute", members: ["API", "Worker"] }, { name: "Storage", members: ["Primary", "Replica", "Cache"] }]
 };
 
 function writeSpec(spec: unknown, name = "flow.json"): string {
@@ -101,17 +141,17 @@ describe("layout", () => {
     expect(JSON.parse(first.stdout).data.compiled).toEqual({ nodes: 5, links: 4, regions: 2 });
   });
 
-  it("ranks members along the direction hint and centers each rank", async () => {
+  it("ranks members along the direction hint and centers the drawing", async () => {
     const horizontal = patchOf((await run(["layout", writeSpec(FLOW_SPEC)])).stdout);
     const vertical = patchOf((await run(["layout", writeSpec({ ...FLOW_SPEC, direction: "TB" }, "tb.json")])).stdout);
     const gateway = horizontal.nodes.find((node) => node.note === "Gateway")!;
     const router = horizontal.nodes.find((node) => node.note === "Router")!;
     expect(router.x - gateway.x).toBe(LAYOUT_GEOMETRY.colStep);
-    expect(gateway.y).toBe(0);
+    expect(gateway.y).toBe(-115);
     const verticalGateway = vertical.nodes.find((node) => node.note === "Gateway")!;
     const verticalRouter = vertical.nodes.find((node) => node.note === "Router")!;
     expect(verticalRouter.y - verticalGateway.y).toBe(LAYOUT_GEOMETRY.rowStep);
-    expect(verticalGateway.x).toBe(0);
+    expect(verticalGateway.x).toBe(-155);
   });
 
   it("keeps every member clear of every other member", async () => {
@@ -141,52 +181,106 @@ describe("layout", () => {
     expect(patch.primitives.every((primitive) => primitive.width > 0 && primitive.height > 0)).toBe(true);
   });
 
-  it("warns when neighbouring cluster padding overlaps and clears once --spacing opens the gap", async () => {
-    const spec = writeSpec({
-      canvas: "Chain",
-      direction: "LR",
-      members: ["A", "B", "C", "D"],
-      edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }, { from: "C", to: "D" }],
-      clusters: [{ name: "X", members: ["A", "B"] }, { name: "Y", members: ["C", "D"] }]
-    });
-    const tight = JSON.parse((await run(["layout", spec])).stdout).data.warnings;
-    expect(tight).toEqual([expect.objectContaining({ code: "region_overlap", details: { regions: ["X", "Y"] } })]);
-    const spaced = JSON.parse((await run(["layout", spec, "--spacing", "1.5"])).stdout).data.warnings;
-    expect(spaced).toEqual([]);
+  it("separates neighbouring cluster padding at spacing 1 and above", async () => {
+    const spec = writeSpec(CHAIN_SPEC);
+    expect(JSON.parse((await run(["layout", spec])).stdout).data.warnings).toEqual([]);
+    expect(JSON.parse((await run(["layout", spec, "--spacing", "1.5"])).stdout).data.warnings).toEqual([]);
   });
 
-  it("warns when cluster regions overlap or enclose a non-member", async () => {
-    const edges = [["Web", "Gateway"], ["Mobile", "Gateway"], ["Gateway", "Auth"], ["Gateway", "Orders"], ["Gateway", "Users"],
-      ["Orders", "OrdersDB"], ["Users", "UsersDB"], ["Orders", "Queue"], ["Auth", "Users"]];
-    const spec = writeSpec({
-      canvas: "Three Tier",
-      direction: "TB",
-      members: ["Web", "Mobile", "Gateway", "Auth", "Orders", "Users", "OrdersDB", "UsersDB", "Queue"],
-      edges: edges.map(([from, to]) => ({ from, to })),
-      clusters: [
-        { name: "Clients", members: ["Web", "Mobile"] },
-        { name: "Services", members: ["Auth", "Orders", "Users"] },
-        { name: "Data", members: ["OrdersDB", "UsersDB", "Queue"] }
-      ]
-    });
-    const warnings = JSON.parse((await run(["layout", spec])).stdout).data.warnings;
-    expect(warnings).toContainEqual(expect.objectContaining({ code: "region_overlap", details: { regions: ["Services", "Data"] } }));
-    expect(warnings).toContainEqual(expect.objectContaining({ code: "region_contains_nonmember", details: { region: "Services", member: "OrdersDB" } }));
-    expect(warnings.some((warning: { details: { region?: string } }) => warning.details.region === "Clients")).toBe(false);
+  it("keeps three tiers of clusters apart and stacks them along the direction", async () => {
+    const result = JSON.parse((await run(["layout", writeSpec(THREE_TIER_SPEC)])).stdout).data;
+    expect(result.warnings).toEqual([]);
+    const region = (name: string) => {
+      const box = (result.patch as Patch).primitives.find((primitive) => primitive.title === name)!;
+      return { top: box.y - box.height / 2, bottom: box.y + box.height / 2, left: box.x - box.width / 2, right: box.x + box.width / 2 };
+    };
+    const [clients, services, data] = [region("Clients"), region("Services"), region("Data")];
+    expect(clients.bottom).toBeLessThanOrEqual(services.top);
+    expect(services.bottom <= data.top || services.right <= data.left || data.right <= services.left).toBe(true);
   });
 
-  it("warns when a cluster spans a rank that holds a non-member, including on --apply --dry-run", async () => {
-    const spec = writeSpec({
-      canvas: "Skip Rank",
-      members: ["A", "B", "C"],
-      edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
-      clusters: [{ name: "Edge", members: ["A", "C"] }]
-    });
-    const result = await run(["layout", spec, "--apply", "--dry-run"]);
+  it("keeps a non-member out of a cluster that skips its rank, including on --apply --dry-run", async () => {
+    const result = await run(["layout", writeSpec(SKIP_RANK_SPEC), "--apply", "--dry-run"]);
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout).data.warnings).toEqual([
-      expect.objectContaining({ code: "region_contains_nonmember", details: { region: "Edge", member: "B" } })
+    expect(JSON.parse(result.stdout).data.warnings).toEqual([]);
+  });
+
+  it("flags overlapping regions and enclosed non-members in a hand-built layout", () => {
+    const spec = parseCanvasSpec(JSON.stringify(CHAIN_SPEC));
+    const layout: CanvasLayout = {
+      nodes: [{ title: "A", x: 0, y: 0 }, { title: "B", x: 300, y: 0 }, { title: "C", x: 150, y: 0 }, { title: "D", x: 900, y: 0 }],
+      regions: [{ name: "X", x: 150, y: 0, width: 640, height: 260 }, { name: "Y", x: 700, y: 0, width: 800, height: 260 }]
+    };
+    expect(regionWarnings(spec, layout)).toEqual([
+      expect.objectContaining({ code: "region_overlap", details: { regions: ["X", "Y"] } }),
+      expect.objectContaining({ code: "region_contains_nonmember", details: { region: "X", member: "C" } }),
+      expect.objectContaining({ code: "region_contains_nonmember", details: { region: "Y", member: "B" } })
     ]);
+  });
+
+  it("reports unrelated Links whose straight paths cross, apart from the warnings", async () => {
+    const spec = writeSpec({
+      canvas: "Bipartite",
+      members: ["A", "B", "C", "D"],
+      edges: [{ from: "A", to: "C" }, { from: "A", to: "D" }, { from: "B", to: "C" }, { from: "B", to: "D" }]
+    }, "bipartite.json");
+    const data = JSON.parse((await run(["layout", spec])).stdout).data;
+    expect(data.warnings).toEqual([]);
+    expect(data.crossings).toEqual([{ links: [{ from: "A", to: "D" }, { from: "B", to: "C" }] }]);
+    const applied = JSON.parse((await run(["layout", spec, "--apply", "--dry-run"])).stdout).data;
+    expect(applied.crossings).toEqual(data.crossings);
+    expect(JSON.parse((await run(["layout", writeSpec(CHAIN_SPEC)])).stdout).data.crossings).toEqual([]);
+  });
+
+  it("counts only proper crossings between Links that share no Node", () => {
+    const spec = parseCanvasSpec(JSON.stringify({
+      canvas: "Cross",
+      members: ["A", "B", "C", "D", "E", "F"],
+      edges: [{ from: "A", to: "B" }, { from: "C", to: "D" }, { from: "A", to: "D" }, { from: "E", to: "F" }]
+    }));
+    const layout: CanvasLayout = { regions: [], nodes: [
+      { title: "A", x: 0, y: 0 }, { title: "B", x: 100, y: 100 }, { title: "C", x: 100, y: 0 },
+      { title: "D", x: 0, y: 100 }, { title: "E", x: 200, y: 0 }, { title: "F", x: 200, y: 100 }
+    ] };
+    expect(linkCrossings(spec, layout)).toEqual([{ links: [{ from: "A", to: "B" }, { from: "C", to: "D" }] }]);
+    const touching: CanvasLayout = { ...layout, nodes: layout.nodes.map((node) => node.title === "B" ? { ...node, x: 50, y: 50 } : node) };
+    expect(linkCrossings(spec, touching)).toEqual([]);
+  });
+
+  describe.each([
+    ["three tiers TB", THREE_TIER_SPEC],
+    ["three tiers LR", { ...THREE_TIER_SPEC, direction: "LR" }],
+    ["a skipped rank", SKIP_RANK_SPEC],
+    ["a chain", CHAIN_SPEC],
+    ["the request flow", FLOW_SPEC],
+    ["all symbols", SYMBOL_SPEC]
+  ])("clustered layout of %s", (_name, source) => {
+    it.each([1, 1.5])("keeps clusters contiguous and regions clear at spacing %s", (spacing) => {
+      const spec = parseCanvasSpec(JSON.stringify(source));
+      const layout = computeCanvasLayout(spec, spacing);
+      const geometry = layoutGeometry(spec);
+      expect(regionWarnings(spec, layout)).toEqual([]);
+      const owner = new Map(spec.clusters.flatMap((cluster) => cluster.members.map((member) => [member, cluster.name] as const)));
+      const vertical = spec.direction === "TB";
+      const ranks = new Map<number, typeof layout.nodes>();
+      for (const node of layout.nodes) {
+        const across = vertical ? node.y : node.x;
+        ranks.set(across, [...(ranks.get(across) ?? []), node]);
+      }
+      for (const rank of ranks.values()) {
+        const order = [...rank].sort((a, b) => vertical ? a.x - b.x : a.y - b.y).map((node) => owner.get(node.title));
+        for (const cluster of spec.clusters) {
+          const at = order.flatMap((name, index) => name === cluster.name ? [index] : []);
+          if (at.length > 0) expect(at.at(-1)! - at[0]).toBe(at.length - 1);
+        }
+      }
+      for (const [index, node] of layout.nodes.entries()) {
+        for (const other of layout.nodes.slice(index + 1)) {
+          const overlaps = Math.abs(node.x - other.x) < geometry.nodeWidth && Math.abs(node.y - other.y) < geometry.nodeHeight;
+          expect(overlaps).toBe(false);
+        }
+      }
+    });
   });
 
   it("compiles members as placements and edge visuals into the apply patch", async () => {
