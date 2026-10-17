@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.1](https://github.com/Enso-Team/enso-cli/compare/v0.9.0...v0.9.1) (2026-10-17)
+
+
+### Features
+
+* **cli:** agents port system designs into Enso, and layout warns when regions overlap ([#103](https://github.com/Enso-Team/enso-cli/issues/103)) ([7549c49](https://github.com/Enso-Team/enso-cli/commit/7549c4916511ab4c4f9aa42e4ef5838ea4095391))
+
+
+### Bug Fixes
+
+* **cli:** layout keeps clusters together and reports link crossings ([#104](https://github.com/Enso-Team/enso-cli/issues/104)) ([f32d813](https://github.com/Enso-Team/enso-cli/commit/f32d813e21f44ca1e0792547463dbf01000a2df6))
+
 ## [0.9.0](https://github.com/Enso-Team/enso-cli/compare/v0.8.1...v0.9.0) (2026-10-11)
 
 
