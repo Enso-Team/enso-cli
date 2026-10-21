@@ -10,8 +10,14 @@ import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 export function registerCanvas(program: Command): void {
   const canvas = program.command("canvas").description("Manage Enso canvases");
 
-  canvas.command("list").action(async () => new BridgeClient().request("/v1/canvases"));
-  canvas.command("current").action(async () => new BridgeClient().request("/v1/canvases/current"));
+  canvas.command("list").action(async () => {
+    const envelope = await new BridgeClient().request("/v1/canvases");
+    return envelope.ok ? { ok: true, data: { canvases: readArray<Record<string, unknown>>(envelope.data, "canvases").map(canvasSummary) } } : envelope;
+  });
+  canvas.command("current").action(async () => {
+    const envelope = await new BridgeClient().request("/v1/canvases/current");
+    return envelope.ok ? { ok: true, data: canvasSummary(envelope.data) } : envelope;
+  });
   canvas.command("fit")
     .argument("[selector]", "open canvas name, id, or ref", "current")
     .option("--dry-run", "compute the fitted viewport without moving it")
@@ -130,6 +136,16 @@ export function registerCanvas(program: Command): void {
       const { patch, placement } = placeIntentOnCanvas(intent, context.data);
       return applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
     });
+}
+
+/**
+ * A Canvas as an agent selects and reads it. The app also reports the Canvas JSON path inside
+ * its sandbox, which agents cannot open, and an id that repeats the name for local Canvases.
+ */
+export function canvasSummary(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") return {};
+  const { path: _path, id, ...summary } = value as Record<string, unknown>;
+  return id === summary.name ? summary : { id, ...summary };
 }
 
 /** Read what a Canvas currently holds: the app's context for `current`, inspect for a named one. */

@@ -538,6 +538,19 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("lists Canvases by what an agent can select and read", async () => {
+    const entry = { id: "Plan", name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", path: "/Users/me/Library/Containers/app/Canvases/Plan.json" };
+    respondWith({ canvases: [entry, { ...entry, id: "UUID-1" }] });
+    expect(JSON.parse((await run(["canvas", "list"])).stdout).data.canvases).toEqual([
+      { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md" },
+      { id: "UUID-1", name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md" }
+    ]);
+    respondWith({ ...entry, nodes: 3, links: 2, diagramPrimitives: 1 });
+    expect(JSON.parse((await run(["canvas", "current"])).stdout).data).toEqual({ name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3, links: 2, diagramPrimitives: 1 });
+    respondWith({ app: "Enso", vaultPath: "/vault", currentCanvas: { ...entry, nodes: 3 } });
+    expect(JSON.parse((await run(["status"])).stdout).data).toEqual({ app: "Enso", vaultPath: "/vault", currentCanvas: { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3 } });
+  });
+
   it("reads Canvases through context alone", () => {
     const program = buildProgram();
     expect(program.commands.map((command) => command.name())).not.toContain("graph");
