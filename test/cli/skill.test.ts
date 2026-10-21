@@ -1,9 +1,9 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/index.js";
 import * as skillAgents from "../../src/skill-agents.js";
-import { refreshInstalledSkill } from "../../src/commands/skill.js";
+import { refreshInstalledSkill, staleSkillCopies } from "../../src/commands/skill.js";
 import { run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -152,5 +152,29 @@ describe("skill", () => {
     expect(await refreshInstalledSkill()).toEqual({ refreshed: false, reason: "not_installed" });
     expect(JSON.parse(readFileSync(argsFile, "utf8"))).toHaveLength(1);
     delete process.env.MOCK_SKILLS_LIST;
+  });
+  it("finds installed skill copies that differ from the bundled skill", () => {
+    const bundled = join(process.cwd(), "skills/enso");
+    const shared = join(tempDir, ".agents/skills/enso");
+    const claude = join(tempDir, "claude-home/skills/enso");
+    cpSync(bundled, shared, { recursive: true });
+    cpSync(bundled, claude, { recursive: true });
+    const environment = { CLAUDE_CONFIG_DIR: join(tempDir, "claude-home") };
+    expect(staleSkillCopies({ homeDirectory: tempDir, environment })).toEqual([]);
+    writeFileSync(join(claude, "SKILL.md"), "older skill");
+    mkdirSync(join(shared, "references"), { recursive: true });
+    writeFileSync(join(shared, "references/retired.md"), "a reference the bundle dropped");
+    expect(staleSkillCopies({ homeDirectory: tempDir, environment })).toEqual([shared, claude]);
+    chmodSync(join(claude, "references"), 0o000);
+    expect(staleSkillCopies({ homeDirectory: tempDir, environment })).toEqual([shared, claude]);
+    chmodSync(join(claude, "references"), 0o755);
+    rmSync(shared, { recursive: true });
+    rmSync(claude, { recursive: true });
+    cpSync(bundled, shared, { recursive: true });
+    cpSync(bundled, claude, { recursive: true });
+    mkdirSync(join(tempDir, "checkout/skills/enso"), { recursive: true });
+    writeFileSync(join(tempDir, "checkout/skills/enso/SKILL.md"), "an older checkout's skill");
+    vi.spyOn(process, "cwd").mockReturnValue(join(tempDir, "checkout"));
+    expect(staleSkillCopies({ homeDirectory: tempDir, environment })).toEqual([]);
   });
 });

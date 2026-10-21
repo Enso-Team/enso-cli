@@ -16,9 +16,9 @@ For a system design, architecture, or codebase map, including a port of an exist
 
 ## Work through the CLI
 
-Use the Enso CLI for app inspection and edits. Use focused `enso <command> --help` or the chosen command's schema when its contract is unfamiliar. Reuse loaded instructions, contracts, and target information within the active context; refresh live IDs and geometry after relevant edits. Computer use is reserved for an explicit request to operate the native UI.
+Use the Enso CLI for app inspection and edits. Use focused `enso <command> --help` or the chosen command's schema when its contract is unfamiliar. Read CLI output as returned: each `context` view carries only what its task needs, and apply results are short. Reuse loaded instructions, contracts, and target information within the active context; refresh live IDs and geometry after relevant edits. Computer use is reserved for an explicit request to operate the native UI.
 
-Start with `enso status --pretty`, `enso vault current --pretty`, and `enso canvas list --pretty`. Write and read Note markdown in the returned Vault `path`. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it.
+Start with `enso status`, `enso vault current`, and `enso canvas list`. When `status` reports `skill.stale`, pass its hint to the user. Write and read Note markdown in the returned Vault `path`. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it.
 
 Each Note is a durable explanation of its concept in prose. Read and edit its markdown directly. A visible Link rests on a sentence in the source Note containing `[[Target]]`; give the curve a short label when that sentence is long. The app owns Canvas JSON and sidecar state.
 
@@ -30,7 +30,7 @@ Before a first build or a multi-element revision, read [references/canvas-operat
 
 ## Revise the existing explanation
 
-Treat each user revision as an edit to the current Canvas. Inspect its affected elements with `enso context --canvas <target> --pretty`, reuse their IDs, and preserve unaffected Notes, positions, and user adjustments. Change the organizing structure when the user requests that change. Anchor additions to inspected neighbors. Refresh affected Links after prose edits because changing a mention can change the live Link inventory.
+Treat each user revision as an edit to the current Canvas. Inspect its affected elements with `enso context --canvas <target>`, reuse their IDs, and preserve unaffected Notes, positions, and user adjustments. Change the organizing structure when the user requests that change. Anchor additions to inspected neighbors. Refresh affected Links after prose edits because changing a mention can change the live Link inventory.
 
 When the user refers to writing on the Canvas, read it with `enso mark list`. Handwriting carries an interpretation. Quote an unapproved interpretation back before acting on it. Move a Mark into a Note with `enso mark add-to-note` or `drop-to-note` when the user asks.
 
@@ -40,6 +40,6 @@ When a Canvas is the spec for code or a mockup, read it with `enso context --can
 
 ## Verify
 
-After every build, layout change, or placement revision, run `enso context --canvas <target> --diagnostics --pretty` and follow "Inspect and repair" in [references/diagram-design.md](references/diagram-design.md). Use `--vision --pretty` and inspect the returned image when a concrete visual question needs rendered appearance, such as whether color or scale conveys the intended grouping, or whether a port matches its source.
+After every build, layout change, or placement revision, run `enso context --canvas <target> --diagnostics` and follow "Inspect and repair" in [references/diagram-design.md](references/diagram-design.md). Use `--vision` and inspect the returned image when a concrete visual question needs rendered appearance, such as whether color or scale conveys the intended grouping, or whether a port matches its source.
 
 Finish when the Canvas answers the user's question, the affected elements have the requested structure and appearance, and diagnostics show no fault that obstructs the intended reading, and every region holds exactly its members. For a port, every crosswalk row is on the Canvas or carries a stated reason.

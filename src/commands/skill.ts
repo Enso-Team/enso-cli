@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
@@ -130,3 +131,37 @@ export type SkillRefresh =
   | { refreshed: false; reason: "not_installed" }
   | { refreshed: boolean; results: AgentInstallation[]; unknownAgents: string[]; hint?: string };
 
+/**
+ * Installed copies of the skill that differ from the one bundled with this CLI. Checks the
+ * installer's shared folder and Claude's skills folder, where copies outlive CLI upgrades.
+ */
+export function staleSkillCopies(options: { homeDirectory?: string; environment?: NodeJS.ProcessEnv } = {}): string[] {
+  const home = options.homeDirectory ?? homedir();
+  const claudeHome = (options.environment ?? process.env).CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude");
+  const bundled = skillFiles(packagedSkillPath());
+  if (!bundled) return [];
+  return [join(home, ".agents", "skills", "enso"), join(claudeHome, "skills", "enso")]
+    .filter(copy => existsSync(join(copy, "SKILL.md")))
+    .filter(copy => {
+      const files = skillFiles(copy);
+      return !files || files.size !== bundled.size || [...bundled].some(([file, text]) => files.get(file) !== text);
+    });
+}
+
+/** The skill's markdown by relative path, or undefined when a file cannot be read. */
+function skillFiles(root: string): Map<string, string> | undefined {
+  const files = new Map<string, string>();
+  const walk = (folder: string): void => {
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      const path = join(folder, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && entry.name.endsWith(".md")) files.set(relative(root, path), readFileSync(path, "utf8"));
+    }
+  };
+  try {
+    walk(root);
+    return files;
+  } catch {
+    return undefined;
+  }
+}

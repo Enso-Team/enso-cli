@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { writeConfig } from "../../src/config.js";
+import * as skill from "../../src/commands/skill.js";
 import { buildProgram } from "../../src/index.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
@@ -547,8 +548,10 @@ describe("commands", () => {
     ]);
     respondWith({ ...entry, nodes: 3, links: 2, diagramPrimitives: 1 });
     expect(JSON.parse((await run(["canvas", "current"])).stdout).data).toEqual({ name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3, links: 2, diagramPrimitives: 1 });
+    vi.spyOn(skill, "staleSkillCopies").mockReturnValue(["/home/.claude/skills/enso"]);
     respondWith({ app: "Enso", vaultPath: "/vault", currentCanvas: { ...entry, nodes: 3 } });
-    expect(JSON.parse((await run(["status"])).stdout).data).toEqual({ app: "Enso", vaultPath: "/vault", currentCanvas: { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3 } });
+    expect(JSON.parse((await run(["status"])).stdout).data).toEqual({ app: "Enso", vaultPath: "/vault", currentCanvas: { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3 },
+      skill: { stale: ["/home/.claude/skills/enso"], hint: "Run `enso skill install` to copy the skill bundled with this CLI" } });
   });
 
   it("reads Canvases through context alone", () => {
