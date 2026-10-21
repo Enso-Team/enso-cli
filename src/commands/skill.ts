@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { z } from "zod";
 import type { EnsoEnvelope } from "../errors.js";
-import { discoverSkillAgents } from "../skill-agents.js";
+import { agentIdsForDisplayNames, discoverSkillAgents } from "../skill-agents.js";
 
 const execFileAsync = promisify(execFile);
 const skillsInstallerPackage = "skills@1.7.1";
@@ -36,13 +36,16 @@ function installerResults(stdout: string): z.infer<typeof installerResultsSchema
   }
 }
 
+/** The skill `enso skill install` copies: a working checkout's skill first, for local development. */
 function findSkillPath(): string {
+  const local = resolve(process.cwd(), "skills", "enso");
+  return existsSync(join(local, "SKILL.md")) ? local : packagedSkillPath();
+}
+
+/** The skill shipped with this CLI release, wherever the command runs from. */
+function packagedSkillPath(): string {
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const candidates = [
-    resolve(process.cwd(), "skills", "enso"),
-    resolve(packageRoot, "skills", "enso"),
-    resolve(packageRoot, "..", "skills", "enso")
-  ];
+  const candidates = [resolve(packageRoot, "skills", "enso"), resolve(packageRoot, "..", "skills", "enso")];
   return candidates.find(candidate => existsSync(join(candidate, "SKILL.md"))) ?? candidates[0];
 }
 
@@ -89,13 +92,41 @@ export function registerSkill(program: Command): void {
       if (targets.length === 0) {
         return { ok: false, error: { code: "agents_not_found", message: "Install an agent with global skill support or select one with --agent", details: { skippedAgents } } };
       }
-      const installer = process.env.ENSO_CLI_SKILL_INSTALLER_BIN ?? (process.platform === "win32" ? "npx.cmd" : "npx");
-      const results: AgentInstallation[] = [];
-      // Each installer writes the shared canonical skill directory, so targets run sequentially.
-      for (const agent of targets) results.push(await installAgent(source, installer, agent));
+      const results = await installTo(source, targets);
       if (results.some(result => result.status === "failed")) {
-        return { ok: false, error: { code: "skill_install_failed", message: "Skill installation is incomplete", details: { source, installer, results, skippedAgents } } };
+        return { ok: false, error: { code: "skill_install_failed", message: "Skill installation is incomplete", details: { source, installer: installerBin(), results, skippedAgents } } };
       }
-      return { ok: true, data: { installed: true, source, installer, results, skippedAgents } };
+      return { ok: true, data: { installed: true, source, installer: installerBin(), results, skippedAgents } };
     });
 }
+
+function installerBin(): string {
+  return process.env.ENSO_CLI_SKILL_INSTALLER_BIN ?? (process.platform === "win32" ? "npx.cmd" : "npx");
+}
+
+async function installTo(source: string, agents: string[]): Promise<AgentInstallation[]> {
+  const results: AgentInstallation[] = [];
+  // Each installer writes the shared canonical skill directory, so targets run sequentially.
+  for (const agent of agents) results.push(await installAgent(source, installerBin(), agent));
+  return results;
+}
+
+/**
+ * Copy the bundled skill to the agents that already have `enso`. The installer cannot update
+ * a skill installed from a local path, so this reads its list and installs to the same agents.
+ */
+export async function refreshInstalledSkill(): Promise<SkillRefresh> {
+  const { stdout } = await execFileAsync(installerBin(), ["--yes", skillsInstallerPackage, "list", "-g", "--json"], { maxBuffer: 1024 * 1024 * 10 });
+  const installed = z.array(z.object({ name: z.string(), agents: z.array(z.string()) })).parse(JSON.parse(stdout)).find(skill => skill.name === "enso");
+  if (!installed) return { refreshed: false, reason: "not_installed" };
+  const { agents, unknownAgents } = agentIdsForDisplayNames(installed.agents);
+  const results = await installTo(packagedSkillPath(), agents);
+  const failed = results.filter(result => result.status === "failed").map(result => result.agent);
+  if (failed.length === 0) return { refreshed: true, results, unknownAgents };
+  return { refreshed: false, results, unknownAgents, hint: `Run \`enso skill install --agent ${failed.join(" ")}\` to copy the new skill` };
+}
+
+export type SkillRefresh =
+  | { refreshed: false; reason: "not_installed" }
+  | { refreshed: boolean; results: AgentInstallation[]; unknownAgents: string[]; hint?: string };
+

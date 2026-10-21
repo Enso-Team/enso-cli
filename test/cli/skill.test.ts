@@ -1,8 +1,9 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/index.js";
 import * as skillAgents from "../../src/skill-agents.js";
+import { refreshInstalledSkill } from "../../src/commands/skill.js";
 import { run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -18,6 +19,7 @@ function mockInstaller(stdout?: string, exitCode = 0, failedAgent?: string): str
     "const args = process.argv.slice(2);",
     "const calls = JSON.parse(readFileSync(process.env.MOCK_NPX_ARGS_FILE, 'utf8'));",
     "calls.push(args); writeFileSync(process.env.MOCK_NPX_ARGS_FILE, JSON.stringify(calls));",
+    "if (args[2] === 'list') { process.stdout.write(process.env.MOCK_SKILLS_LIST ?? '[]'); return; }",
     "const agent = args.at(-1);",
     `const failed = agent === ${JSON.stringify(failedAgent)};`,
     "const results = [{ name: 'enso', status: failed ? 'failed' : 'installed', path: '/skills/' + agent + '/enso', ...(failed ? { error: 'Permission denied' } : {}) }];",
@@ -107,5 +109,48 @@ describe("skill", () => {
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr).error.code).toBe("agents_not_found");
     expect(JSON.parse(readFileSync(argsFile, "utf8"))).toEqual([]);
+  });
+  it("refreshes the installed skill for the agents that already have it", async () => {
+    const argsFile = mockInstaller();
+    process.env.MOCK_SKILLS_LIST = JSON.stringify([
+      { name: "other", agents: ["Cursor"] },
+      { name: "enso", agents: ["Claude Code", "Codex", "Unknown Agent"] }
+    ]);
+    const refreshed = await refreshInstalledSkill();
+    expect(refreshed).toMatchObject({ refreshed: true, results: [{ agent: "claude-code", status: "installed" }, { agent: "codex", status: "installed" }], unknownAgents: ["Unknown Agent"] });
+    const calls = JSON.parse(readFileSync(argsFile, "utf8")) as string[][];
+    expect(calls[0].slice(0, 3)).toEqual(["--yes", "skills@1.7.1", "list"]);
+    expect(calls.slice(1).map(args => args.at(-1))).toEqual(["claude-code", "codex"]);
+    expect(skillAgents.discoverSkillAgents).not.toHaveBeenCalled();
+    delete process.env.MOCK_SKILLS_LIST;
+  });
+  it("reports a refresh as failed when an agent keeps its old copy", async () => {
+    mockInstaller(undefined, 0, "codex");
+    process.env.MOCK_SKILLS_LIST = JSON.stringify([{ name: "enso", agents: ["Claude Code", "Codex"] }]);
+    expect(await refreshInstalledSkill()).toMatchObject({
+      refreshed: false,
+      results: [{ agent: "claude-code", status: "installed" }, { agent: "codex", status: "failed" }],
+      hint: "Run `enso skill install --agent codex` to copy the new skill"
+    });
+    delete process.env.MOCK_SKILLS_LIST;
+  });
+  it("refreshes from the skill packaged with the CLI rather than the working directory", async () => {
+    const argsFile = mockInstaller();
+    const packaged = resolve("skills/enso");
+    mkdirSync(join(tempDir, "skills/enso"), { recursive: true });
+    writeFileSync(join(tempDir, "skills/enso/SKILL.md"), "an older checkout's skill");
+    vi.spyOn(process, "cwd").mockReturnValue(tempDir);
+    process.env.MOCK_SKILLS_LIST = JSON.stringify([{ name: "enso", agents: ["Codex"] }]);
+    await refreshInstalledSkill();
+    const calls = JSON.parse(readFileSync(argsFile, "utf8")) as string[][];
+    expect(calls[1][3]).toBe(packaged);
+    delete process.env.MOCK_SKILLS_LIST;
+  });
+  it("leaves agents alone when the skill is not installed", async () => {
+    const argsFile = mockInstaller();
+    process.env.MOCK_SKILLS_LIST = "[]";
+    expect(await refreshInstalledSkill()).toEqual({ refreshed: false, reason: "not_installed" });
+    expect(JSON.parse(readFileSync(argsFile, "utf8"))).toHaveLength(1);
+    delete process.env.MOCK_SKILLS_LIST;
   });
 });
