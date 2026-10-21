@@ -174,13 +174,15 @@ Note placement accepts folder-relative paths with or without `.md`. Verification
 
 ```sh
 enso context --canvas current --pretty
+enso context --canvas current --spec --pretty
+enso context --canvas current --full --pretty
 enso context --canvas current --vision --pretty
 enso context --canvas current --diagnostics --pretty
 ```
 
 Vision adds a viewport PNG path (downscaled to at most 1568 px on the long edge), the visible rectangle, and layout diagnostics (overlaps, crossings, offscreen nodes). Element world geometry stays in the structural context sections. Use both the screenshot and diagnostics — neither alone is enough to judge layout.
 
-Default Canvas context requests structure with Note content omitted. `--node` and `--query` request focused content. `--diagnostics` returns only Canvas identity, viewport metadata, and visual diagnostics, including issue subjects and repair bounds. It reports `diagnostics_unavailable` when the app supplies no diagnostics.
+Default Canvas context returns element IDs, meaning, and world geometry for placing and repairing elements, with styling and Note content omitted. `--spec` returns the Canvas as members, edges, clusters, lines, Marks, and Excerpt owners, named by title, for building from it. `--full` returns every Canvas field the app stores, including styling. Note content stays in the Vault files. `--node` and `--query` request focused content. `--diagnostics` returns only Canvas identity, viewport metadata, and visual diagnostics, including issue subjects and repair bounds. It reports `diagnostics_unavailable` when the app supplies no diagnostics.
 
 ## Atomic commands
 
@@ -192,7 +194,6 @@ All mutating commands support `--dry-run`.
 enso canvas list --pretty
 enso canvas open "Auth Flow"
 enso canvas create "Auth Flow" --dry-run
-enso canvas inspect "Auth Flow" --pretty
 ```
 
 ### Nodes and portals

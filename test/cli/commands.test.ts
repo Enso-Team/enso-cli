@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { writeConfig } from "../../src/config.js";
+import * as skill from "../../src/commands/skill.js";
 import { buildProgram } from "../../src/index.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
@@ -37,7 +38,6 @@ describe("commands", () => {
     [["canvas", "fit", "Flow Map", "--dry-run"], "/v1/canvases/Flow%20Map/fit?dryRun=true", "POST"],
     [["canvas", "create", "Roadmap"], "/v1/canvases?dryRun=false", "POST"],
     [["canvas", "open", "Roadmap"], "/v1/canvases/Roadmap/open?dryRun=false", "POST"],
-    [["canvas", "inspect", "Roadmap"], "/v1/canvases/Roadmap/inspect", "GET"],
     [["node", "list", "--canvas", "current"], "/v1/nodes?canvas=current", "GET"],
     [["node", "place", "Auth"], "/v1/nodes?dryRun=false", "POST"],
     [["node", "move", "Auth", "--x", "1", "--y", "2"], "/v1/nodes/Auth?dryRun=false", "PUT"],
@@ -57,9 +57,6 @@ describe("commands", () => {
     [["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240"], "/v1/diagram-primitives?dryRun=false", "POST"],
     [["primitive", "update", "abc", "--title", "Identity"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
     [["primitive", "delete", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "DELETE"],
-    [["graph", "inspect"], "/v1/context", "POST"],
-    [["graph", "broken"], "/v1/context", "POST"],
-    [["graph", "path", "A", "B"], "/v1/context", "POST"],
     [["context", "--query", "auth"], "/v1/context", "POST"]
   ];
 
@@ -469,21 +466,98 @@ describe("commands", () => {
     expect(JSON.parse(String(request.init.body))).not.toHaveProperty("vision");
   });
 
-  it("projects default context to compact structural fields", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      return Response.json({ ok: true, data: {
-        nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false }],
-        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12, path: [] }],
-        diagramPrimitives: [{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]
-      } });
-    }));
-    const result = await run(["context", "--canvas", "current"]);
-    const data = JSON.parse(result.stdout).data;
-    expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false });
-    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12 });
-    expect(JSON.parse(String(calls[0].init.body)).includeContent).toBe(false);
-    expect(data.diagramPrimitives).toEqual([{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]);
+  const canvas = {
+    canvas: { id: "C1", name: "Proposed" },
+    nodes: [
+      { id: "n1", kind: "note", title: "Entry", ref: "DBS/Entry.md", subcanvasRef: null, appearance: "mobileApp", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false, position: { x: 100, y: 100 }, bounds: { x: 50, y: 60, width: 100, height: 80 } },
+      { id: "n2", kind: "note", title: "Face ID", ref: "DBS/Face ID.md", subcanvasRef: null, appearance: "auth", glyphSize: 48, fontSize: 14, position: { x: 400, y: 100 }, bounds: { x: 350, y: 60, width: 100, height: 80 } },
+      { id: "n3", kind: "portal", title: "Detail", ref: null, subcanvasRef: "Canvases/Detail.json", appearance: "card", fontSize: 17, position: { x: 900, y: 100 } }
+    ],
+    links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", label: null, displayLabel: "asks for", mentions: ["Entry asks for [[Face ID]]."], color: "orange", direction: "directed", lineStyle: "solid", arrowheadStyle: "filled", labelFontSize: 12 }],
+    diagramPrimitives: [
+      { id: "p1", kind: "group", title: "Signed out", color: "blue", lineStyle: "solid", strokeWidth: 1.5, fillOpacity: 0.07, bounds: { x: 0, y: 0, width: 500, height: 200 } },
+      { id: "p2", kind: "line", title: "Session boundary", color: "gray", lineStyle: "dashed", strokeWidth: 1, x1: 0, y1: 300, x2: 1000, y2: 300 },
+      { id: "p3", kind: "line", color: "red", x1: 0, y1: 400, x2: 10, y2: 400 }
+    ],
+    marks: [{ id: "m1", kind: "typed", text: "Orange links ask for authentication.", textRuns: [], fontSize: 17, textAlignment: "left", connectedNodeIDs: ["n2"], strokeIDs: [], position: { x: 10, y: 220 }, width: 300 }],
+    excerpts: [{ id: "e1", noteID: "note-1", linkedNodeID: "n1", text: "OCR text the Note already holds", fontSize: 14, bounds: { x: 20, y: 500, width: 200, height: 40 }, connectedNodeIDs: [] }]
+  };
+  const respondWith = (data: unknown) => vi.mocked(fetch).mockImplementation(async (url, init) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return Response.json({ ok: true, data });
+  });
+
+  it("projects default context to identity, meaning, and geometry", async () => {
+    respondWith(canvas);
+    const data = JSON.parse((await run(["context", "--canvas", "Proposed"])).stdout).data;
+    expect(data.nodes[1]).toEqual({ id: "n2", kind: "note", title: "Face ID", ref: "DBS/Face ID.md", appearance: "auth", position: { x: 400, y: 100 }, bounds: { x: 350, y: 60, width: 100, height: 80 } });
+    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "asks for", color: "orange", direction: "directed", lineStyle: "solid" });
+    expect(data.diagramPrimitives[0]).toEqual({ id: "p1", kind: "group", title: "Signed out", color: "blue", lineStyle: "solid", bounds: { x: 0, y: 0, width: 500, height: 200 } });
+    expect(data.marks[0]).toEqual({ id: "m1", kind: "typed", text: "Orange links ask for authentication.", connectedNodeIDs: ["n2"], position: { x: 10, y: 220 }, width: 300, bounds: expect.objectContaining({ x: 10, y: 220, width: 300 }) });
+    expect(data.excerpts[0]).toEqual({ id: "e1", linkedNodeID: "n1", connectedNodeIDs: [], bounds: { x: 20, y: 500, width: 200, height: 40 } });
+  });
+
+  it("returns the spec view by title", async () => {
+    respondWith(canvas);
+    const data = JSON.parse((await run(["context", "--canvas", "Proposed", "--spec"])).stdout).data;
+    expect(data).toEqual({
+      canvas: "Proposed",
+      members: [
+        { title: "Entry", note: "DBS/Entry.md", appearance: "mobileApp" },
+        { title: "Face ID", note: "DBS/Face ID.md", appearance: "auth" },
+        { title: "Detail", portal: "Canvases/Detail.json" }
+      ],
+      edges: [{ from: "Entry", to: "Face ID", label: "asks for", color: "orange", direction: "directed" }],
+      clusters: [{ name: "Signed out", color: "blue", members: ["Entry", "Face ID"] }],
+      lines: [{ title: "Session boundary", color: "gray", lineStyle: "dashed" }],
+      marks: [{ text: "Orange links ask for authentication.", about: ["Face ID"] }],
+      excerpts: [{ on: "Entry" }]
+    });
+  });
+
+  it("names spec members that share a title by Note path", async () => {
+    respondWith({ ...canvas, nodes: [canvas.nodes[0], { ...canvas.nodes[1], title: "Entry", ref: "Other/Entry.md" }] });
+    const data = JSON.parse((await run(["context", "--spec"])).stdout).data;
+    expect(data.edges[0]).toMatchObject({ from: "DBS/Entry.md", to: "Other/Entry.md" });
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ includeContent: false });
+  });
+
+  it("places spec cluster members for a region that stores its center apart from its size", async () => {
+    respondWith({ ...canvas, diagramPrimitives: [{ id: "p1", kind: "group", title: "Signed out", position: { x: 250, y: 100 }, bounds: { width: 500, height: 200 } }] });
+    const data = JSON.parse((await run(["context", "--canvas", "Proposed", "--spec"])).stdout).data;
+    expect(data.clusters).toEqual([{ name: "Signed out", members: ["Entry", "Face ID"] }]);
+  });
+
+  it("returns every stored field with --full", async () => {
+    respondWith(canvas);
+    expect(JSON.parse((await run(["context", "--canvas", "Proposed", "--full"])).stdout).data).toEqual(canvas);
+    expect(new URL(calls[0].url).pathname).toBe("/v1/canvases/Proposed/inspect");
+  });
+
+  it.each([["--spec", "--full"], ["--spec", "--vision"], ["--full", "--diagnostics"], ["--spec", "--node", "Entry"]])("rejects %s with %s", async (...flags) => {
+    expect(JSON.parse((await run(["context", ...flags])).stderr).error.code).toBe("invalid_input");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("lists Canvases by what an agent can select and read", async () => {
+    const entry = { id: "Plan", name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", path: "/Users/me/Library/Containers/app/Canvases/Plan.json" };
+    respondWith({ canvases: [entry, { ...entry, id: "UUID-1" }] });
+    expect(JSON.parse((await run(["canvas", "list"])).stdout).data.canvases).toEqual([
+      { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md" },
+      { id: "UUID-1", name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md" }
+    ]);
+    respondWith({ ...entry, nodes: 3, links: 2, diagramPrimitives: 1 });
+    expect(JSON.parse((await run(["canvas", "current"])).stdout).data).toEqual({ name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3, links: 2, diagramPrimitives: 1 });
+    vi.spyOn(skill, "staleSkillCopies").mockReturnValue(["/home/.claude/skills/enso"]);
+    respondWith({ app: "Enso", vaultPath: "/vault", currentCanvas: { ...entry, nodes: 3 } });
+    expect(JSON.parse((await run(["status"])).stdout).data).toEqual({ app: "Enso", vaultPath: "/vault", currentCanvas: { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3 },
+      skill: { stale: ["/home/.claude/skills/enso"], hint: "Run `enso skill install` to copy the skill bundled with this CLI" } });
+  });
+
+  it("reads Canvases through context alone", () => {
+    const program = buildProgram();
+    expect(program.commands.map((command) => command.name())).not.toContain("graph");
+    expect(program.commands.find((command) => command.name() === "canvas")?.commands.map((command) => command.name())).not.toContain("inspect");
   });
 
   it("returns Canvas identity, viewport metadata, diagnostics, and issue repair bounds", async () => {
