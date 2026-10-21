@@ -1,6 +1,6 @@
 ---
 name: enso
-description: Create and revise visual explanations in Enso, including system-design and architecture maps and ports of existing diagrams or design docs. Use when someone needs a visual explanation, wants a system mapped, or asks to work in Enso.
+description: Create and revise visual explanations in Enso, including system-design and architecture maps and ports of existing diagrams or design docs. Use when someone needs a visual explanation, wants a system mapped, builds from a Canvas, or asks to work in Enso.
 ---
 # Enso
 
@@ -33,6 +33,10 @@ Before a first build or a multi-element revision, read [references/canvas-operat
 Treat each user revision as an edit to the current Canvas. Inspect its affected elements with `enso context --canvas <target> --pretty`, reuse their IDs, and preserve unaffected Notes, positions, and user adjustments. Change the organizing structure when the user requests that change. Anchor additions to inspected neighbors. Refresh affected Links after prose edits because changing a mention can change the live Link inventory.
 
 When the user refers to writing on the Canvas, read it with `enso mark list`. Handwriting carries an interpretation. Quote an unapproved interpretation back before acting on it. Move a Mark into a Note with `enso mark add-to-note` or `drop-to-note` when the user asks.
+
+## Build from a Canvas
+
+When a Canvas is the spec for code or a mockup, read it with `enso context --canvas <target> --spec`, then read each member's `note` in the Vault. The spec view gives the structure: members, edges with their labels and colors, clusters, lines, and Marks with the members they are about. Each Note describes its element.
 
 ## Verify
 

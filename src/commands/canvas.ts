@@ -44,12 +44,6 @@ export function registerCanvas(program: Command): void {
       })
     );
   canvas
-    .command("inspect")
-    .argument("<selector>")
-    .action(async (selector: string) =>
-      new BridgeClient().request(`/v1/canvases/${encodeURIComponent(selector)}/inspect`)
-    );
-  canvas
     .command("outline")
     .description("Print the markdown outline Enso keeps for a Canvas under Canvases/ in the Vault")
     .argument("<selector>", "Canvas name, id, or ref")

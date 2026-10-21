@@ -7,7 +7,6 @@ import { registerCanvas } from "./commands/canvas.js";
 import { registerCheck } from "./commands/check.js";
 import { registerContext } from "./commands/context.js";
 import { registerPrimitive } from "./commands/primitive.js";
-import { registerGraph } from "./commands/graph.js";
 import { registerLayout } from "./commands/layout.js";
 import { registerLink } from "./commands/link.js";
 import { registerMark } from "./commands/mark.js";
@@ -43,7 +42,6 @@ export function buildProgram(): Command {
   registerLink(program);
   registerPrimitive(program);
   registerMark(program);
-  registerGraph(program);
   registerContext(program);
   registerSkill(program);
   registerUpdate(program);
