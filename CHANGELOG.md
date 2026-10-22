@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.2](https://github.com/Enso-Team/enso-cli/compare/v0.9.1...v0.9.2) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** agents read Canvases as specs without filtering context dumps ([#108](https://github.com/Enso-Team/enso-cli/issues/108))
+
+### Features
+
+* **cli:** agents read Canvases as specs without filtering context dumps ([#108](https://github.com/Enso-Team/enso-cli/issues/108)) ([7ad4769](https://github.com/Enso-Team/enso-cli/commit/7ad4769b15c9a2866bcd31a606196f45479da7f2))
+
+
+### Miscellaneous Chores
+
+* release 0.9.2 ([3e778df](https://github.com/Enso-Team/enso-cli/commit/3e778df2cb9a33ec943a2a2da1d05060756e4d6e))
+
 ## [0.9.1](https://github.com/Enso-Team/enso-cli/compare/v0.9.0...v0.9.1) (2026-10-17)
 
 
