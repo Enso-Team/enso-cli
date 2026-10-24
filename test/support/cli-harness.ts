@@ -18,6 +18,7 @@ export function setupCliTest(): void {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "enso-cli-"));
     process.env.ENSO_CLI_CONFIG_DIR = tempDir;
+    process.env.ENSO_VAULT_INDEX_ROOT = join(tempDir, "vault-index");
     calls.length = 0;
     vi.restoreAllMocks();
     vi.stubGlobal(
@@ -33,6 +34,7 @@ export function setupCliTest(): void {
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
     delete process.env.ENSO_CLI_CONFIG_DIR;
+    delete process.env.ENSO_VAULT_INDEX_ROOT;
     delete process.env.ENSO_CLI_SKILL_INSTALLER_BIN;
     delete process.env.MOCK_NPX_ARGS_FILE;
     vi.unstubAllGlobals();

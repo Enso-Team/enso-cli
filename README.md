@@ -66,7 +66,7 @@ Three layers. Compile a whole diagram from a graph, batch a hand-written patch, 
 | ----------- | ------------------------------------- | --------------------------------------------------------- |
 | **Compile** | Building a diagram from a graph       | `enso layout <graph.json>`                                |
 | **Batch**   | Building or reshaping a canvas region | `enso canvas apply <file.json>`                          |
-| **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive`, `enso mark` |
+| **Atomic**  | One surgical edit                     | `enso node`, `enso link`, `enso portal`, `enso primitive`, `enso mark`, `enso excerpt` |
 | **Verify**  | Linting a Vault folder                | `enso check [folder]`                                     |
 
 
@@ -83,6 +83,21 @@ enso mark list
 ```
 
 `enso mark update` edits a typed Mark. Handwritten Marks belong to the person who drew them, and `mark list` reports each one's interpretation and approval. `add-to-note` moves a Mark's writing into a Note as an Excerpt, and `drop-to-note` appends it to the Note and removes the Mark. `canvas apply` takes the same Marks in its `marks` section. An app without Marks answers with `app_outdated`.
+
+## excerpt
+
+An Excerpt places a passage of a Note on the open Canvas, linked from the Note's node. The Note owns the text, so editing an Excerpt edits the Note. `x` and `y` place the top-left of the text block.
+
+```sh
+enso excerpt create --note Auth --text "Tokens expire after an hour." --x 120 --y -40
+enso excerpt move <excerpt-id> --x 300 --y -40
+enso excerpt update <excerpt-id> --width 320 --font-size 14 --align left
+enso excerpt connect <excerpt-id> Billing
+enso excerpt source <excerpt-id> --text "Tokens expire after a day."
+enso excerpt list
+```
+
+`create --note` takes a note node on the open Canvas and the passage exactly as its markdown file holds it, markup included. The CLI finds the passage in the file and the app links it from that node. When the passage repeats, `--occurrence <n>` picks one. The CLI takes the Note's id from its node, then from `--note-id`, then from the app's index of the open Vault, which it reads and never writes. `create --link <link-id> --text <text>` writes new text into a Note at the end of a dangling link from its node. `source <excerpt-id>` shows the owning Note and its markdown, and `--text` replaces the passage in the Note. `remove-from-note` deletes the passage from the Note and keeps the Excerpt on the Canvas. `delete` removes the Excerpt and its links from the Canvas and leaves the Note's text in place. An app without Excerpts answers with `app_outdated`.
 
 ## layout
 
