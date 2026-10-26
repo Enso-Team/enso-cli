@@ -1,6 +1,8 @@
 import { Command, InvalidArgumentError } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
+import { safeTitle } from "../canvas-intent.js";
+import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 import { placementSelector } from "../note-identity.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
@@ -8,6 +10,29 @@ function parseCoord(value: string | undefined, name: string): number | undefined
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new InvalidArgumentError(`${name} must be a number`);
   return parsed;
+}
+
+// The new title is the Note's filename stem, so the app appends `.md` itself.
+function parseRenameTitle(value: string): string {
+  if (value.trim().length === 0) throw new InvalidArgumentError("new title must contain a nonblank character");
+  const parsed = safeTitle.safeParse(value);
+  if (!parsed.success) throw new InvalidArgumentError(parsed.error.issues[0]?.message ?? "Invalid title");
+  if (/\.md$/i.test(value)) throw new InvalidArgumentError("new title is the filename stem; drop the .md suffix");
+  return value;
+}
+
+/**
+ * An app that predates rename answers its route with the generic missing-route error. A
+ * missing Node carries its own message and passes through.
+ */
+function requireRenameSupport(envelope: EnsoEnvelope): EnsoEnvelope {
+  if (!envelope.ok && envelope.error.code === "not_found" && envelope.error.message === "Bridge route not found") {
+    throw new EnsoCliError("app_outdated", "The Enso app does not support renaming Nodes yet", {
+      ...(envelope.error.details ?? {}),
+      hint: "Update the Enso app"
+    });
+  }
+  return envelope;
 }
 
 export function registerNode(program: Command): void {
@@ -107,6 +132,24 @@ export function registerNode(program: Command): void {
         dryRun: Boolean(options.dryRun)
       })
     );
+  node
+    .command("rename")
+    .description(
+      "Rename a Node's Note on the current Canvas: renames its markdown file, rewrites [[wikilinks]] across the Vault, and updates Canvas references. There is no --canvas flag: the Canvas the app has open is the one edited."
+    )
+    .argument("<selector>")
+    .argument("<new-title>", "the Note's new filename stem, without .md")
+    .option("--dry-run", "validate without mutating")
+    .action(async (selector: string, newTitle: string, options: { dryRun?: boolean }) => {
+      const title = parseRenameTitle(newTitle);
+      return new BridgeClient()
+        .request(`/v1/nodes/${encodeURIComponent(selector)}/rename`, {
+          method: "POST",
+          body: { title, dryRun: Boolean(options.dryRun) },
+          dryRun: Boolean(options.dryRun)
+        })
+        .then(requireRenameSupport);
+    });
   node
     .command("neighbors")
     .argument("<selector>")

@@ -202,12 +202,15 @@ enso canvas create "Auth Flow" --dry-run
 enso node place "docs/API.md" --x 18300 --y 18200 --dry-run
 enso node move "API" --x 18600 --y 18200 --dry-run
 enso node remove "API" --dry-run
+enso node rename "API" "Public API" --dry-run
 enso portal create --title "Detail" --subcanvas-ref "Canvases/Detail.json" --dry-run
 enso portal open "Detail"
 enso portal remove "Detail" --dry-run
 ```
 
 Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write` and no `node read`; open the file.
+
+`enso node rename "API" "Public API"` renames the Note's markdown file, rewrites `[[wikilinks]]` to it across the Vault, and updates Canvas references to it. Renaming the file by hand breaks its Links; use `node rename` instead. The new title is the filename stem: it has no `.md` suffix and cannot contain `/`, `:`, `?`, or `#`. Like `node move`, it acts on the Canvas the app has open. The result reports `from`, `to`, `changed`, `rewrittenWikilinks`, and `updatedCanvases`. An app that predates the command fails with `app_outdated`.
 
 `enso node place "API" --appearance api` places a Note as a symbol Node.
 `enso node update "API" --appearance database` changes its visual form.
