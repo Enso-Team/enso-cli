@@ -18,7 +18,7 @@ For a system design, architecture, or codebase map, including a port of an exist
 
 Use the Enso CLI for app inspection and edits. Use focused `enso <command> --help` or the chosen command's schema when its contract is unfamiliar. Read CLI output as returned: each `context` view carries only what its task needs, and apply results are short. Reuse loaded instructions, contracts, and target information within the active context; refresh live IDs and geometry after relevant edits. Computer use is reserved for an explicit request to operate the native UI.
 
-Start with `enso status`, `enso vault current`, and `enso canvas list`. When `status` reports `skill.stale`, pass its hint to the user. Write and read Note markdown in the returned Vault `path`. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it.
+Start with `enso status`, `enso vault current`, and `enso canvas list`. When `status` reports `skill.stale`, pass its hint to the user. Write and read Note markdown in the returned Vault `path`. Select the intended Canvas; `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it. Run `enso vault create <path>` only when the user asks for a new Vault, and add `--sync` only when they ask for it synced.
 
 Each Note is a durable explanation of its concept in prose. Read and edit its markdown directly. A visible Link rests on a sentence in the source Note containing `[[Target]]`; give the curve a short label when that sentence is long. The app owns Canvas JSON and sidecar state.
 

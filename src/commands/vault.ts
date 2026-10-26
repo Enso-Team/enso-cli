@@ -1,12 +1,14 @@
 import { Command } from "commander";
-import { statSync } from "node:fs";
+import { mkdirSync, rmdirSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError } from "../errors.js";
+import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+
+type CreateOptions = { name?: string; sync?: boolean; team?: string; dryRun?: boolean };
 
 export function registerVault(program: Command): void {
-  const vault = program.command("vault").description("Open and inspect Enso vaults");
+  const vault = program.command("vault").description("Create, open, and inspect Enso vaults");
 
   vault.command("current").action(async () => new BridgeClient().request("/v1/vault/current"));
   vault.command("tree").action(async () => new BridgeClient().request("/v1/vault/tree"));
@@ -14,12 +16,88 @@ export function registerVault(program: Command): void {
     .argument("<path>", "folder to open as a vault")
     .option("--dry-run", "validate folder access without switching vaults")
     .action(async (path: string, options: { dryRun?: boolean }) => {
-      const folder = resolve(path === "~" ? homedir() : path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path);
-      let directory = false;
-      try { directory = statSync(folder).isDirectory(); } catch { directory = false; }
-      if (!directory) throw new EnsoCliError("invalid_input", "Vault path must be an existing folder", { path: folder });
+      const folder = resolveVaultPath(path);
+      if (!statPath(folder)?.isDirectory()) throw new EnsoCliError("invalid_input", "Vault path must be an existing folder", { path: folder });
       return new BridgeClient().request("/v1/vault/open", {
         method: "POST", body: { path: folder, dryRun: Boolean(options.dryRun) }, dryRun: Boolean(options.dryRun)
       });
     });
+  vault.command("create")
+    .argument("<path>", "folder to create as a vault, or an existing folder to adopt")
+    .option("--name <name>", "vault name")
+    .option("--sync", "sync the vault through Enso")
+    .option("--team <id>", "team that owns the synced vault; requires --sync")
+    .option("--dry-run", "validate the request without creating the folder or the vault")
+    .action(async (path: string, options: CreateOptions) => {
+      const folder = resolveVaultPath(path);
+      const dryRun = Boolean(options.dryRun);
+      if (options.team !== undefined && !options.sync) {
+        throw new EnsoCliError("invalid_input", "--team requires --sync", { team: options.team });
+      }
+      const created = prepareVaultFolder(folder, dryRun);
+      try {
+        const envelope = await new BridgeClient().request("/v1/vault/create", {
+          method: "POST",
+          body: { path: folder, name: options.name, sync: Boolean(options.sync), team: options.team, dryRun },
+          dryRun
+        }).then(requireVaultCreateSupport);
+        if (!envelope.ok && created) removeEmptyFolder(folder);
+        return envelope;
+      } catch (error) {
+        if (created) removeEmptyFolder(folder);
+        throw error;
+      }
+    });
+}
+
+function resolveVaultPath(path: string): string {
+  return resolve(path === "~" ? homedir() : path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path);
+}
+
+function statPath(path: string): Stats | undefined {
+  try { return statSync(path); } catch { return undefined; }
+}
+
+/**
+ * The sandboxed app is granted only the exact folder, so the CLI creates it. Only the last
+ * component is created, so a mistyped parent fails instead of building a chain of folders.
+ * An existing folder passes through for the app to adopt or refuse. Returns whether this run
+ * created the folder.
+ */
+function prepareVaultFolder(folder: string, dryRun: boolean): boolean {
+  const existing = statPath(folder);
+  if (existing) {
+    if (!existing.isDirectory()) throw new EnsoCliError("invalid_input", "Vault path is a file, not a folder", { path: folder });
+    return false;
+  }
+  const parent = dirname(folder);
+  if (!statPath(parent)?.isDirectory()) {
+    throw new EnsoCliError("invalid_input", "The vault folder's parent must be an existing folder", { path: folder, parent });
+  }
+  if (dryRun) return false;
+  try {
+    mkdirSync(folder);
+  } catch (error) {
+    throw new EnsoCliError("invalid_input", "Could not create the vault folder", { path: folder, reason: (error as Error).message });
+  }
+  return true;
+}
+
+/** Removes a folder this run created, unless something has already been written into it. */
+function removeEmptyFolder(folder: string): void {
+  try { rmdirSync(folder); } catch { /* not empty, or already gone */ }
+}
+
+/**
+ * An app that predates vault creation answers the route with its generic missing-route error.
+ * Every other refusal is the app's own and passes through.
+ */
+function requireVaultCreateSupport(envelope: EnsoEnvelope): EnsoEnvelope {
+  if (!envelope.ok && envelope.error.code === "not_found" && envelope.error.message === "Bridge route not found") {
+    throw new EnsoCliError("app_outdated", "The Enso app does not support creating vaults yet", {
+      ...envelope.error.details,
+      hint: "Update the Enso app, or create the vault from Enso's vault menu"
+    });
+  }
+  return envelope;
 }
