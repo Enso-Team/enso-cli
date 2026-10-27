@@ -3,7 +3,7 @@ import { mkdirSync, rmdirSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+import { EnsoCliError, isMissingRoute, type EnsoEnvelope } from "../errors.js";
 
 type CreateOptions = { name?: string; sync?: boolean; team?: string; dryRun?: boolean };
 
@@ -54,8 +54,27 @@ function resolveVaultPath(path: string): string {
   return resolve(path === "~" ? homedir() : path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path);
 }
 
+/** A missing path is undefined; one the CLI may not read is folder_access_denied. */
 function statPath(path: string): Stats | undefined {
-  try { return statSync(path); } catch { return undefined; }
+  try {
+    return statSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw folderError(error, path, "Could not read the vault path");
+  }
+}
+
+function folderError(error: unknown, path: string, message: string): EnsoCliError {
+  const { code, message: reason } = error as NodeJS.ErrnoException;
+  if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
+    return new EnsoCliError("folder_access_denied", "The CLI does not have permission to use this folder", {
+      path,
+      reason,
+      hint: "Choose a folder you can write to, or allow this terminal in System Settings > Privacy & Security > Files and Folders"
+    });
+  }
+  return new EnsoCliError("invalid_input", message, { path, reason });
 }
 
 /**
@@ -65,11 +84,7 @@ function statPath(path: string): Stats | undefined {
  * created the folder.
  */
 function prepareVaultFolder(folder: string, dryRun: boolean): boolean {
-  const existing = statPath(folder);
-  if (existing) {
-    if (!existing.isDirectory()) throw new EnsoCliError("invalid_input", "Vault path is a file, not a folder", { path: folder });
-    return false;
-  }
+  if (isExistingFolder(folder)) return false;
   const parent = dirname(folder);
   if (!statPath(parent)?.isDirectory()) {
     throw new EnsoCliError("invalid_input", "The vault folder's parent must be an existing folder", { path: folder, parent });
@@ -78,9 +93,17 @@ function prepareVaultFolder(folder: string, dryRun: boolean): boolean {
   try {
     mkdirSync(folder);
   } catch (error) {
-    throw new EnsoCliError("invalid_input", "Could not create the vault folder", { path: folder, reason: (error as Error).message });
+    // Made by another process since the check, so it is adopted like any existing folder.
+    if ((error as NodeJS.ErrnoException).code === "EEXIST" && isExistingFolder(folder)) return false;
+    throw folderError(error, folder, "Could not create the vault folder");
   }
   return true;
+}
+
+function isExistingFolder(folder: string): boolean {
+  const existing = statPath(folder);
+  if (existing && !existing.isDirectory()) throw new EnsoCliError("invalid_input", "Vault path is a file, not a folder", { path: folder });
+  return existing !== undefined;
 }
 
 /** Removes a folder this run created, unless something has already been written into it. */
@@ -88,12 +111,9 @@ function removeEmptyFolder(folder: string): void {
   try { rmdirSync(folder); } catch { /* not empty, or already gone */ }
 }
 
-/**
- * An app that predates vault creation answers the route with its generic missing-route error.
- * Every other refusal is the app's own and passes through.
- */
+/** An app that predates vault creation lacks the route. Every other refusal is the app's own. */
 function requireVaultCreateSupport(envelope: EnsoEnvelope): EnsoEnvelope {
-  if (!envelope.ok && envelope.error.code === "not_found" && envelope.error.message === "Bridge route not found") {
+  if (!envelope.ok && isMissingRoute(envelope.error)) {
     throw new EnsoCliError("app_outdated", "The Enso app does not support creating vaults yet", {
       ...envelope.error.details,
       hint: "Update the Enso app, or create the vault from Enso's vault menu"

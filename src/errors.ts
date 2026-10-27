@@ -58,6 +58,14 @@ export function errorEnvelope(error: unknown): EnsoEnvelope {
   };
 }
 
+/**
+ * An app that predates a route answers it with the bridge's generic missing-route error. A
+ * route's own not_found (a missing Mark, Node, or folder) carries its own message.
+ */
+export function isMissingRoute(error: EnsoErrorBody): boolean {
+  return error.code === "not_found" && error.message === "Bridge route not found";
+}
+
 const DUPLICATE_LINK_HINT = "Use link update on the existing link id instead of link create";
 
 export function printEnvelope(

@@ -1,4 +1,4 @@
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
@@ -141,6 +141,42 @@ describe("commands", () => {
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr).error.code).toBe("vault_name_taken");
     expect(existsSync(folder)).toBe(false);
+  });
+
+  it("keeps an existing folder when the app refuses it", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "vault_exists", message: "Research already has a vault", details: {} } }));
+    const folder = join(tempDir, "Research");
+    mkdirSync(folder);
+    const result = await run(["vault", "create", folder]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("vault_exists");
+    expect(statSync(folder).isDirectory()).toBe(true);
+  });
+
+  it("reports a vault folder this terminal may not use as folder_access_denied", async () => {
+    const readOnly = join(tempDir, "read-only");
+    const unreadable = join(tempDir, "unreadable");
+    mkdirSync(readOnly);
+    mkdirSync(unreadable);
+    chmodSync(readOnly, 0o555);
+    chmodSync(unreadable, 0o000);
+    try {
+      const attempts = [
+        ["create", join(readOnly, "Research")],
+        ["create", join(unreadable, "Research")],
+        ["open", join(unreadable, "Research")]
+      ];
+      for (const args of attempts) {
+        const result = await run(["vault", ...args]);
+        expect(result.code).toBe(1);
+        expect(JSON.parse(result.stderr).error.code).toBe("folder_access_denied");
+      }
+    } finally {
+      chmodSync(readOnly, 0o755);
+      chmodSync(unreadable, 0o755);
+    }
+    expect(calls).toHaveLength(0);
+    expect(existsSync(join(readOnly, "Research"))).toBe(false);
   });
 
   it("reports an app without vault creation as outdated", async () => {
