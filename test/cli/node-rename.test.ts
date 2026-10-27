@@ -39,10 +39,17 @@ describe("node rename", () => {
   it.each([
     ["", "blank"],
     ["   ", "whitespace"],
+    [" Identity", "leading whitespace"],
+    ["Identity ", "trailing whitespace"],
+    [".Identity", "leading dot"],
     ["docs/Identity", "slash"],
     ["Identity: v2", "colon"],
     ["Identity?", "question mark"],
     ["Identity#2", "hash"],
+    ["Auth|Identity", "pipe"],
+    ["Identity [v2]", "brackets"],
+    ["Identity\u0007", "control character"],
+    ["Q3%20Plan", "pre-encoded fragment"],
     ["Identity.md", "md suffix"],
     ["Identity.MD", "uppercase md suffix"]
   ])("rejects %j (%s) before contacting the app", async (title) => {
@@ -55,14 +62,11 @@ describe("node rename", () => {
   it("names an app that predates rename as outdated", async () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
-      return Response.json({ ok: false, error: { code: "not_found", message: "Bridge route not found", details: { path: "/v1/nodes/Auth/rename" } } });
+      return Response.json({ ok: false, error: { code: "not_found", message: "Node route not found" } });
     });
     const result = await run(["node", "rename", "Auth", "Identity"]);
     expect(result.code).toBe(1);
-    expect(JSON.parse(result.stderr).error).toMatchObject({
-      code: "app_outdated",
-      details: { path: "/v1/nodes/Auth/rename", hint: "Update the Enso app" }
-    });
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "app_outdated", details: { hint: "Update the Enso app" } });
   });
 
   it("passes a missing Node's not_found through", async () => {

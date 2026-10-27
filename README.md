@@ -210,7 +210,7 @@ enso portal remove "Detail" --dry-run
 
 Place a Note that already exists in the Vault. Write the markdown file first. There is no `node write` and no `node read`; open the file.
 
-`enso node rename "API" "Public API"` renames the Note's markdown file, rewrites `[[wikilinks]]` to it across the Vault, and updates Canvas references to it. Renaming the file by hand breaks its Links; use `node rename` instead. The new title is the filename stem: it has no `.md` suffix and cannot contain `/`, `:`, `?`, or `#`. Like `node move`, it acts on the Canvas the app has open. The result reports `from`, `to`, `changed`, `rewrittenWikilinks`, and `updatedCanvases`. An app that predates the command fails with `app_outdated`.
+`enso node rename "API" "Public API"` renames the Note's markdown file, rewrites `[[wikilinks]]` to it across the Vault, and updates Canvas references to it. Renaming the file by hand breaks its Links; use `node rename` instead. The new title is the filename stem: it has no `.md` suffix, cannot start with a dot or start or end with whitespace, and cannot contain `/`, `:`, `?`, `#`, `|`, `[`, `]`, control characters, or pre-encoded `%xx` sequences. Like `node move`, it finds the Node on the Canvas the app has open; to rename a Note placed elsewhere, `enso canvas open` a Canvas that holds it first. The result reports `from`, `to`, `changed`, `rewrittenWikilinks`, `unreadableNotes` (Notes whose wikilinks could not be scanned), and `updatedCanvases`. An app that predates the command fails with `app_outdated`.
 
 `enso node place "API" --appearance api` places a Note as a symbol Node.
 `enso node update "API" --appearance database` changes its visual form.
