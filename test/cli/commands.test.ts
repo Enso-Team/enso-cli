@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
@@ -88,6 +88,107 @@ describe("commands", () => {
       expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
     }
     expect(calls).toHaveLength(0);
+  });
+
+  it("creates a vault folder and sends every flag", async () => {
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder, "--name", "Research", "--sync", "--team", "team-1"]);
+    expect(result.code).toBe(0);
+    expect(statSync(folder).isDirectory()).toBe(true);
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0].url);
+    expect(url.pathname + url.search).toBe("/v1/vault/create?dryRun=false");
+    expect(calls[0].init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: folder, name: "Research", sync: true, team: "team-1", dryRun: false });
+  });
+
+  it("passes an existing folder through as a local vault by default", async () => {
+    const result = await run(["vault", "create", tempDir]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: tempDir, sync: false, dryRun: false });
+  });
+
+  it("leaves a missing vault folder uncreated on dry-run", async () => {
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(existsSync(folder)).toBe(false);
+    expect(new URL(calls[0].url).search).toBe("?dryRun=true");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: folder, sync: false, dryRun: true });
+  });
+
+  it("rejects a file, a missing parent, and --team without --sync before contacting the app", async () => {
+    const file = join(tempDir, "note.md");
+    writeFileSync(file, "# Note");
+    const attempts = [
+      [file],
+      [join(tempDir, "missing", "Research")],
+      [join(tempDir, "Research"), "--team", "team-1"]
+    ];
+    for (const args of attempts) {
+      const result = await run(["vault", "create", ...args]);
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+    }
+    expect(calls).toHaveLength(0);
+    expect(existsSync(join(tempDir, "missing"))).toBe(false);
+    expect(existsSync(join(tempDir, "Research"))).toBe(false);
+  });
+
+  it("removes the folder it created when the app refuses", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "vault_name_taken", message: "A vault named Research exists", details: {} } }));
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder, "--name", "Research"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("vault_name_taken");
+    expect(existsSync(folder)).toBe(false);
+  });
+
+  it("keeps an existing folder when the app refuses it", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "vault_exists", message: "Research already has a vault", details: {} } }));
+    const folder = join(tempDir, "Research");
+    mkdirSync(folder);
+    const result = await run(["vault", "create", folder]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("vault_exists");
+    expect(statSync(folder).isDirectory()).toBe(true);
+  });
+
+  it("reports a vault folder this terminal may not use as folder_access_denied", async () => {
+    const readOnly = join(tempDir, "read-only");
+    const unreadable = join(tempDir, "unreadable");
+    mkdirSync(readOnly);
+    mkdirSync(unreadable);
+    chmodSync(readOnly, 0o555);
+    chmodSync(unreadable, 0o000);
+    try {
+      const attempts = [
+        ["create", join(readOnly, "Research")],
+        ["create", join(unreadable, "Research")],
+        ["open", join(unreadable, "Research")]
+      ];
+      for (const args of attempts) {
+        const result = await run(["vault", ...args]);
+        expect(result.code).toBe(1);
+        expect(JSON.parse(result.stderr).error.code).toBe("folder_access_denied");
+      }
+    } finally {
+      chmodSync(readOnly, 0o755);
+      chmodSync(unreadable, 0o755);
+    }
+    expect(calls).toHaveLength(0);
+    expect(existsSync(join(readOnly, "Research"))).toBe(false);
+  });
+
+  it("reports an app without vault creation as outdated", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "not_found", message: "Bridge route not found" } }));
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder]);
+    expect(result.code).toBe(1);
+    const error = JSON.parse(result.stderr).error;
+    expect(error.code).toBe("app_outdated");
+    expect(error.details.hint).toBe("Update the Enso app, or create the vault from Enso's vault menu");
+    expect(existsSync(folder)).toBe(false);
   });
 
   it("passes Appearance on node place", async () => {

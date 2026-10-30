@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
+import { EnsoCliError, isMissingRoute, type EnsoEnvelope } from "./errors.js";
 
 // A Mark is canvas-owned writing: typed text an agent or person places on the Canvas, or
 // handwriting a person draws. It labels, decorates, or expands on the Canvas without being a
@@ -58,13 +58,8 @@ export function marksUnsupported(details: Record<string, unknown> = {}): EnsoCli
   });
 }
 
-/**
- * An app that predates Marks answers their routes with its generic missing-route error. A
- * missing Mark or Node carries its own message and passes through.
- */
+/** An app that predates Marks lacks their routes. A missing Mark or Node passes through. */
 export function requireMarkSupport(envelope: EnsoEnvelope): EnsoEnvelope {
-  if (!envelope.ok && envelope.error.code === "not_found" && envelope.error.message === "Bridge route not found") {
-    throw marksUnsupported(envelope.error.details ?? {});
-  }
+  if (!envelope.ok && isMissingRoute(envelope.error)) throw marksUnsupported(envelope.error.details ?? {});
   return envelope;
 }
