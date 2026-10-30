@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { appDataDir, currentPlatform } from "./platform-paths.js";
 
 export const defaultBridgeUrl = process.env.ENSO_BRIDGE_URL ?? "http://127.0.0.1:17650";
 
@@ -13,9 +13,9 @@ const configSchema = z.object({
 
 export type EnsoConfig = z.infer<typeof configSchema>;
 
-export function configDir(): string {
+export function configDir(context = currentPlatform()): string {
   if (process.env.ENSO_CLI_CONFIG_DIR) return process.env.ENSO_CLI_CONFIG_DIR;
-  return join(homedir(), "Library", "Application Support", "Enso CLI");
+  return join(appDataDir(context), "Enso CLI");
 }
 
 export function configPath(): string {

@@ -4,7 +4,7 @@ Local CLI for the Enso app. Markdown files live in the folder Enso has open. Thi
 
 ## Quick start
 
-Requirements: macOS, Enso app running, Node.js 20+.
+Requirements: Node.js 20+ and a running Enso app: the Mac app, or the desktop app on Linux or Windows.
 
 ```sh
 npm install -g @enso-app/cli

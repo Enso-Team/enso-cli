@@ -1,17 +1,21 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { appDataDir, currentPlatform } from "./platform-paths.js";
 
 // The Mac app keeps each Vault's Note identities in `Vaults/<vaultID>/index.json` inside its
-// sandbox container. The CLI reads it to learn a Note's id. The app owns the file, so the CLI
-// never writes it.
+// sandbox container. The desktop app on Linux and Windows keeps them in
+// `DesktopVaults/<vaultID>/index.json` under its user data folder. The CLI reads the index to
+// learn a Note's id. The app owns the file, so the CLI never writes it.
 
 type IndexEntry = { path?: unknown; kind?: unknown; uuid?: unknown };
 type VaultIndex = { vaultRootPath?: unknown; entries?: unknown };
 
-export function defaultVaultIndexRoot(): string {
-  return process.env.ENSO_VAULT_INDEX_ROOT
-    ?? join(homedir(), "Library/Containers/com.kaungzinye.enso/Data/Library/Application Support/Enso/Vaults");
+export function defaultVaultIndexRoot(context = currentPlatform()): string {
+  if (process.env.ENSO_VAULT_INDEX_ROOT) return process.env.ENSO_VAULT_INDEX_ROOT;
+  if (context.platform === "darwin") {
+    return join(context.home, "Library/Containers/com.kaungzinye.enso/Data/Library/Application Support/Enso/Vaults");
+  }
+  return join(appDataDir(context), "Enso", "DesktopVaults");
 }
 
 function readIndex(file: string): VaultIndex | undefined {
