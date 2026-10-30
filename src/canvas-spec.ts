@@ -14,9 +14,23 @@ const directionHintSchema = z.preprocess(
 );
 
 // A member names a Note that already exists in the Vault, by title or Vault-relative path.
+// Its `excerpt` quotes a passage of that Note exactly as the file holds it, and its `mark` is
+// typed text about it. Layout places both beside the member's Node.
 const memberSchema = z.union([
-  nonEmpty.transform((title) => ({ title, appearance: undefined as z.infer<typeof nodeAppearanceSchema> | undefined })),
-  z.object({ title: nonEmpty, appearance: nodeAppearanceSchema.optional() }).strict()
+  nonEmpty.transform((title) => ({
+    title,
+    appearance: undefined as z.infer<typeof nodeAppearanceSchema> | undefined,
+    excerpt: undefined as string | undefined,
+    mark: undefined as string | undefined
+  })),
+  z.object({ title: nonEmpty, appearance: nodeAppearanceSchema.optional(), excerpt: nonEmpty.optional(), mark: nonEmpty.optional() }).strict()
+]);
+
+// A canvas Mark speaks for the whole drawing, such as its takeaway or a legend. Layout stacks
+// them above the drawing in declaration order.
+const canvasMarkSchema = z.union([
+  nonEmpty.transform((text) => ({ text, width: undefined as number | undefined })),
+  z.object({ text: nonEmpty, width: z.number().finite().positive().optional() }).strict()
 ]);
 
 const edgeSchema = z.object({
@@ -38,7 +52,8 @@ export const canvasSpecSchema = z.object({
   direction: directionHintSchema.default("TB"),
   members: z.array(memberSchema).min(1),
   edges: z.array(edgeSchema).default([]),
-  clusters: z.array(clusterSchema).default([])
+  clusters: z.array(clusterSchema).default([]),
+  marks: z.array(canvasMarkSchema).default([])
 }).strict();
 
 export type CanvasSpec = z.infer<typeof canvasSpecSchema>;
@@ -159,12 +174,16 @@ export const canvasSpecContract = {
   graph: {
     canvas: "target Canvas name, or current",
     direction: { values: ["TB", "LR"], aliases: { "top-bottom": "TB", "left-right": "LR" }, default: "TB" },
-    members: "sequence of Notes that already exist in the Vault, each a title or Vault-relative path, or a { title, appearance } mapping; a spec whose members are all symbols lays out at symbol density",
+    members: "sequence of Notes that already exist in the Vault, each a title or Vault-relative path, or a { title, appearance, excerpt, mark } mapping; a spec whose members are all symbols lays out at symbol density",
+    "members.excerpt": "a passage of the member's Note, quoted exactly as the markdown file holds it, placed as an Excerpt beside the member's Node",
+    "members.mark": "typed text about the member, placed as a Mark beside its Node and connected to it",
     edges: "sequence of { from, to } with optional label, direction, color",
-    clusters: "sequence of { name, members } with optional semantic color"
+    clusters: "sequence of { name, members } with optional semantic color",
+    marks: "sequence of canvas-wide Marks, each text or { text, width }, stacked above the drawing: the takeaway, a legend"
   },
+  annotations: "Excerpts and member Marks sit in a lane beside their Node, to the right for TB and below for LR. Regions grow to hold them.",
   color: VISUAL_COLOR_GRAMMAR,
-  output: "a canvas apply patch of place/link/region operations; see `enso canvas apply --schema`",
+  output: "a canvas apply patch of place/link/region/mark operations, plus the planned Excerpts; see `enso canvas apply --schema`",
   determinism: "identical spec input yields byte-identical geometry",
   example: {
     canvas: "Request Flow",

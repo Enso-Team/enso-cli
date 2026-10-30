@@ -4,6 +4,7 @@
 import { compareStrings, type CanvasSpec } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
 import { parseCanvasIntent } from "./canvas-intent.js";
+import { markWorldBox } from "./mark-model.js";
 
 // Two densities, one per text role. Cards carry 17pt reading text and lay out four or
 // five across at zoom 1. Symbols carry 14pt diagram text under a 56pt icon, so seven
@@ -30,6 +31,16 @@ export const LAYOUT_GEOMETRY = CARD_GEOMETRY;
 
 export type LayoutGeometry = typeof CARD_GEOMETRY | typeof SYMBOL_GEOMETRY;
 
+/** Spacing steps and sizes a placement pass reads, whether a density or a footprint grown from one. */
+type Geometry = Record<keyof typeof CARD_GEOMETRY, number>;
+
+/**
+ * Text placed beside a Node. `width` is the lane's wrap width beside a TB Node, `gap` its
+ * distance from the Node, `stackGap` the space between an Excerpt and a Mark in one lane,
+ * and `canvasGap` the space between the drawing and the canvas Marks stacked above it.
+ */
+export const ANNOTATION_GEOMETRY = { width: 260, gap: 24, stackGap: 12, canvasGap: 40, canvasWidth: 520 } as const;
+
 export function isSymbolAppearance(appearance: string | undefined): boolean {
   return appearance !== undefined && !["card", "decision", "terminal"].includes(appearance);
 }
@@ -44,7 +55,9 @@ const ORDERING_SWEEPS = 4;
 
 export type LayoutNode = { title: string; appearance?: string; x: number; y: number };
 export type LayoutRegion = { name: string; color?: string; x: number; y: number; width: number; height: number };
-export type CanvasLayout = { nodes: LayoutNode[]; regions: LayoutRegion[] };
+export type LayoutText = { text: string; x: number; y: number; width: number };
+export type LayoutAnnotation = LayoutText & { kind: "excerpt" | "mark"; member: string };
+export type CanvasLayout = { nodes: LayoutNode[]; regions: LayoutRegion[]; annotations: LayoutAnnotation[]; canvasMarks: LayoutText[] };
 
 /**
  * Layered (Sugiyama-style) placement: rank along the direction hint, order within each
@@ -62,16 +75,18 @@ export function computeCanvasLayout(spec: CanvasSpec, spacing = 1): CanvasLayout
   const clusters = clusterIndexes(spec, position);
   const layers = orderLayers(titles, edges, ranks, clusters);
   const geometry = layoutGeometry(spec);
-  const nodes = spec.clusters.length === 0
-    ? placeNodes(spec, layers, spacing, geometry)
-    : placeGroups(spec, groupLayers(spec, layers, ranks, clusters), spacing, geometry);
-  const byTitle = new Map(nodes.map((node) => [node.title, node]));
+  const lane = annotationLane(spec, spacing, geometry);
+  const footprint = lane.geometry;
+  const footprints = spec.clusters.length === 0
+    ? placeNodes(spec, layers, spacing, footprint)
+    : placeGroups(spec, groupLayers(spec, layers, ranks, clusters), spacing, footprint);
+  const byTitle = new Map(footprints.map((node) => [node.title, node]));
   const regions = spec.clusters.map((cluster) => {
     const members = cluster.members.map((member) => byTitle.get(member)!);
-    const left = Math.min(...members.map((member) => member.x)) - geometry.nodeWidth / 2 - geometry.clusterPadding;
-    const right = Math.max(...members.map((member) => member.x)) + geometry.nodeWidth / 2 + geometry.clusterPadding;
-    const top = Math.min(...members.map((member) => member.y)) - geometry.nodeHeight / 2 - geometry.clusterPadding;
-    const bottom = Math.max(...members.map((member) => member.y)) + geometry.nodeHeight / 2 + geometry.clusterPadding;
+    const left = Math.min(...members.map((member) => member.x)) - footprint.nodeWidth / 2 - footprint.clusterPadding;
+    const right = Math.max(...members.map((member) => member.x)) + footprint.nodeWidth / 2 + footprint.clusterPadding;
+    const top = Math.min(...members.map((member) => member.y)) - footprint.nodeHeight / 2 - footprint.clusterPadding;
+    const bottom = Math.max(...members.map((member) => member.y)) + footprint.nodeHeight / 2 + footprint.clusterPadding;
     return {
       name: cluster.name,
       ...(cluster.color === undefined ? {} : { color: cluster.color }),
@@ -81,7 +96,91 @@ export function computeCanvasLayout(spec: CanvasSpec, spacing = 1): CanvasLayout
       height: bottom - top
     };
   });
-  return { nodes, regions };
+  // A footprint holds its Node at the top-left and the member's annotations in the lane
+  // beside it, to the right for TB and below for LR.
+  const nodes = footprints.map((node) => ({
+    ...node,
+    x: node.x - footprint.nodeWidth / 2 + geometry.nodeWidth / 2,
+    y: node.y - footprint.nodeHeight / 2 + geometry.nodeHeight / 2
+  }));
+  const annotations = spec.members.flatMap((member) => {
+    const node = nodes.find((placed) => placed.title === member.title)!;
+    let x = spec.direction === "TB" ? node.x + geometry.nodeWidth / 2 + ANNOTATION_GEOMETRY.gap : node.x - geometry.nodeWidth / 2;
+    let y = spec.direction === "TB" ? node.y - geometry.nodeHeight / 2 : node.y + geometry.nodeHeight / 2 + ANNOTATION_GEOMETRY.gap;
+    return memberTexts(member).map(({ kind, text }) => {
+      const placed = { kind, member: member.title, text, x, y, width: lane.width };
+      y = markWorldBox(placed).maxY + ANNOTATION_GEOMETRY.stackGap;
+      x = placed.x;
+      return placed;
+    });
+  });
+  return { nodes, regions, annotations, canvasMarks: stackCanvasMarks(spec, geometry, nodes, regions, annotations) };
+}
+
+type MemberText = { kind: "excerpt" | "mark"; text: string };
+
+function memberTexts(member: CanvasSpec["members"][number]): MemberText[] {
+  return [
+    ...(member.excerpt === undefined ? [] : [{ kind: "excerpt" as const, text: member.excerpt }]),
+    ...(member.mark === undefined ? [] : [{ kind: "mark" as const, text: member.mark }])
+  ];
+}
+
+/**
+ * The lane each member's annotations need, folded into a footprint geometry the placement
+ * passes lay out unchanged. TB lanes are a fixed wrap width to the right of the Node, as
+ * tall as the tallest stack. LR lanes sit below the Node, wrapping at the column width less
+ * a gap on each side. A spec without annotations keeps its density geometry.
+ */
+function annotationLane(spec: CanvasSpec, spacing: number, geometry: LayoutGeometry): { geometry: Geometry; width: number } {
+  const width = spec.direction === "TB" ? ANNOTATION_GEOMETRY.width : spacing * geometry.colStep - 2 * ANNOTATION_GEOMETRY.gap;
+  const stacks = spec.members.map((member) => {
+    const texts = memberTexts(member);
+    return texts.length === 0 ? 0 : texts.reduce((height, { text }) => {
+      const box = markWorldBox({ x: 0, y: 0, width, text });
+      return height + box.maxY - box.minY;
+    }, ANNOTATION_GEOMETRY.stackGap * (texts.length - 1));
+  });
+  const tallest = Math.max(0, ...stacks);
+  if (tallest === 0) return { geometry, width };
+  const nodeWidth = spec.direction === "TB" ? geometry.nodeWidth + ANNOTATION_GEOMETRY.gap + width : Math.max(geometry.nodeWidth, width);
+  const nodeHeight = spec.direction === "TB" ? Math.max(geometry.nodeHeight, tallest) : geometry.nodeHeight + ANNOTATION_GEOMETRY.gap + tallest;
+  // Placement multiplies each step by `spacing`, so a lane's fixed size goes in divided by it:
+  // the distance between centers grows by the lane once and the gaps alone scale. An LR lane
+  // wraps inside its column, so the column step stays as it is.
+  return {
+    width,
+    geometry: {
+      ...geometry,
+      nodeWidth,
+      nodeHeight,
+      colStep: spec.direction === "TB" ? geometry.colStep + (nodeWidth - geometry.nodeWidth) / spacing : geometry.colStep,
+      rowStep: geometry.rowStep + (nodeHeight - geometry.nodeHeight) / spacing
+    }
+  };
+}
+
+/** Canvas Marks stack above everything the layout places, flush with its left edge. */
+function stackCanvasMarks(spec: CanvasSpec, geometry: LayoutGeometry, nodes: LayoutNode[], regions: LayoutRegion[], annotations: LayoutAnnotation[]): LayoutText[] {
+  if (spec.marks.length === 0) return [];
+  const boxes = [
+    ...nodes.map((node) => ({ minX: node.x - geometry.nodeWidth / 2, minY: node.y - geometry.nodeHeight / 2 })),
+    ...regions.map((region) => ({ minX: region.x - region.width / 2, minY: region.y - region.height / 2 })),
+    ...annotations.map((annotation) => ({ minX: annotation.x, minY: annotation.y }))
+  ];
+  const left = Math.min(...boxes.map((box) => box.minX));
+  const top = Math.min(...boxes.map((box) => box.minY));
+  const sized = spec.marks.map((mark) => {
+    const width = mark.width ?? ANNOTATION_GEOMETRY.canvasWidth;
+    const box = markWorldBox({ x: 0, y: 0, width, text: mark.text });
+    return { text: mark.text, width, height: box.maxY - box.minY };
+  });
+  let y = top - ANNOTATION_GEOMETRY.canvasGap - sized.reduce((total, mark) => total + mark.height, ANNOTATION_GEOMETRY.stackGap * (sized.length - 1));
+  return sized.map(({ text, width, height }) => {
+    const placed = { text, x: left, y, width };
+    y += height + ANNOTATION_GEOMETRY.stackGap;
+    return placed;
+  });
 }
 
 export type RegionWarning = { code: "region_overlap" | "region_contains_nonmember"; message: string; details: Record<string, unknown>; hint: string };
@@ -92,7 +191,7 @@ export type RegionWarning = { code: "region_overlap" | "region_contains_nonmembe
  * enclose a non-member; this check guards that promise and any layout edited afterwards.
  * Regions placed inside one another are never compiled: a member belongs to one cluster.
  */
-export function regionWarnings(spec: CanvasSpec, layout: CanvasLayout): RegionWarning[] {
+export function regionWarnings(spec: CanvasSpec, layout: Pick<CanvasLayout, "nodes" | "regions">): RegionWarning[] {
   const geometry = layoutGeometry(spec);
   const owner = new Map(spec.clusters.flatMap((cluster) => cluster.members.map((member) => [member, cluster.name] as const)));
   const warnings: RegionWarning[] = [];
@@ -127,7 +226,7 @@ export type LinkCrossing = { links: [{ from: string; to: string }, { from: strin
  * share a Node never count. The app draws curves, so this estimates the crossings its
  * diagnostics will report; pairs come in edge declaration order.
  */
-export function linkCrossings(spec: CanvasSpec, layout: CanvasLayout): LinkCrossing[] {
+export function linkCrossings(spec: CanvasSpec, layout: Pick<CanvasLayout, "nodes">): LinkCrossing[] {
   const at = new Map(layout.nodes.map((node) => [node.title, node]));
   const edges = spec.edges.filter((edge) => edge.from !== edge.to);
   const crossings: LinkCrossing[] = [];
@@ -155,6 +254,11 @@ function boxesIntersect(a: CenteredBox, b: CenteredBox): boolean {
   return Math.abs(a.x - b.x) < (a.width + b.width) / 2 && Math.abs(a.y - b.y) < (a.height + b.height) / 2;
 }
 
+/** The Excerpts a layout places once its Nodes exist, each beside its member's Node. */
+export function plannedExcerpts(layout: CanvasLayout): Array<{ note: string; text: string; x: number; y: number; width: number }> {
+  return layout.annotations.filter((annotation) => annotation.kind === "excerpt").map(({ member, text, x, y, width }) => ({ note: member, text, x, y, width }));
+}
+
 /** Compile a canvas spec into an apply patch with final create geometry. */
 // Spacing scales the distance between node centers and nothing else, so every extra
 // point goes into the gaps where link labels render. Node and region sizes stay fixed.
@@ -171,6 +275,10 @@ export function compileCanvasSpec(spec: CanvasSpec, spacing = 1): CanvasIntent {
       ...(edge.color === undefined ? {} : { color: edge.color }),
       ...(edge.direction === undefined ? {} : { direction: edge.direction })
     })),
+    marks: [
+      ...layout.annotations.filter((annotation) => annotation.kind === "mark").map(({ member, text, x, y, width }) => ({ mode: "create", text, x, y, width, connect: [member] })),
+      ...layout.canvasMarks.map(({ text, x, y, width }) => ({ mode: "create", text, x, y, width }))
+    ],
     primitives: layout.regions.map((region) => ({
       kind: "region",
       mode: "create",
@@ -265,7 +373,7 @@ function orderLayers(titles: string[], edges: Edge[], ranks: number[], clusters:
 }
 
 /** Centered placement for a spec without clusters: each rank centered on its own. */
-function placeNodes(spec: CanvasSpec, layers: number[][], spacing: number, geometry: LayoutGeometry): LayoutNode[] {
+function placeNodes(spec: CanvasSpec, layers: number[][], spacing: number, geometry: Geometry): LayoutNode[] {
   const nodes: LayoutNode[] = [];
   layers.forEach((layer, rank) => {
     layer.forEach((node, order) => {
@@ -329,7 +437,7 @@ function groupLayers(spec: CanvasSpec, layers: number[][], ranks: number[], clus
  * same way where a cluster ends and an overlapping group begins on the next rank. The
  * whole drawing is centered at the end, not each rank.
  */
-function placeGroups(spec: CanvasSpec, groups: Group[], spacing: number, geometry: LayoutGeometry): LayoutNode[] {
+function placeGroups(spec: CanvasSpec, groups: Group[], spacing: number, geometry: Geometry): LayoutNode[] {
   const vertical = spec.direction === "TB";
   const alongStep = spacing * (vertical ? geometry.colStep : geometry.rowStep);
   const acrossStep = spacing * (vertical ? geometry.rowStep : geometry.colStep);

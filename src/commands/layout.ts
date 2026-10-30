@@ -1,11 +1,16 @@
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { canvasSpecContract, parseCanvasSpec, specError } from "../canvas-spec.js";
-import { compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, regionWarnings } from "../layout.js";
-import { centeringOffset, patchBounds, existingContent, translatePatch } from "../layout-centering.js";
+import { compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, plannedExcerpts, regionWarnings } from "../layout.js";
+import { checkExcerptSource } from "../excerpt-model.js";
+import { markWorldBox } from "../mark-model.js";
+import { centeringOffset, contextObject, patchBounds, existingContent, readArray, translatePatch } from "../layout-centering.js";
+import { noteMatches } from "../note-identity.js";
+import type { CanvasIntent } from "../canvas-intent.js";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { applyCanvasIntent, placementReport, requestCanvasContext } from "./canvas.js";
+import { moveExcerpt, placeNoteExcerpt } from "./excerpt.js";
 
 export function registerLayout(program: Command): void {
   program
@@ -39,14 +44,33 @@ export function registerLayout(program: Command): void {
       const layout = computeCanvasLayout(spec, spacing);
       const warnings = regionWarnings(spec, layout);
       const crossings = linkCrossings(spec, layout);
+      const planned = plannedExcerpts(layout);
       // Compiled geometry is relative to the origin. Applying it reads the target Canvas
       // first and moves the whole cluster to where the app looks; --dry-run reports the
       // same translated coordinates the apply would write.
       const context = options.apply ? await canvasContext(spec.canvas) : undefined;
+      // A rerun moves the Excerpts and Marks an earlier layout placed instead of adding copies.
+      const onCanvas = annotationsOnCanvas(context?.ok ? context.data : undefined);
+      const reusedExcerpts = planned.map((excerpt) => onCanvas.excerptId(excerpt.note, excerpt.text));
+      // Excerpts quote their Notes' files. A passage the file lacks fails before anything lands.
+      if (options.apply && reusedExcerpts.some((id) => id === undefined)) {
+        const vault = await vaultPath();
+        planned.forEach((excerpt, index) => { if (reusedExcerpts[index] === undefined) checkExcerptSource(vault, excerpt.note, excerpt.text); });
+      }
       const existing = existingContent(context?.ok ? context.data : undefined);
-      const offset = options.apply ? centeringOffset(patchBounds(compiled, layoutGeometry(spec)), existing) : { dx: 0, dy: 0 };
+      const offset = options.apply ? centeringOffset(patchBounds(compiled, layoutGeometry(spec), planned.map(markWorldBox)), existing) : { dx: 0, dy: 0 };
+      const excerpts = planned.map((excerpt, index) => ({
+        ...excerpt,
+        x: excerpt.x + offset.dx,
+        y: excerpt.y + offset.dy,
+        ...(reusedExcerpts[index] === undefined ? {} : { id: reusedExcerpts[index] })
+      }));
       const placement = placementReport(offset, existing === undefined);
-      const patch = translatePatch(compiled, offset);
+      const { intent: reusing, markIds } = reuseMarks(compiled, onCanvas);
+      const reused = markIds.length + reusedExcerpts.filter((id) => id !== undefined).length > 0
+        ? { reused: { excerpts: reusedExcerpts.filter((id) => id !== undefined), marks: markIds } }
+        : {};
+      const patch = translatePatch(reusing, offset);
       if (options.apply) {
         let applied: EnsoEnvelope;
         try {
@@ -59,19 +83,37 @@ export function registerLayout(program: Command): void {
           if (relayout) return { ok: false, error: { ...relayout.body, details: { ...applied.error.details, ...relayout.body.details } } };
           return applied;
         }
-        return {
-          ok: true,
-          data: {
-            ...summary(spec.canvas, spec.direction, patch),
-            warnings,
-            crossings,
-            placement,
-            ...validationSummary(applied.data),
-            applied: applied.data
-          }
+        const landed = {
+          ...summary(spec.canvas, spec.direction, patch),
+          warnings,
+          crossings,
+          placement,
+          ...validationSummary(applied.data),
+          applied: applied.data
         };
+        if (options.dryRun) return { ok: true, data: { ...landed, ...reused, excerpts: excerpts.map((excerpt) => ({ ...excerpt, validated: "locally" })) } };
+        const placed: Array<Omit<typeof excerpts[number], "id"> & { id: unknown }> = [];
+        for (const excerpt of excerpts) {
+          const result = await ("id" in excerpt
+            ? moveExcerpt(String(excerpt.id), { x: excerpt.x, y: excerpt.y, width: excerpt.width })
+            : placeNoteExcerpt({ ...excerpt, dryRun: false })).catch(errorEnvelope);
+          if (!result.ok) {
+            const created = typeof result.error.details?.excerptId === "string";
+            return { ok: false, error: { ...result.error, details: {
+              ...result.error.details,
+              note: excerpt.note,
+              layout: landed,
+              excerpts: placed,
+              hint: created
+                ? `${String(result.error.details?.hint)}. The layout landed. Place the remaining Excerpts with \`enso excerpt create --note\``
+                : "The layout landed. Place this and the remaining Excerpts with `enso excerpt create --note`"
+            } } };
+          }
+          placed.push({ ...excerpt, id: (result.data as { excerpt?: { id?: unknown } } | undefined)?.excerpt?.id });
+        }
+        return { ok: true, data: { ...landed, ...reused, excerpts: placed } };
       }
-      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch), warnings, crossings, patch } };
+      return { ok: true, data: { ...summary(spec.canvas, spec.direction, patch), warnings, crossings, patch, excerpts } };
     });
 }
 
@@ -86,6 +128,61 @@ async function canvasContext(canvas: string): Promise<EnsoEnvelope | undefined> 
   } catch {
     return undefined;
   }
+}
+
+type OnCanvas = {
+  excerptId: (note: string, text: string) => string | undefined;
+  markId: (text: string, note: string | undefined) => string | undefined;
+};
+
+/**
+ * The Excerpts and typed Marks a target Canvas holds, matched by text. A member's Excerpt
+ * also matches the member's Node, a member's Mark its connection to that Node, and a
+ * canvas Mark a Mark connected to nothing.
+ */
+function annotationsOnCanvas(context: unknown): OnCanvas {
+  const data = contextObject(context);
+  const nodes = data ? readArray(data, "nodes") : [];
+  const excerpts = data ? readArray(data, "excerpts") : [];
+  const marks = data ? readArray(data, "marks").filter((mark) => mark.kind !== "strokes") : [];
+  const nodeId = (note: string): string | undefined => {
+    const node = nodes.find((item) => noteMatches({ id: item.id as string, title: item.title as string, ref: (item.ref as string | undefined) ?? undefined }, note));
+    return typeof node?.id === "string" ? node.id : undefined;
+  };
+  const same = (a: unknown, b: string): boolean => typeof a === "string" && a.trim() === b.trim();
+  const connected = (item: Record<string, unknown>): string[] => Array.isArray(item.connectedNodeIDs) ? item.connectedNodeIDs.map(String) : [];
+  return {
+    excerptId(note, text) {
+      const node = nodeId(note);
+      const match = node === undefined ? undefined : excerpts.find((item) => same(item.text, text) && item.linkedNodeID === node);
+      return typeof match?.id === "string" ? match.id : undefined;
+    },
+    markId(text, note) {
+      const node = note === undefined ? undefined : nodeId(note);
+      if (note !== undefined && node === undefined) return undefined;
+      const match = marks.find((item) => same(item.text, text) && (node === undefined ? connected(item).length === 0 : connected(item).includes(node)));
+      return typeof match?.id === "string" ? match.id : undefined;
+    }
+  };
+}
+
+/** Mark creates the Canvas already answers become position updates of those Marks. */
+function reuseMarks(intent: CanvasIntent, onCanvas: OnCanvas): { intent: CanvasIntent; markIds: string[] } {
+  const markIds: string[] = [];
+  const marks = intent.marks.map((mark) => {
+    if (mark.mode !== "create") return mark;
+    const id = onCanvas.markId(mark.text, mark.connect?.[0]);
+    if (id === undefined) return mark;
+    markIds.push(id);
+    return { mode: "update" as const, id, x: mark.x, y: mark.y, ...(mark.width === undefined ? {} : { width: mark.width }) };
+  });
+  return { intent: { ...intent, marks }, markIds };
+}
+
+async function vaultPath(): Promise<string> {
+  const vault = await new BridgeClient().request("/v1/vault/current");
+  if (!vault.ok) throw new EnsoCliError(vault.error.code, vault.error.message, vault.error.details ?? {});
+  return (vault.data as { path: string }).path;
 }
 
 function spacingFactor(raw: string | undefined): number {
@@ -144,10 +241,10 @@ function validationSummary(data: unknown): Record<string, unknown> {
   return { validation: { bridgeValidated, locallyValidatedOnly: deferredUntilApply } };
 }
 
-function summary(canvas: string, direction: string, patch: { nodes: unknown[]; links: unknown[]; primitives: unknown[] }): Record<string, unknown> {
+function summary(canvas: string, direction: string, patch: { nodes: unknown[]; links: unknown[]; primitives: unknown[]; marks: unknown[] }): Record<string, unknown> {
   return {
     canvas,
     direction,
-    compiled: { nodes: patch.nodes.length, links: patch.links.length, regions: patch.primitives.length }
+    compiled: { nodes: patch.nodes.length, links: patch.links.length, regions: patch.primitives.length, ...(patch.marks.length > 0 ? { marks: patch.marks.length } : {}) }
   };
 }

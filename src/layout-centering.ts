@@ -62,10 +62,11 @@ export function centeringOffset(cluster: WorldBox | undefined, existing: Existin
 }
 
 /**
- * Bounding box of a compiled patch, node boxes and primitive boxes together. Nodes measure
- * at the geometry the patch was laid out with.
+ * Bounding box of a compiled patch, node boxes and primitive boxes together, plus any
+ * `extra` boxes placed outside the patch. Nodes measure at the geometry the patch was laid
+ * out with.
  */
-export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry): WorldBox | undefined {
+export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry, extra: WorldBox[] = []): WorldBox | undefined {
   const nodes = patch.nodes.flatMap((node) => {
     const [x, y] = [coordinate(node, "x"), coordinate(node, "y")];
     const size = geometry ?? (isSymbolAppearance("appearance" in node ? node.appearance : undefined) ? SYMBOL_GEOMETRY : LAYOUT_GEOMETRY);
@@ -73,7 +74,7 @@ export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry): Wor
   });
   const primitives = patch.primitives.flatMap((primitive) => primitiveBox(primitive as Record<string, unknown>));
   const marks = patch.marks.flatMap((mark) => mark.mode === "create" ? [markWorldBox(mark)] : []);
-  return unionBoxes([...nodes, ...primitives, ...marks]);
+  return unionBoxes([...nodes, ...primitives, ...marks, ...extra]);
 }
 
 /**
@@ -124,14 +125,14 @@ function coordinate(value: unknown, key: string): number | undefined {
   return finiteNumber(current) ? current : undefined;
 }
 
-function contextObject(context: unknown): Record<string, unknown> | undefined {
+export function contextObject(context: unknown): Record<string, unknown> | undefined {
   if (!context || typeof context !== "object") return undefined;
   const data = context as Record<string, unknown>;
   if (Array.isArray(data.nodes) || Array.isArray(data.diagramPrimitives)) return data;
   return data.context && typeof data.context === "object" ? contextObject(data.context) : data;
 }
 
-function readArray(data: Record<string, unknown>, key: string): Record<string, unknown>[] {
+export function readArray(data: Record<string, unknown>, key: string): Record<string, unknown>[] {
   const value = data[key];
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
 }
