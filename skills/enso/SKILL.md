@@ -24,6 +24,8 @@ Each Note is a durable explanation of its concept in prose. Read and edit its ma
 
 A Mark is typed text on the Canvas that labels, decorates, or expands on it without being a concept. Use one where a Note would be hollow, such as a heading, lane label, legend, or callout. Put a question or unverified claim addressed to the user in a Mark connected to its Node, and keep durable reasoning in the Note. When the user answers one of your Marks from this session, fold the answer into the Note or delete the Mark. Leave the user's Marks and Marks from earlier sessions in place unless asked.
 
+An Excerpt shows a passage of a Note on the Canvas, linked from that Note's node. Use one to surface the sentence or code a reader should see without opening the Note. Place it with `enso excerpt create --note <node> --text "<passage>" --x <n> --y <n>`, quoting the passage exactly as the markdown file holds it. The Note owns the text, so `enso excerpt source <id> --text` edits the Note, and `enso excerpt delete` removes only the placement.
+
 ## Build
 
 Before a first build or a multi-element revision, read [references/canvas-operations.md](references/canvas-operations.md) for file checks, creation, and recovery. Use `enso layout` for a new arrangement of Notes whose relationships, direction, and clusters determine placement. Use `canvas apply` for precise geometry, mixed elements, or multi-element revisions, collecting a coherent change in one temporary intent. Use a typed command for a single edit. Dry-run CLI mutations before applying them.
