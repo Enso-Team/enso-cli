@@ -42,6 +42,7 @@ describe("commands", () => {
     [["node", "place", "Auth"], "/v1/nodes?dryRun=false", "POST"],
     [["node", "move", "Auth", "--x", "1", "--y", "2"], "/v1/nodes/Auth?dryRun=false", "PUT"],
     [["node", "remove", "Auth"], "/v1/nodes/Auth?dryRun=false", "DELETE"],
+    [["node", "rename", "Auth", "Identity"], "/v1/nodes/Auth/rename?dryRun=false", "POST"],
     [["node", "neighbors", "Auth", "--depth", "2"], "/v1/nodes/Auth/neighbors?depth=2", "GET"],
     [["portal", "create", "--title", "Auth Detail", "--subcanvas-ref", "Canvases/Auth%20Detail.json"], "/v1/nodes?dryRun=false", "POST"],
     [["portal", "open", "Auth Detail"], "/v1/nodes/Auth%20Detail/subcanvas/open?dryRun=false", "POST"],

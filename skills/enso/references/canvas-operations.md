@@ -48,7 +48,7 @@ For a requested overview, `enso canvas fit <target>` frames the open Canvas cont
 
 Write the source sentence containing `[[Target]]` before creating its Link. The intent selects which mentions appear as visible relationships. Choose each Link's `direction` deliberately: `directed` for a one-way relationship, `bidirectional` when both Notes mention each other and the relationship runs both ways, or `undirected` for a symmetric association. The default arrowhead points at the target.
 
-`enso node remove` removes a placement and preserves its markdown file. `enso link remove` removes a curve from this Canvas and preserves the prose. `enso link delete` deletes the mentioning sentence; removing the last mention removes the Link across Canvases. A Link endpoint move rewrites its mention. Use these shared-file effects when deciding which operation fits the user's request.
+`enso node remove` removes a placement and preserves its markdown file. `enso node rename` renames the markdown file and rewrites its `[[wikilinks]]` across the Vault and its Canvas references. `enso link remove` removes a curve from this Canvas and preserves the prose. `enso link delete` deletes the mentioning sentence; removing the last mention removes the Link across Canvases. A Link endpoint move rewrites its mention. Use these shared-file effects when deciding which operation fits the user's request.
 
 ## Recover from failure
 
