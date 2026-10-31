@@ -2,7 +2,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BridgeClient, type RequestOptions } from "../client.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { passageSelection, requireExcerptSupport } from "../excerpt-model.js";
 import { noteMatches } from "../note-identity.js";
 import { indexedNoteID } from "../vault-index.js";
@@ -94,12 +94,14 @@ async function noteNode(selector: string): Promise<NoteNode> {
   return matches[0];
 }
 
-async function createFromNote(options: CreateOptions): Promise<EnsoEnvelope> {
+/**
+ * Places a passage of a Note as an Excerpt from the Note's node on the open Canvas. The app's
+ * create route takes a position alone, so width, font size, and alignment follow as an update.
+ */
+export async function placeNoteExcerpt(options: CreateOptions & { note: string }): Promise<EnsoEnvelope> {
   if (options.x === undefined || options.y === undefined) throw new InvalidArgumentError("--note requires --x and --y");
-  if (options.width !== undefined || options.fontSize !== undefined || options.align !== undefined) {
-    throw new InvalidArgumentError("set width, font size, and alignment with `enso excerpt update` after creating");
-  }
-  const node = await noteNode(options.note!);
+  const formatting = placementBody({ width: options.width, fontSize: options.fontSize, align: options.align });
+  const node = await noteNode(options.note);
   if (!node.ref) throw new EnsoCliError("invalid_input", "The note node has no file in the vault", { node: node.id });
   const { path: vault } = unwrap<{ path: string }>(await request("/v1/vault/current"));
   const noteID = node.noteID ?? options.noteId ?? indexedNoteID(vault, node.ref);
@@ -115,7 +117,21 @@ async function createFromNote(options: CreateOptions): Promise<EnsoEnvelope> {
   if (!result.ok && result.error.code === "stale_selection") {
     result.error.details = { ...result.error.details, hint: "The app holds a newer version of the note than its file. Let Enso save the note, then retry" };
   }
-  return result;
+  const id = result.ok ? (result.data as { excerpt?: { id?: unknown } } | undefined)?.excerpt?.id : undefined;
+  if (!result.ok || options.dryRun || Object.keys(formatting).length === 0 || typeof id !== "string") return result;
+  // The Excerpt exists once create succeeds, so a formatting failure names it for an update.
+  const formatted = await mutate(excerptPath(id), "PUT", formatting, false).catch(errorEnvelope);
+  if (formatted.ok) return formatted;
+  return { ok: false, error: { ...formatted.error, details: {
+    ...formatted.error.details,
+    excerptId: id,
+    hint: `The Excerpt was created. Retry its formatting with \`enso excerpt update ${id}\``
+  } } };
+}
+
+/** Moves and rewraps an Excerpt already on the open Canvas. */
+export function moveExcerpt(id: string, placement: { x: number; y: number; width: number }): Promise<EnsoEnvelope> {
+  return mutate(excerptPath(id), "PUT", placement, false);
 }
 
 function placementOptions(command: Command, positionHelp: string): Command {
@@ -155,7 +171,7 @@ export function registerExcerpt(program: Command): void {
     "World-space top-left"
   ).action(async (options: CreateOptions) => {
     if (Boolean(options.note) === Boolean(options.link)) throw new InvalidArgumentError("pass exactly one of --note or --link");
-    if (options.note) return createFromNote(options);
+    if (options.note) return placeNoteExcerpt({ ...options, note: options.note });
     if (options.occurrence !== undefined || options.noteId !== undefined) throw new InvalidArgumentError("--occurrence and --note-id apply to --note");
     if (options.text.trim().length === 0) throw new InvalidArgumentError("excerpt text must contain a nonblank character");
     return mutate("/v1/excerpts", "POST", { link: options.link, text: options.text, ...placementBody(options) }, options.dryRun);

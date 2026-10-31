@@ -209,7 +209,9 @@ describe("layout", () => {
     const spec = parseCanvasSpec(JSON.stringify(CHAIN_SPEC));
     const layout: CanvasLayout = {
       nodes: [{ title: "A", x: 0, y: 0 }, { title: "B", x: 300, y: 0 }, { title: "C", x: 150, y: 0 }, { title: "D", x: 900, y: 0 }],
-      regions: [{ name: "X", x: 150, y: 0, width: 640, height: 260 }, { name: "Y", x: 700, y: 0, width: 800, height: 260 }]
+      regions: [{ name: "X", x: 150, y: 0, width: 640, height: 260 }, { name: "Y", x: 700, y: 0, width: 800, height: 260 }],
+      annotations: [],
+      canvasMarks: []
     };
     expect(regionWarnings(spec, layout)).toEqual([
       expect.objectContaining({ code: "region_overlap", details: { regions: ["X", "Y"] } }),
@@ -238,7 +240,7 @@ describe("layout", () => {
       members: ["A", "B", "C", "D", "E", "F"],
       edges: [{ from: "A", to: "B" }, { from: "C", to: "D" }, { from: "A", to: "D" }, { from: "E", to: "F" }]
     }));
-    const layout: CanvasLayout = { regions: [], nodes: [
+    const layout: CanvasLayout = { regions: [], annotations: [], canvasMarks: [], nodes: [
       { title: "A", x: 0, y: 0 }, { title: "B", x: 100, y: 100 }, { title: "C", x: 100, y: 0 },
       { title: "D", x: 0, y: 100 }, { title: "E", x: 200, y: 0 }, { title: "F", x: 200, y: 100 }
     ] };

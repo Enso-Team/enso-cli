@@ -1,4 +1,7 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
+import { noteMatches } from "./note-identity.js";
 
 // An Excerpt places a span of a Note's text on the Canvas. The Note owns the text, so the
 // app addresses the span by the Note's id and a range of its markdown source.
@@ -73,4 +76,36 @@ export function requireExcerptSupport(envelope: EnsoEnvelope): EnsoEnvelope {
     });
   }
   return envelope;
+}
+
+/** Vault-relative paths of the markdown files under `root`, outside hidden folders. */
+function markdownFiles(root: string, folder = ""): string[] {
+  return readdirSync(join(root, folder), { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith(".")) return [];
+    const path = folder ? `${folder}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return markdownFiles(root, path);
+    return /\.md$/i.test(entry.name) ? [path] : [];
+  });
+}
+
+/**
+ * Checks that `note` names one markdown file in the Vault and that the file holds `passage`
+ * once, before anything is placed. Errors name the Note they came from.
+ */
+export function checkExcerptSource(vaultRoot: string, note: string, passage: string): void {
+  const files = markdownFiles(vaultRoot).filter((ref) => noteMatches({ ref }, note));
+  if (files.length !== 1) {
+    throw new EnsoCliError(files.length === 0 ? "note_not_found" : "note_ambiguous",
+      files.length === 0 ? `No markdown file in the Vault matches '${note}'` : `${files.length} markdown files match '${note}'`, {
+        note,
+        ...(files.length > 1 ? { candidates: files } : {}),
+        hint: files.length === 0 ? "Write the Note before laying it out" : "Name the member by its Vault-relative path"
+      });
+  }
+  try {
+    passageSelection("00000000-0000-0000-0000-000000000000", readFileSync(join(vaultRoot, files[0]), "utf8"), passage);
+  } catch (error) {
+    if (!(error instanceof EnsoCliError)) throw error;
+    throw new EnsoCliError(error.body.code, error.body.message, { ...error.body.details, note });
+  }
 }
