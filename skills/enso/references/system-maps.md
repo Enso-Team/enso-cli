@@ -8,7 +8,7 @@ Read this reference before representing a system design, software architecture, 
 
 Start with the question the map should answer, then inspect enough representative code to support it. Useful evidence may include manifests, runtime entrypoints, registration, generated-code boundaries, configuration, persistence, external clients, operational scripts, tests, or an end-to-end flow. Follow the evidence that reveals how this repository divides responsibility; treat common architectural categories as search prompts rather than a required inventory.
 
-Prefer direct file evidence. Record uncertainty as an open question rather than converting it into an architectural claim. Evidence gathering is complete when every proposed Node has a concrete code anchor and every proposed Link has a stated evidentiary basis.
+Prefer direct file evidence. Evidence gathering is complete when every proposed Node has a concrete code anchor and every proposed Link has a stated evidentiary basis.
 
 ### From an existing design
 
@@ -23,11 +23,13 @@ Build a **crosswalk**: one row per source element with its Enso counterpart.
 - nested sub-diagram → Portal;
 - merged or dropped element → the reason.
 
-Each source group becomes a `layout` cluster, and the source's flow direction becomes the layout `direction`. A Node belongs to one cluster, so for nested boundaries such as subnets inside a VPC, lay out the innermost boundaries as clusters, then draw each enclosing region with `canvas apply` from the inner regions' bounds plus padding. Where the source is ambiguous, such as an unlabeled arrow or an overloaded box, connect a question Mark to the affected Node and keep the source's wording until the user answers. When the user also wants the design checked against code, gather repository evidence as well and record each mismatch in the Note as an observation.
+Each source group becomes a `layout` cluster, and the source's flow direction becomes the layout `direction`. A Node belongs to one cluster, so for nested boundaries such as subnets inside a VPC, lay out the innermost boundaries as clusters, then draw each enclosing region with `canvas apply` from the inner regions' bounds plus padding. Where the source is ambiguous, such as an unlabeled arrow or an overloaded box, ask in a question Mark and keep the source's wording until the user answers. When the user also wants the design checked against code, gather repository evidence as well and record each mismatch in the Note as an observation.
 
 The crosswalk is complete when every source box, arrow, boundary, and annotation has a row.
 
 ## Select Architectural Nodes
+
+The map's scope sets what a Node is: a subsystem for a whole codebase, a file or type for a module, a file or function for one question. When a file's functions matter separately, draw the file as a region labeled with its path, holding its functions as Nodes. In `enso layout`, that is one cluster per file.
 
 Choose the level of abstraction that best answers the map's question. For a port, the source's boxes set the default level; change it only for a stated reason recorded in the crosswalk. Possible signals for a Node include:
 
@@ -45,7 +47,7 @@ These are prompts, not a taxonomy. A file, function, type, package, process, or 
 Write enough evidence in each Note for a maintainer to evaluate the claim without reopening the entire investigation. Depending on the map, useful material includes:
 
 - **Role:** the responsibility it owns;
-- **Evidence:** concrete repository paths, or the source section or diagram it came from;
+- **Evidence:** the code behind the claim, or the source section or diagram it came from;
 - **Flow:** inputs, outputs, and neighboring boundaries;
 - **Invariants:** behavior that callers or maintainers rely on.
 
@@ -54,11 +56,7 @@ Use headings that fit the system and omit sections that add no value. For exampl
 ```markdown
 **Role:** Owns CLI command registration and structured result handling.
 
-**Evidence**
-- `src/index.ts` assembles command groups and prints envelopes.
-- `src/commands/*.ts` define the public command surfaces.
-- `test/cli/*.test.ts` verify behavior by workflow.
-- `test/support/cli-harness.ts` supplies the shared CLI boundary harness.
+**Evidence:** a snippet for each claim, as "Write on the canvas" in SKILL.md describes.
 
 **Flow:** argv -> command action -> bridge request -> structured envelope.
 
@@ -73,6 +71,6 @@ Note writing is complete when a maintainer can open every Node, find its support
 
 ## Draw the Map
 
-Choose the visual structure from [diagram-design.md](diagram-design.md) that matches the question; for a port, keep the source's arrangement unless the user asks for a new one. Use Links only for relationships that help answer the question. Use regions when a boundary clarifies the system's own structure and a Portal when useful detail would crowd the current explanation.
+Choose the visual structure from [diagram-design.md](diagram-design.md) that matches the question. For a port, keep the source's arrangement unless the user asks for a new one.
 
-The map is complete when every Node and Link is evidence-backed, the chosen visual structure makes the target question easier to answer, and necessary detail remains available in Note content or a Portal without crowding the overview. A port is complete when every crosswalk row is on the Canvas or carries its stated reason, and a `context --vision` render matches the source's topology.
+The map is complete when every Node and Link is evidence-backed. A port is complete when every crosswalk row is on the Canvas or carries its stated reason, and a `context --vision` render matches the source's topology.
