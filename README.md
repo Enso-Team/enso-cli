@@ -187,13 +187,21 @@ The JSON is a command input, not a Vault file. Members are Notes that already ex
 {
   "canvas": "Request Flow",
   "direction": "LR",
-  "members": ["Gateway", "Router", { "title": "Object Store" }],
+  "members": [
+    { "title": "Gateway", "excerpt": "Requests enter through the gateway.", "mark": "Where requests enter" },
+    "Router",
+    { "title": "Object Store" }
+  ],
   "edges": [
     { "from": "Gateway", "to": "Router", "label": "routes", "direction": "directed" },
     { "from": "Router", "to": "Object Store" }
   ],
   "clusters": [
     { "name": "Edge", "color": "#6B7280", "members": ["Gateway", "Router"] }
+  ],
+  "marks": [
+    "Requests pass through the edge before reaching storage.",
+    { "text": "Edge: Gateway and Router", "width": 320 }
   ]
 }
 ```
@@ -201,13 +209,20 @@ The JSON is a command input, not a Vault file. Members are Notes that already ex
 ```sh
 enso layout request-flow.json --apply
 enso layout request-flow.json --apply --dry-run
+enso layout request-flow.json --spacing 1.5 --apply --dry-run
 ```
 
 Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry. `--apply` sends the compiled patch through the `canvas apply` pipeline with its preflight and verification, `--apply --dry-run` validates without mutating, and running without `--apply` prints the compiled patch for inspection. Run `enso layout --schema` for the machine-readable spec contract.
 
+A member's optional `excerpt` must quote its Note's markdown exactly, including markup; the example requires that sentence in `Gateway.md`. Its optional `mark` adds typed text connected to the member's Node. The CLI places both to the right of the Node for `TB`, or below it for `LR`, and grows regions to contain them. Top-level `marks` are strings or `{ "text": "...", "width": 320 }` objects, stacked above the drawing in declaration order.
+
+`--spacing <factor>` scales the distance between Node centers while keeping Node sizes fixed. It defaults to `1` and accepts values from `1` to `10`; use `1.5` or `2` when Link labels need more room.
+
+When applied, the compiled drawing is centered on the app's empty-Canvas home point, `(25000, 25000)`. On a Canvas with existing content, it is centered among that content if there is room, or placed to its right with a gap. Dry runs report the same proposed coordinates and a `placement` object with `recentered`, `dx`, and `dy`.
+
 Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of `black`, `blue`, `cyan`, `gray`, `grey`, `green`, `orange`, `pink`, `purple`, `red`, `teal`, `white`, `yellow`. Every path enforces it, so a color outside the grammar fails locally in `layout`, `canvas apply`, `apply`, `link`, and `primitive` alike, before any element reaches the canvas.
 
-`--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply.
+`--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply. Planned Excerpts are reported separately in `excerpts` with `validated: "locally"`; execution places them after the compiled patch succeeds.
 
 `layout` builds a canvas once. Compiling the same spec onto a canvas that already holds its members returns `canvas_already_laid_out`. Re-layout and update mode are tracked in issue #25.
 
@@ -234,7 +249,7 @@ Wikilinks resolve case-insensitively by filename stem or folder-relative markdow
 
 ## canvas apply
 
-Run `enso canvas apply --schema` for the machine-readable source of truth. Inputs require an explicit canvas name, stable `canvasID`, or `current`, reject unknown fields, and use explicit element modes. All `x`/`y` values are element centers in world coordinates.
+Run `enso canvas apply --schema` for the machine-readable source of truth. Inputs require an explicit canvas name, stable `canvasID`, or `current`, reject unknown fields, and use explicit element modes. Coordinates are in world space: `x`/`y` are centers for Nodes, Portals, and regions, and the text block's top-left for Marks. Lines use endpoints `x1`/`y1` and `x2`/`y2`.
 
 ```json
 {
@@ -260,6 +275,8 @@ rm -f auth-flow.json
 ```
 
 Use a temporary JSON file so dry-run and apply read the same inspectable bytes, then remove it after verification. Inline JSON and `--json -` remain available for automation.
+
+On an empty Canvas, an intent that only places Notes and creates Portals, primitives, and Marks is translated as one group so its bounds are centered on the app's home point, `(25000, 25000)`. Relative distances and sizes stay the same. Existing content or any update or removal of those elements preserves the supplied coordinates. Dry-run and apply replies report `placement.recentered`, `placement.dx`, and `placement.dy`, plus `placement.home` when translated onto the home point. Verification uses the translated coordinates.
 
 Note placement accepts folder-relative paths with or without `.md`. Verification checks requested coordinates, presentation, Portal destinations, Link endpoints, and DiagramPrimitive geometry against inspected state. Created primitives use their returned IDs. A mismatch returns `verification_failed` with field-specific `mismatches`, `appliedBatches`, and `returnedIds`; use those details to prepare the correction. An already absent Link satisfies a Canvas removal; `fromNote: true` requires a live Link to identify the mentioning sentence.
 
