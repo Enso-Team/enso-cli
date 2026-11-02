@@ -172,7 +172,7 @@ export function specError(message: string, path: string, expected?: string): Ens
 export const canvasSpecContract = {
   file: "command-input graph JSON, not a Vault file",
   graph: {
-    canvas: "target Canvas name, or current",
+    canvas: "target canvas name, ref, stable canvasID, or current; applying requires the target to be active",
     direction: { values: ["TB", "LR"], aliases: { "top-bottom": "TB", "left-right": "LR" }, default: "TB" },
     members: "sequence of Notes that already exist in the Vault, each a title or Vault-relative path, or a { title, appearance, excerpt, mark } mapping; a spec whose members are all symbols lays out at symbol density",
     "members.excerpt": "a passage of the member's Note, quoted exactly as the markdown file holds it, placed as an Excerpt beside the member's Node",

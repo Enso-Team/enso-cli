@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { computeCanvasLayout, LAYOUT_GEOMETRY, layoutGeometry, linkCrossings, regionWarnings, SYMBOL_GEOMETRY, type CanvasLayout } from "../../src/layout.js";
 import { parseCanvasSpec } from "../../src/canvas-spec.js";
 import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
-import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
+import { fixtureTarget, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -334,7 +334,7 @@ describe("layout", () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/canvases/Request%20Flow/inspect") {
+      if (pathname === `/v1/canvases/${fixtureTarget.canvasID}/inspect`) {
         return Response.json({ ok: true, data: { nodes, links, diagramPrimitives: primitives } });
       }
       if (pathname === "/v1/apply") {
@@ -401,7 +401,7 @@ describe("layout", () => {
   it("validates through the pipeline without mutating for --apply --dry-run", async () => {
     const result = await run(["layout", writeSpec(FLOW_SPEC), "--apply", "--dry-run"]);
     expect(result.code).toBe(0);
-    expect(calls.some((call) => new URL(call.url).pathname === "/v1/apply")).toBe(false);
+    expect(calls.filter((call) => new URL(call.url).pathname === "/v1/apply")).toHaveLength(1);
     const data = JSON.parse(result.stdout).data;
     expect(data.applied).toMatchObject({ dryRun: true, preflightPassed: true });
     expect(data.placement).toEqual(data.applied.placement);

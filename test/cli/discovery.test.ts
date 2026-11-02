@@ -2,7 +2,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { readConfig } from "../../src/config.js";
-import { contractHeader, contractVersion } from "../../src/contract.js";
+import { contractHeader, contractVersion, oldestSupportedContractVersion } from "../../src/contract.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -108,12 +108,12 @@ describe("file-based link", () => {
     expect(readConfig()).toBeNull();
   });
 
-  it("every request carries the CLI's contract version header", async () => {
+  it("discovery carries the supported bootstrap contract version", async () => {
     const result = await run(["status"]);
 
     expect(result.code).toBe(0);
     const headers = calls[0]?.init.headers as Record<string, string>;
-    expect(headers[contractHeader]).toBe(String(contractVersion));
+    expect(headers[contractHeader]).toBe(String(oldestSupportedContractVersion));
   });
 
   it("a token file whose token the app rejects does not link", async () => {

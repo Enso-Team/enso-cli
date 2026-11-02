@@ -86,7 +86,18 @@ export function printEnvelope(
 }
 
 function withRecovery(envelope: EnsoEnvelope): EnsoEnvelope {
-  if (envelope.ok || envelope.error.code !== "duplicate_link") return envelope;
+  if (envelope.ok) return envelope;
+  const hints: Record<string, string> = {
+    wrong_vault: "Open the intended vault explicitly in Enso, then inspect it before retrying",
+    target_not_found: "Run `enso canvas list` to check the stable canvasID in the intended vault",
+    target_not_active: "Open the intended canvas explicitly in Enso. Inspect it before retrying; this command has not switched canvases or replayed mutations",
+    target_changed: "Navigation interrupted the operation. Inspect the original target for partial effects before deciding whether to retry",
+    explicit_navigation_required: "Run canvas navigation as a separate command without an immutable binding",
+    vault_changed: "The vault changed during discovery. Run `enso canvas list` again before retrying"
+  };
+  const hint = hints[envelope.error.code];
+  if (hint && !envelope.error.details?.hint) return { ...envelope, error: { ...envelope.error, details: { ...envelope.error.details, hint } } };
+  if (envelope.error.code !== "duplicate_link") return envelope;
   return {
     ok: false,
     error: {

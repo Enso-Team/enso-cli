@@ -1,15 +1,8 @@
 import { EnsoCliError } from "./errors.js";
 
-// The bridge contract is one integer that both sides name. It moves only when
-// a change breaks the other side, so an additive field leaves it alone.
-//
-// 1: the 1.3.1 app, which paired through a prompt this CLI no longer speaks.
-// 2: the app provisions a token file and names it on /v1/health.
-//
-// /v1/health reports the app's number, checked at link time. Every request
-// carries this CLI's number in the header, and the app refuses one outside the
-// range it serves, naming which side to update.
-export const contractVersion = 2;
+// Contract 3 requires explicit canvasTarget on every canvas-scoped request.
+// Discovery and noncanvas routes retain contract 2 for inspection and upgrade guidance.
+export const contractVersion = 3;
 export const oldestSupportedContractVersion = 2;
 export const contractHeader = "Enso-Contract-Version";
 
@@ -27,6 +20,16 @@ export function assertCompatibleContract(reported: unknown, bridgeUrl: string): 
     throw new EnsoCliError("app_outdated", "The Enso app speaks an older bridge contract than this CLI serves", {
       ...details,
       hint: "Update the Enso app"
+    });
+  }
+}
+
+export function assertTargetingContract(reported: unknown, bridgeUrl: string): void {
+  assertCompatibleContract(reported, bridgeUrl);
+  if (typeof reported !== "number" || reported < contractVersion) {
+    throw new EnsoCliError("app_outdated", "Canvas targeting requires Enso bridge contract 3", {
+      bridgeUrl, appContractVersion: reported, cliContractVersion: contractVersion,
+      hint: "Update Enso to a build containing bridge contract 3, then retry. Implicit active-canvas execution is disabled."
     });
   }
 }

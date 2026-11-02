@@ -30,11 +30,11 @@ describe("BridgeClient", () => {
 
     const client = new BridgeClient("http://127.0.0.1:17651");
     expect((await client.request("/v1/status")).ok).toBe(true);
-    expect((await client.request("/v1/context")).ok).toBe(true);
+    expect((await client.request("/v1/status")).ok).toBe(true);
 
-    const contextCalls = calls.filter((call) => new URL(call.url).pathname === "/v1/context");
-    expect(contextCalls).toHaveLength(1);
-    expect(new URL(contextCalls[0].url).origin).toBe("http://127.0.0.1:17650");
+    const statusCalls = calls.filter((call) => new URL(call.url).pathname === "/v1/status");
+    expect(statusCalls).toHaveLength(3);
+    expect(new URL(statusCalls[0].url).origin).toBe("http://127.0.0.1:17650");
   });
 
   it("relinks through the token file when the stored token is stale", async () => {
@@ -51,12 +51,13 @@ describe("BridgeClient", () => {
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));
 
-    const result = await new BridgeClient().request("/v1/context");
+    const result = await new BridgeClient().request("/v1/status");
     expect(result.ok).toBe(true);
     expect(readConfig()?.token).toBe("fresh-token");
-    const contextCalls = calls.filter((call) => new URL(call.url).pathname === "/v1/context");
-    expect(contextCalls.map((call) => (call.init.headers as Record<string, string>).Authorization)).toEqual([
+    const statusCalls = calls.filter((call) => new URL(call.url).pathname === "/v1/status");
+    expect(statusCalls.map((call) => (call.init.headers as Record<string, string>).Authorization)).toEqual([
       "Bearer test-token",
+      "Bearer fresh-token",
       "Bearer fresh-token"
     ]);
   });
@@ -71,7 +72,7 @@ describe("BridgeClient", () => {
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));
 
-    await expect(new BridgeClient().request("/v1/context")).rejects.toMatchObject({
+    await expect(new BridgeClient().request("/v1/status")).rejects.toMatchObject({
       body: { code: "invalid_token", details: { bridgeUrl: "http://127.0.0.1:17650" } }
     });
     expect(readConfig()?.token).toBe("test-token");
@@ -147,15 +148,27 @@ describe("BridgeClient", () => {
     ]);
   });
 
+  it("keeps the configured bridge URL when overriding only the token", async () => {
+    writeConfig({ bridgeUrl: "http://127.0.0.1:17651", token: "stored-token" });
+
+    const result = await new BridgeClient(undefined, "caller-token").request("/v1/status");
+
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://127.0.0.1:17651/v1/status");
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer caller-token");
+    expect(readConfig()?.token).toBe("stored-token");
+  });
+
   it("does not relink when the token was supplied by the caller", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));
 
-    const result = await new BridgeClient(undefined, "caller-token").request("/v1/context");
+    const result = await new BridgeClient(undefined, "caller-token").request("/v1/status");
     expect(result.ok).toBe(false);
-    expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/context"]);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/status"]);
     expect(readConfig()?.token).toBe("test-token");
   });
 
@@ -165,7 +178,7 @@ describe("BridgeClient", () => {
       throw new Error("ECONNREFUSED");
     }));
 
-    await expect(new BridgeClient("http://127.0.0.1:17650").request("/v1/context")).rejects.toMatchObject({
+    await expect(new BridgeClient().request("/v1/status")).rejects.toMatchObject({
       body: { code: "app_unavailable", details: { bridgeUrl: "http://127.0.0.1:17651" } }
     });
   });

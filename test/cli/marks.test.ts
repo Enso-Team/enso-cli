@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { markWorldBox } from "../../src/mark-model.js";
 import { bindCreatedMarks, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
-import { calls, run, setupCliTest } from "../support/cli-harness.js";
+import { requestPath, requestBody, calls, run, setupCliTest } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -9,7 +9,7 @@ const MARK = "11111111-1111-4111-8111-111111111111";
 const INK = "22222222-2222-4222-8222-222222222222";
 
 function body(index: number): unknown {
-  return JSON.parse(String(calls[index].init.body));
+  return requestBody(calls[index]);
 }
 
 describe("mark commands", () => {
@@ -23,7 +23,7 @@ describe("mark commands", () => {
   ])("routes %j", async (args, path, method) => {
     const result = await run(args);
     expect(result.code).toBe(0);
-    expect(calls[0].url).toBe("http://127.0.0.1:17650" + path);
+    expect(requestPath(calls[0])).toBe(path);
     expect(calls[0].init.method).toBe(method);
   });
 
