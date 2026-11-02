@@ -442,6 +442,20 @@ describe("generic client targeting boundary", () => {
     expect(targeted()).toHaveLength(1);
   });
 
+  it.each([false, true])("rejects a conflicting bridge when both clients were created before connecting, bound=%s", async isBound => {
+    await withRequestContext(isBound ? { vaultId: A.vaultID, canvasId: A.canvasID } : {}, async () => {
+      const first = new BridgeClient(bridgeUrl, "target-test");
+      const second = new BridgeClient("http://127.0.0.1:1", "other-token");
+      await first.request("/v1/nodes");
+      const previousRequests = records.length;
+
+      await expect(second.request("/v1/marks", { method: "POST", body: { text: "Question", x: 0, y: 0 } }))
+        .rejects.toMatchObject({ body: { code: "target_conflict" } });
+      expect(records).toHaveLength(previousRequests);
+    });
+    expect(targeted()).toHaveLength(1);
+  });
+
   it("normalizes a raw GET body target to the supported query transport", async () => {
     await new BridgeClient().request("/v1/nodes", { body: { canvasTarget: A } });
     expect(targetOf(targeted()[0])).toEqual(A);

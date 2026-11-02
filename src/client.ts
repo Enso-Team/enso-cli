@@ -27,13 +27,12 @@ export type RequestOptions = {
 
 export class BridgeClient {
   private readonly context: RequestContext;
-  private readonly joiningConnection: boolean;
+  private ownsConnection = false;
   constructor(
     private readonly baseUrl?: string,
     private readonly tokenOverride?: string
   ) {
     this.context = currentRequestContext() ?? new RequestContext();
-    this.joiningConnection = this.context.connection !== undefined;
   }
 
   async resolveTarget(selector?: string): Promise<CanvasTarget> {
@@ -161,6 +160,7 @@ export class BridgeClient {
       return { bridgeUrl, token: this.tokenOverride ?? config?.token };
     }
     if (!this.context.connection) {
+      this.ownsConnection = true;
       this.context.connection = (async () => {
         const config = readConfig();
         const bridgeUrl = this.baseUrl ?? config?.bridgeUrl ?? defaultBridgeUrl;
@@ -176,7 +176,7 @@ export class BridgeClient {
       })();
     }
     const connection = await this.context.connection;
-    if (this.joiningConnection && this.baseUrl && new URL(this.baseUrl).origin !== new URL(connection.bridgeUrl).origin) {
+    if (!this.ownsConnection && this.baseUrl && new URL(this.baseUrl).origin !== new URL(connection.bridgeUrl).origin) {
       throw new EnsoCliError("target_conflict", "A client cannot override the invocation's bridge instance");
     }
     return connection;
