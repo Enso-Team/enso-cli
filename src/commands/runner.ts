@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { EnsoCliError, printEnvelope } from "../errors.js";
 import { runnerCall } from "../runner/client.js";
+import { runnerVersion } from "../runner/protocol.js";
 import { startRunner } from "../runner/service.js";
 import { currentRequestContext } from "../targeting.js";
 
@@ -13,13 +14,13 @@ export function registerRunner(program: Command): void {
     .action(async function (this: Command) {
       if (this.opts().provider !== "fake") throw new EnsoCliError("invalid_input", "Only the fake provider is implemented");
       if (currentRequestContext()?.bound || this.optsWithGlobals().canvas) {
-        throw new EnsoCliError("target_conflict", "Runner sessions carry their own explicit binding; omit global target options when starting the service");
+        throw new EnsoCliError("target_conflict", "Runner sessions carry their own explicit binding; omit global target options and unset ENSO_VAULT_ID/ENSO_CANVAS_ID when starting the service");
       }
       const service = await startRunner({ directory: this.opts().directory });
       const signal = () => { void service.stop(); };
       process.once("SIGINT", signal);
       process.once("SIGTERM", signal);
-      printEnvelope({ ok: true, data: { ready: true, protocolVersion: 1, directory: service.directory } });
+      printEnvelope({ ok: true, data: { ready: true, protocolVersion: runnerVersion, directory: service.directory } }, Boolean(this.optsWithGlobals().pretty));
       try { await service.closed; }
       finally { process.removeListener("SIGINT", signal); process.removeListener("SIGTERM", signal); }
       return { ok: true, data: { stopped: true } };

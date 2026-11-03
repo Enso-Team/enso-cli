@@ -13,6 +13,14 @@ export type RunnerService = {
   closed: Promise<void>; stop: () => Promise<void>;
 };
 
+const errorStatus = new Map<string, number>([
+  ["unauthorized", 401],
+  ["incompatible_runner_version", 426],
+  ["session_busy", 409], ["request_conflict", 409], ["pending_not_found", 409], ["runner_stopping", 409],
+  ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404],
+  ["runner_storage_failure", 503]
+]);
+
 export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean } = {}): Promise<RunnerService> {
   const storage = new RunnerStorage(options.directory);
   storage.acquire();
@@ -35,11 +43,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     void handle(request, response).catch(error => {
       const envelope = errorEnvelope(error);
       const code = !envelope.ok ? envelope.error.code : "invalid_input";
-      const status = code === "unauthorized" ? 401 : code === "incompatible_runner_version" ? 426 :
-        ["session_busy", "request_conflict", "pending_not_found", "runner_stopping"].includes(code) ? 409 :
-          ["run_not_found", "session_not_found", "route_not_found"].includes(code) ? 404 :
-            code === "runner_storage_failure" ? 503 : 400;
-      send(response, status, envelope);
+      send(response, errorStatus.get(code) ?? 400, envelope);
     });
   });
   server.on("clientError", (_error, socket) => socket.destroy());
@@ -94,8 +98,10 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     if (method === "POST" && run?.[2] === "cancel") return send(response, 200, { ok: true, data: engine.cancel(decodeURIComponent(run[1])) });
     if (method === "POST" && run?.[2] === "respond") return send(response, 200, { ok: true, data: engine.answer(decodeURIComponent(run[1]), await body(request)) });
     if (method === "POST" && path === "/v1/shutdown") {
+      // "close" fires after the reply is flushed or if the client disconnects mid-shutdown.
+      response.once("close", () => { void stop(); });
       await engine.shutdown();
-      response.once("finish", () => { void stop(); });
+      if (fatalError) throw fatalError;
       return send(response, 200, { ok: true, data: { stopped: true } });
     }
     throw new EnsoCliError("route_not_found", "Runner route not found");
@@ -113,6 +119,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     });
     // Ownership is established before removing stale runtime files.
     rmSync(socketPath, { force: true });
+    rmSync(join(storage.directory, "connection.json"), { force: true });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(socketPath, () => { server.removeListener("error", reject); resolve(); });
