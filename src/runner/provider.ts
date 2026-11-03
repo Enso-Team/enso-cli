@@ -34,7 +34,8 @@ export class FakeProvider implements RunnerProvider {
       }
       signal.throwIfAborted();
       if (prompt.fake.scenario === "interrupted") return { status: "interrupted", error: { code: "fake_uncertain", message: "Fake provider cannot confirm execution outcome" } };
-      if (prompt.fake.scenario === "failure" || answer?.value === "deny") return { status: "failed", error: { code: "fake_failure", message: "Fake execution failed or permission was denied", details: { scenario: prompt.fake.scenario, denied: answer?.value === "deny" } } };
+      const denied = prompt.fake.scenario === "permission" && answer?.value === "deny";
+      if (prompt.fake.scenario === "failure" || denied) return { status: "failed", error: { code: "fake_failure", message: "Fake execution failed or permission was denied", details: { scenario: prompt.fake.scenario, denied } } };
       const turn = Number((session.providerState as { turn?: number } | undefined)?.turn ?? 0) + 1;
       return { status: "completed", result: {
         text: `Fake response: ${prompt.text}`, context: prompt.context,

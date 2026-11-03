@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { EnsoCliError } from "../errors.js";
-import { answerSchema, canonical, parse, promptSchema, sessionInputSchema, terminal, type Answer, type Pending, type Run, type Session, type State } from "./protocol.js";
+import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, promptSchema, sessionInputSchema, terminal, type Answer, type Pending, type Run, type Session, type State } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
 import { RunnerStorage } from "./storage.js";
 
@@ -122,8 +122,9 @@ export class RunnerEngine {
     if (this.shutdownTask) return this.shutdownTask;
     this.accepting = false;
     this.shutdownTask = (async () => {
-      if (this.healthy) for (const run of [...this.state.runs]) if (!terminal(run.status)) this.cancel(run.request.requestID);
-      await Promise.all([...this.active.values()].map(active => active.task));
+      // A failed cancel commit aborts every provider; still await them before storage is released.
+      try { if (this.healthy) for (const run of [...this.state.runs]) if (!terminal(run.status)) this.cancel(run.request.requestID); }
+      finally { await Promise.all([...this.active.values()].map(active => active.task)); }
     })();
     return this.shutdownTask;
   }
@@ -140,10 +141,11 @@ export class RunnerEngine {
     this.active.set(id, active);
     active.task = (async () => {
       try {
-        const outcome = await this.provider.execute({
+        // An outcome that fails validation is unconfirmed and falls through to interrupted.
+        const outcome = outcomeSchema.parse(await this.provider.execute({
           session: this.session(run.request.sessionID), prompt: structuredClone(run.request), signal: controller.signal,
-          wait: pending => this.wait(id, pending, controller.signal)
-        });
+          wait: pending => this.wait(id, pendingSchema.parse(pending), controller.signal)
+        }));
         if (!this.healthy) return;
         this.commit(next => {
           this.transition(next, id, outcome.status, {

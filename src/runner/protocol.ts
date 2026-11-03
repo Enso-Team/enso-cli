@@ -40,6 +40,12 @@ export const runStatusSchema = z.enum(["accepted", "running", "waiting_permissio
 const json: z.ZodType<Json> = z.lazy(() => z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.array(json), z.record(json)]));
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 export const errorSchema = z.object({ code: z.string(), message: z.string(), details: z.record(json).optional() }).strict();
+// Provider output is validated before commit so a durable write can never produce state that fails to reload.
+export const outcomeSchema = z.union([
+  z.object({ status: z.literal("completed"), result: json, providerState: json.optional() }).strict(),
+  z.object({ status: z.enum(["failed", "interrupted"]), error: errorSchema }).strict(),
+  z.object({ status: z.literal("cancelled") }).strict()
+]);
 export const sessionSchema = z.object({
   id: z.string().uuid(), binding: bindingSchema, provider: z.literal("fake"), createdAt: z.string(),
   providerState: json.optional()
