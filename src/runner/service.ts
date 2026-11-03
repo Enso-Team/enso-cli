@@ -1,0 +1,151 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { EnsoCliError, errorEnvelope } from "../errors.js";
+import { RunnerEngine } from "./engine.js";
+import { FakeProvider, type RunnerProvider } from "./provider.js";
+import { runnerVersion, runnerVersionHeader } from "./protocol.js";
+import { RunnerStorage } from "./storage.js";
+
+export type RunnerService = {
+  directory: string; socketPath: string; engine: RunnerEngine;
+  closed: Promise<void>; stop: () => Promise<void>;
+};
+
+export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean } = {}): Promise<RunnerService> {
+  const storage = new RunnerStorage(options.directory);
+  storage.acquire();
+  const socketPath = join(storage.directory, "control.sock");
+  if (Buffer.byteLength(socketPath) > 103) {
+    storage.release();
+    throw new EnsoCliError("runner_path_too_long", "Unix socket path exceeds macOS limits; choose a shorter --directory");
+  }
+  const token = randomBytes(32).toString("hex");
+  let engine: RunnerEngine;
+  let stopTask: Promise<void> | undefined;
+  let initialized = false;
+  let fatalError: Error | undefined;
+  let finish!: () => void;
+  let fail!: (error: Error) => void;
+  const closed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+  // Library callers may only await stop(); retain the rejection for callers of closed.
+  void closed.catch(() => {});
+  const server = createServer({ maxHeaderSize: 8192, requestTimeout: 5000, headersTimeout: 5000 }, (request, response) => {
+    void handle(request, response).catch(error => {
+      const envelope = errorEnvelope(error);
+      const code = !envelope.ok ? envelope.error.code : "invalid_input";
+      const status = code === "unauthorized" ? 401 : code === "incompatible_runner_version" ? 426 :
+        ["session_busy", "request_conflict", "pending_not_found", "runner_stopping"].includes(code) ? 409 :
+          ["run_not_found", "session_not_found", "route_not_found"].includes(code) ? 404 :
+            code === "runner_storage_failure" ? 503 : 400;
+      send(response, status, envelope);
+    });
+  });
+  server.on("clientError", (_error, socket) => socket.destroy());
+
+  const stop = (): Promise<void> => {
+    if (stopTask) return stopTask;
+    stopTask = (async () => {
+      try { await engine.shutdown(); }
+      catch (error) { fatalError ??= error instanceof Error ? error : new Error("Runner shutdown failed"); }
+      await new Promise<void>(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+      for (const cleanup of [
+        () => rmSync(join(storage.directory, "connection.json"), { force: true }),
+        () => rmSync(socketPath, { force: true }),
+        () => storage.release()
+      ]) {
+        try { cleanup(); }
+        catch (error) { fatalError ??= error instanceof Error ? error : new Error("Runner cleanup failed"); }
+      }
+      if (fatalError) fail(fatalError); else finish();
+    })();
+    return stopTask;
+  };
+
+  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    // No browser-origin access, no CORS, no unauthenticated discovery endpoint.
+    const supplied = Buffer.from(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
+    const expected = Buffer.from(`Bearer ${token}`);
+    if (request.headers.origin || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      throw new EnsoCliError("unauthorized", "Runner authentication required");
+    }
+    if (request.headers[runnerVersionHeader.toLowerCase()] !== String(runnerVersion)) {
+      throw new EnsoCliError("incompatible_runner_version", "This runner requires protocol version 1", { supportedVersions: [runnerVersion] });
+    }
+    const url = new URL(request.url ?? "/", "http://runner.local");
+    const path = url.pathname;
+    const method = request.method;
+    if (method === "GET" && path === "/v1/snapshot") return send(response, 200, { ok: true, data: engine.snapshot() });
+    if (method === "GET" && path === "/v1/events") {
+      const after = url.searchParams.get("after");
+      if (after === null || !/^\d+$/.test(after)) throw new EnsoCliError("invalid_cursor", "events requires an integer after cursor");
+      return send(response, 200, { ok: true, data: engine.events(Number(after)) });
+    }
+    const session = /^\/v1\/sessions\/([^/]+)$/.exec(path);
+    if (method === "GET" && session) return send(response, 200, { ok: true, data: engine.session(decodeURIComponent(session[1])) });
+    const run = /^\/v1\/runs\/([^/]+)(?:\/(cancel|respond))?$/.exec(path);
+    if (method === "GET" && run && !run[2]) return send(response, 200, { ok: true, data: engine.run(decodeURIComponent(run[1])) });
+    if (method === "POST" && path === "/v1/sessions") return send(response, 201, { ok: true, data: engine.createSession(await body(request)) });
+    if (method === "POST" && path === "/v1/prompts") return send(response, 200, { ok: true, data: engine.submit(await body(request)) });
+    if (method === "POST" && run?.[2] === "cancel") return send(response, 200, { ok: true, data: engine.cancel(decodeURIComponent(run[1])) });
+    if (method === "POST" && run?.[2] === "respond") return send(response, 200, { ok: true, data: engine.answer(decodeURIComponent(run[1]), await body(request)) });
+    if (method === "POST" && path === "/v1/shutdown") {
+      await engine.shutdown();
+      response.once("finish", () => { void stop(); });
+      return send(response, 200, { ok: true, data: { stopped: true } });
+    }
+    throw new EnsoCliError("route_not_found", "Runner route not found");
+  }
+
+  try {
+    engine = new RunnerEngine(storage, options.provider ?? new FakeProvider(), {
+      autoDispatch: options.autoDispatch,
+      onFatal: () => {
+        if (initialized) {
+          fatalError = new EnsoCliError("runner_storage_failure", "Runner stopped after a durable write failed; restart and inspect state");
+          setImmediate(() => { void stop(); });
+        }
+      }
+    });
+    // Ownership is established before removing stale runtime files.
+    rmSync(socketPath, { force: true });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => { server.removeListener("error", reject); resolve(); });
+    });
+    chmodSync(socketPath, 0o600);
+    storage.write("connection.json", { protocolVersion: runnerVersion, socketPath, token, pid: process.pid });
+    initialized = true;
+    if (options.autoDispatch !== false) engine.dispatchAccepted();
+    return { directory: storage.directory, socketPath, engine, closed, stop };
+  } catch (error) {
+    server.close();
+    rmSync(socketPath, { force: true });
+    rmSync(join(storage.directory, "connection.json"), { force: true });
+    storage.release();
+    throw error;
+  }
+}
+
+async function body(request: IncomingMessage): Promise<unknown> {
+  if (request.headers["content-type"]?.split(";")[0].trim() !== "application/json") {
+    throw new EnsoCliError("invalid_input", "JSON requests require Content-Type: application/json");
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 1024 * 1024) throw new EnsoCliError("invalid_input", "Request exceeds 1 MiB");
+    chunks.push(Buffer.from(chunk));
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new EnsoCliError("invalid_input", "Request body must be valid JSON"); }
+}
+function send(response: ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", [runnerVersionHeader]: String(runnerVersion) });
+  response.end(JSON.stringify(value) + "\n");
+}

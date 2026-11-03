@@ -111,6 +111,17 @@ version rules as execution. Apply phases retain their existing partial-success
 reporting; rollback is a canvas snapshot operation, not a transaction covering
 notes, files and sync writes.
 
+## Local prompt runner (fake provider)
+
+Run `enso runner serve --provider fake` in its own terminal. The independent local
+service persists canvas-bound sessions, captured prompt context, lifecycle events,
+and results outside the vault. `enso runner call` accesses its authenticated Unix
+socket; `enso runner shutdown` cancels active work and stops it. No Claude or
+native prompt UI integration is included yet.
+
+See [Runner protocol v1](docs/runner-protocol.md) for a runnable example, private
+connection discovery, the native-client contract, and restart/uncertainty rules.
+
 ## For agents
 
 The skill is `skills/enso/SKILL.md`. Paste this when onboarding an agent:
