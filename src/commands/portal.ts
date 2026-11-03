@@ -14,7 +14,7 @@ export function registerPortal(program: Command): void {
     .option("--lock-ratio <boolean>", "Scale the whole Node proportionally: true or false", parseRatioLock)
     .option("--appearance <value>", "Node visual form", parseNodeAppearance)
     .requiredOption("--subcanvas-ref <canvas-ref>")
-    .option("--canvas <selector|current>", "target canvas", "current")
+    .option("--canvas <selector|current>", "target canvas")
     .option("--dry-run", "validate without mutating")
     .action(async (options: { appearance?: string; glyphSize?: number; fontSize?: number; titleGap?: number; lockRatio?: boolean; title: string; subcanvasRef: string; canvas?: string; dryRun?: boolean }) =>
       new BridgeClient().request("/v1/nodes", {

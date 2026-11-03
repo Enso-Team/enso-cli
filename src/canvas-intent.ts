@@ -507,7 +507,7 @@ export const canvasApplyContract = {
   input: {
     type: "object",
     required: ["canvas"],
-    canvas: "Canvas name or current",
+    canvas: "Canvas name, ref, stable canvasID, or current (inherit an immutable binding when supplied)",
     unknownFields: "rejected",
     color: VISUAL_COLOR_GRAMMAR,
     nodes: {
@@ -559,7 +559,8 @@ export const canvasApplyContract = {
   },
   content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
   sharedNoteWrites: "Existing Notes the app may rewrite: the source of a fromNote Link removal, and every Note on either end of a Link endpoint move, before and after.",
-  validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase for current-Canvas dry-run", deferredUntilApply: "later phases, or every phase for a named-Canvas dry-run" },
+  validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase on the invocation target", deferredUntilApply: "later phases" },
+  targeting: { contractVersion: 3, selection: "resolved once per invocation", navigation: "separate explicit command", binding: "--vault-id/--canvas-id or ENSO_VAULT_ID/ENSO_CANVAS_ID" },
   partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives", "marks", "markConnections"] },
   success: { ok: true, data: { applied: true, appliedBatches: [], results: [], verification: "targeted" } },
   error: { ok: false, error: { code: "string", message: "string", details: {} } },

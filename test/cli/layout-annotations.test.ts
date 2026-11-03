@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ANNOTATION_GEOMETRY, CARD_GEOMETRY } from "../../src/layout.js";
 import { markWorldBox } from "../../src/mark-model.js";
-import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
+import { fixtureTarget, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -160,7 +160,7 @@ describe("layout annotations", () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root } });
+      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root, vaultID: fixtureTarget.vaultID } });
       return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [], marks: [] } });
     });
     const result = await run(["layout", writeSpec(DELETE_SPEC), "--apply", "--dry-run"]);
@@ -174,7 +174,7 @@ describe("layout annotations", () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root } });
+      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root, vaultID: fixtureTarget.vaultID } });
       return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [], marks: [] } });
     });
     const result = await run(["layout", writeSpec(DELETE_SPEC), "--apply", "--dry-run"]);
@@ -190,7 +190,7 @@ describe("layout annotations", () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root } });
+      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root, vaultID: fixtureTarget.vaultID } });
       if (pathname === "/v1/apply") {
         const body = JSON.parse(String(init?.body));
         const results = body.operations.map((operation: Record<string, unknown>) => {
@@ -230,7 +230,7 @@ describe("layout Excerpt recovery", () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root } });
+      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root, vaultID: fixtureTarget.vaultID } });
       if (pathname === "/v1/apply") {
         const body = JSON.parse(String(init?.body));
         return Response.json({ ok: true, data: { results: body.operations.map((operation: Record<string, unknown>) => {
@@ -282,7 +282,7 @@ describe("layout rerun", () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root } });
+      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root, vaultID: fixtureTarget.vaultID } });
       if (pathname === "/v1/apply") {
         const body = JSON.parse(String(init?.body));
         return Response.json({ ok: true, data: { results: body.operations.map((operation: Record<string, unknown>) => {
@@ -325,7 +325,7 @@ describe("excerpt create formatting", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
       if (pathname === "/v1/nodes") return Response.json({ ok: true, data: { nodes: [{ id: "n", kind: "note", title: "Auth", ref: "docs/Auth.md", noteID: NOTE }] } });
-      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root } });
+      if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: root, vaultID: fixtureTarget.vaultID } });
       return Response.json({ ok: true, data: { excerpt: { id: EXCERPT } } });
     });
     const result = await run(["excerpt", "create", "--note", "Auth", "--text", "Tokens rotate.", "--x", "0", "--y", "0", "--width", "240", "--font-size", "20", "--align", "center"]);

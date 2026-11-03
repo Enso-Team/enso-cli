@@ -117,17 +117,10 @@ export function registerLayout(program: Command): void {
     });
 }
 
-/**
- * What the target Canvas holds, or nothing when the bridge cannot say. An unreachable
- * bridge leaves placement on the empty-Canvas home and lets the apply pipeline report the
- * transport failure on its own terms.
- */
-async function canvasContext(canvas: string): Promise<EnsoEnvelope | undefined> {
-  try {
-    return await requestCanvasContext(new BridgeClient(), canvas);
-  } catch {
-    return undefined;
-  }
+async function canvasContext(canvas: string): Promise<EnsoEnvelope> {
+  const result = await requestCanvasContext(new BridgeClient(), canvas);
+  if (!result.ok) throw new EnsoCliError(result.error.code, result.error.message, result.error.details);
+  return result;
 }
 
 type OnCanvas = {

@@ -20,10 +20,12 @@ timeout; CI and piped commands keep their structured output.
 With the Enso app open, the first command links itself by reading the token
 file the app provisions. `enso auth link` relinks the same way.
 
-The app names its bridge contract on `/v1/health`, and every CLI request
-carries its own in the `Enso-Contract-Version` header. The number moves only on
-a breaking change. A mismatch fails with `cli_outdated` or `app_outdated`, each
-naming the side to update.
+Canvas operations require an Enso app with **bridge contract 3**. The CLI checks
+`/v1/health` before targeting and sends `Enso-Contract-Version: 3` on canvas
+requests. An older app fails with `app_outdated` and upgrade guidance; canvas
+commands never fall back to implicit active-canvas execution. Health, pairing,
+discovery, vault operations and explicit navigation use the supported bootstrap
+contract (2), so you can inspect an older app before upgrading.
 
 Install the bundled agent skill:
 
@@ -34,6 +36,80 @@ npx skills list -g
 ```
 
 `enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. The reply reports each target's installation status and any failures.
+
+## Canvas targets and immutable bindings
+
+Every canvas command resolves one stable vault/canvas pair for its invocation.
+Without a selector it captures the active canvas once. `--canvas` accepts a name,
+ref or stable `canvasID`; names and refs are resolved from bridge discovery. The
+same target and bridge connection are reused for all reads, writes, context,
+searches, fit, layout, apply phases and verification, including dry runs.
+
+```sh
+enso canvas list --pretty
+enso canvas current --pretty
+enso node list                         # capture the active canvas once
+enso --canvas "Architecture" node list
+enso context --canvas "Architecture" --full
+enso --canvas "Architecture" mark create "Open question" --at 120,200 --dry-run
+```
+
+Discovery reports `vaultID`, `canvasID`, and `canvasTarget`. Use those UUIDs for
+stable identity; the legacy `id` can still be a filename stem. A canvas with
+`canvasID: null` has no available stable target. The CLI never derives one from
+a name or path.
+
+Canvas selection does not navigate. Open the intended canvas as a separate
+explicit action before using it. Named `canvas apply` and `layout --apply` follow
+this rule too. Targeted `portal open` returns `explicit_navigation_required`;
+read the portal's `subcanvasRef` from context and open that canvas explicitly.
+
+```sh
+enso canvas open "Architecture"
+enso --canvas "Architecture" node list
+```
+
+Automation can bind the invocation to an immutable pair using both flags:
+
+```sh
+enso --vault-id 77A94BC5-18EA-4869-AAC5-10C461601E26 \
+     --canvas-id B0C38C1D-E096-42E9-BFFA-7BD04CF6F44F node list
+```
+
+The reusable process interface for a local caller is the equivalent environment
+pair. It is read independently for each invocation and is never persisted in the
+pairing configuration:
+
+```sh
+export ENSO_VAULT_ID=77A94BC5-18EA-4869-AAC5-10C461601E26
+export ENSO_CANVAS_ID=B0C38C1D-E096-42E9-BFFA-7BD04CF6F44F
+enso context --full
+enso node move "API" --x 120 --y 200 --dry-run
+enso canvas apply intent.json --dry-run  # intent.canvas: "current" or the bound canvasID
+```
+
+A binding requires both valid UUIDs. Conflicting flag/environment pairs and
+`--canvas` selectors alongside a binding are rejected. A named apply/layout
+selector cannot replace a binding; use `current` (inherit the pair) or its exact
+`canvasID`. Bound invocations reject canvas/vault navigation, canvas deletion,
+portal opening, and pairing changes before their effects, even on dry runs.
+They use only the configured bridge instance; they never search another app
+instance to recover. These options enforce correctness, not authorization; app
+bearer-token and local access rules still govern access.
+
+If the person switches from canvas A to B after resolution, later requests still
+specify A and fail with `target_not_active`. `target_changed` means navigation
+interrupted work already in progress. The CLI preserves bridge error codes and
+details, adds recovery hints, and never switches back, retries against B, or
+replays targeted mutations. Inspect the original target for partial effects
+before deciding whether to retry. A lost mutation response reports an unknown
+outcome; it is not proof that nothing changed.
+
+A batch inherits one outer target. Conflicting operation targets and navigation
+operations are rejected before submission. Dry runs use the same targeting and
+version rules as execution. Apply phases retain their existing partial-success
+reporting; rollback is a canvas snapshot operation, not a transaction covering
+notes, files and sync writes.
 
 ## For agents
 
@@ -72,7 +148,7 @@ Three layers. Compile a whole diagram from a graph, batch a hand-written patch, 
 | **Verify**  | Linting a Vault folder                | `enso check [folder]`                                     |
 
 
-`canvas apply` runs complete local preflight, then applies dependency phases. Each phase is app-atomic; successful earlier phases remain when a later phase fails. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
+`canvas apply` runs complete local preflight, then applies dependency phases. Each phase uses the app's canvas-snapshot rollback while its target remains active; completed work may remain after navigation or a later failure. The error envelope reports `appliedBatches`, `failedBatch`, returned IDs, and `retrySections`.
 
 ## mark
 
@@ -111,13 +187,21 @@ The JSON is a command input, not a Vault file. Members are Notes that already ex
 {
   "canvas": "Request Flow",
   "direction": "LR",
-  "members": ["Gateway", "Router", { "title": "Object Store" }],
+  "members": [
+    { "title": "Gateway", "excerpt": "Requests enter through the gateway.", "mark": "Where requests enter" },
+    "Router",
+    { "title": "Object Store" }
+  ],
   "edges": [
     { "from": "Gateway", "to": "Router", "label": "routes", "direction": "directed" },
     { "from": "Router", "to": "Object Store" }
   ],
   "clusters": [
     { "name": "Edge", "color": "#6B7280", "members": ["Gateway", "Router"] }
+  ],
+  "marks": [
+    "Requests pass through the edge before reaching storage.",
+    { "text": "Edge: Gateway and Router", "width": 320 }
   ]
 }
 ```
@@ -125,13 +209,20 @@ The JSON is a command input, not a Vault file. Members are Notes that already ex
 ```sh
 enso layout request-flow.json --apply
 enso layout request-flow.json --apply --dry-run
+enso layout request-flow.json --spacing 1.5 --apply --dry-run
 ```
 
 Members become Notes ranked along the direction hint on the shared spacing steps, edges become Links, and each cluster becomes a region whose bounds are its member bounds plus padding. Identical spec input yields byte-identical geometry. `--apply` sends the compiled patch through the `canvas apply` pipeline with its preflight and verification, `--apply --dry-run` validates without mutating, and running without `--apply` prints the compiled patch for inspection. Run `enso layout --schema` for the machine-readable spec contract.
 
+A member's optional `excerpt` must quote its Note's markdown exactly, including markup; the example requires that sentence in `Gateway.md`. Its optional `mark` adds typed text connected to the member's Node. The CLI places both to the right of the Node for `TB`, or below it for `LR`, and grows regions to contain them. Top-level `marks` are strings or `{ "text": "...", "width": 320 }` objects, stacked above the drawing in declaration order.
+
+`--spacing <factor>` scales the distance between Node centers while keeping Node sizes fixed. It defaults to `1` and accepts values from `1` to `10`; use `1.5` or `2` when Link labels need more room.
+
+When applied, the compiled drawing is centered on the app's empty-Canvas home point, `(25000, 25000)`. On a Canvas with existing content, it is centered among that content if there is room, or placed to its right with a gap. Dry runs report the same proposed coordinates and a `placement` object with `recentered`, `dx`, and `dy`.
+
 Colors take the app's visual grammar: `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or one of `black`, `blue`, `cyan`, `gray`, `grey`, `green`, `orange`, `pink`, `purple`, `red`, `teal`, `white`, `yellow`. Every path enforces it, so a color outside the grammar fails locally in `layout`, `canvas apply`, `apply`, `link`, and `primitive` alike, before any element reaches the canvas.
 
-`--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply.
+`--apply --dry-run` reports `validation.bridgeValidated` and `validation.locallyValidatedOnly`. The app checks the first phase; later phases carry local validation alone until you apply. Planned Excerpts are reported separately in `excerpts` with `validated: "locally"`; execution places them after the compiled patch succeeds.
 
 `layout` builds a canvas once. Compiling the same spec onto a canvas that already holds its members returns `canvas_already_laid_out`. Re-layout and update mode are tracked in issue #25.
 
@@ -158,7 +249,7 @@ Wikilinks resolve case-insensitively by filename stem or folder-relative markdow
 
 ## canvas apply
 
-Run `enso canvas apply --schema` for the machine-readable source of truth. Inputs require an explicit Canvas name or `current`, reject unknown fields, and use explicit element modes. All `x`/`y` values are element centers in world coordinates.
+Run `enso canvas apply --schema` for the machine-readable source of truth. Inputs require an explicit canvas name, stable `canvasID`, or `current`, reject unknown fields, and use explicit element modes. Coordinates are in world space: `x`/`y` are centers for Nodes, Portals, and regions, and the text block's top-left for Marks. Lines use endpoints `x1`/`y1` and `x2`/`y2`.
 
 ```json
 {
@@ -184,6 +275,8 @@ rm -f auth-flow.json
 ```
 
 Use a temporary JSON file so dry-run and apply read the same inspectable bytes, then remove it after verification. Inline JSON and `--json -` remain available for automation.
+
+On an empty Canvas, an intent that only places Notes and creates Portals, primitives, and Marks is translated as one group so its bounds are centered on the app's home point, `(25000, 25000)`. Relative distances and sizes stay the same. Existing content or any update or removal of those elements preserves the supplied coordinates. Dry-run and apply replies report `placement.recentered`, `placement.dx`, and `placement.dy`, plus `placement.home` when translated onto the home point. Verification uses the translated coordinates.
 
 Note placement accepts folder-relative paths with or without `.md`. Verification checks requested coordinates, presentation, Portal destinations, Link endpoints, and DiagramPrimitive geometry against inspected state. Created primitives use their returned IDs. A mismatch returns `verification_failed` with field-specific `mismatches`, `appliedBatches`, and `returnedIds`; use those details to prepare the correction. An already absent Link satisfies a Canvas removal; `fromNote: true` requires a live Link to identify the mentioning sentence.
 
@@ -287,10 +380,17 @@ enso primitive update "<id>" --x 18300 --y 18200 --dry-run
 | Error                  | Fix                                                 |
 | ---------------------- | --------------------------------------------------- |
 | `app_unavailable`      | Launch the configured app, or run `enso auth link` to relink |
-| `invalid_token`        | The CLI relinks through the app's token file on its own. If that fails, run `enso auth link` with the app open |
+| `invalid_token`        | Run `enso auth link` separately with the app open; targeted and bound requests are not replayed |
 | `access_disabled`      | Turn on Local agent access in Enso's Settings        |
 | `bridge_busy`          | Wait for the agent change in flight, then retry      |
-| `canvas_changed`       | The user changed the open Canvas; inspect `appliedBatches`, reopen the target, and resume |
+| `target_not_active`    | Open the intended canvas explicitly, inspect it, then decide whether to retry |
+| `wrong_vault`          | Open the intended vault explicitly in Enso |
+| `target_not_found`     | Rediscover stable identities with `enso canvas list` |
+| `target_changed`       | Inspect partial effects on the original target before retrying |
+| `target_conflict`      | Use one selector or one matching stable binding |
+| `invalid_target`       | Supply both valid vault and canvas UUIDs |
+| `explicit_navigation_required` | Navigate separately without a binding |
+| `app_outdated` / `cli_outdated` | Upgrade the side named by the error |
 | `ambiguous_selector`   | Use the candidate list from the error; do not guess |
 | Unreadable JSON output | Add `--pretty`                                      |
 

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { calls, run, setupCliTest } from "../support/cli-harness.js";
+import { requestBody, calls, run, setupCliTest } from "../support/cli-harness.js";
 
 setupCliTest();
 
 function body(index: number): unknown {
-  return JSON.parse(String(calls[index].init.body));
+  return requestBody(calls[index]);
 }
 
 describe("node rename", () => {

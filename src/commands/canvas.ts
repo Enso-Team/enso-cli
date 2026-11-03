@@ -19,7 +19,7 @@ export function registerCanvas(program: Command): void {
     return envelope.ok ? { ok: true, data: canvasSummary(envelope.data) } : envelope;
   });
   canvas.command("fit")
-    .argument("[selector]", "open canvas name, id, or ref", "current")
+    .argument("[selector]", "active canvas name, stable canvasID, or ref", "current")
     .option("--dry-run", "compute the fitted viewport without moving it")
     .description("Fit the open canvas content into the visible viewport")
     .action(async (selector: string, options: { dryRun?: boolean }) =>
@@ -52,24 +52,27 @@ export function registerCanvas(program: Command): void {
   canvas
     .command("outline")
     .description("Print the markdown outline Enso keeps for a Canvas under Canvases/ in the Vault")
-    .argument("<selector>", "Canvas name, id, or ref")
+    .argument("<selector>", "Canvas name, stable canvasID, or ref")
     .action(async (selector: string): Promise<EnsoEnvelope> => {
       const client = new BridgeClient();
+      const target = await client.resolveTarget(selector);
+      const checked = await client.request(`/v1/canvases/${target.canvasID}/inspect`);
+      if (!checked.ok) return checked;
       const canvases = await client.request("/v1/canvases");
       if (!canvases.ok) return canvases;
       const listed = readArray<{ id?: string; name?: string; ref?: string }>(canvases.data, "canvases");
-      const found = listed.filter((item) => [item.id, item.name, item.ref].includes(selector));
+      const found = listed.filter((item) => (item as { canvasID?: string }).canvasID?.toUpperCase() === target.canvasID);
       if (found.length !== 1) {
         throw new EnsoCliError(found.length === 0 ? "missing_selector" : "ambiguous_selector",
           found.length === 0 ? `No Canvas matches '${selector}'` : `Multiple Canvases match '${selector}'`,
-          { path: "canvas", expected: "one Canvas name, id, or ref", hint: "Run `enso canvas list` and copy one exactly" });
+          { path: "canvas", expected: "one Canvas name, stable canvasID, or ref", hint: "Run `enso canvas list` and copy one exactly" });
       }
       const vault = await client.request("/v1/vault/current");
       if (!vault.ok) return vault;
       const root = (vault.data as { path?: string } | undefined)?.path;
       const ref = found[0].ref ?? `${found[0].name}.json`;
       if (!root) throw new EnsoCliError("vault_unavailable", "The app reported no Vault path", { path: "vault", expected: "a Vault folder", hint: "Open a Vault in Enso" });
-      const file = join(root, "Canvases", ref.replace(/\.json$/i, "") + ".md");
+      const file = join(root, "Canvases", ref.replace(/^Canvases\//i, "").replace(/\.json$/i, "") + ".md");
       let markdown: string;
       try {
         markdown = readFileSync(file, "utf8");
@@ -225,7 +228,7 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
   const compiled = compileCanvasApply(intent, contextData);
   if (dryRun) {
     const first = compiled.phases[0];
-    const bridgePhase = intent.canvas === "current" ? first : undefined;
+    const bridgePhase = first;
     if (bridgePhase) {
       const bridgeResult = await client.request("/v1/apply", { method: "POST", body: { operations: first.operations, dryRun: true }, dryRun: true });
       if (!bridgeResult.ok) return bridgeResult;
@@ -264,10 +267,6 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     };
   }
 
-  if (intent.canvas !== "current") {
-    const opened = await client.request(`/v1/canvases/${encodeURIComponent(intent.canvas)}/open`, { method: "POST", body: { dryRun: false }, dryRun: false });
-    if (!opened.ok) return opened;
-  }
   const appliedBatches: Array<{ name: string; count: number }> = [];
   const results: Record<string, unknown>[] = [];
   for (const phase of compiled.phases) {
@@ -300,9 +299,13 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     appliedBatches.push({ name: phase.name, count: phase.operations.length });
     results.push(...projectResults(result.data, phase.operations));
   }
-  const verification = await inspect();
+  const verification = await inspect().catch(error => {
+    if (error instanceof EnsoCliError) return { ok: false as const, error: error.body };
+    throw error;
+  });
   const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data, results) : { ok: false, mismatches: ["target unavailable"] };
   if (!verification.ok || !verificationResult.ok) {
+    if (!verification.ok) return { ...verification, error: { ...verification.error, details: { ...verification.error.details, appliedBatches, returnedIds: results.flatMap(item => typeof item.id === "string" ? [item.id] : []) } } };
     return verificationFailure(verificationResult.mismatches, appliedBatches, results);
   }
   return {

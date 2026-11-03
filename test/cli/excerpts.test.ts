@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { bodyOffset, passageSelection } from "../../src/excerpt-model.js";
-import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
+import { fixtureTarget, requestPath, requestBody, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -27,11 +27,11 @@ function writeIndex(id: string, vaultRootPath: string, uuid: string): void {
 }
 
 function body(index: number): unknown {
-  return JSON.parse(String(calls[index].init.body));
+  return requestBody(calls[index]);
 }
 
 function path(index: number): string {
-  return new URL(calls[index].url).pathname + new URL(calls[index].url).search;
+  return requestPath(calls[index]);
 }
 
 function bridge(node: Record<string, unknown> = { id: NODE, kind: "note", title: "Auth", ref: "docs/Auth.md", noteID: NOTE }) {
@@ -42,7 +42,7 @@ function bridge(node: Record<string, unknown> = { id: NODE, kind: "note", title:
     calls.push({ url: String(url), init: init ?? {} });
     const pathname = new URL(String(url)).pathname;
     if (pathname === "/v1/nodes") return Response.json({ ok: true, data: { nodes: [node] } });
-    if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: vault } });
+    if (pathname === "/v1/vault/current") return Response.json({ ok: true, data: { path: vault, vaultID: fixtureTarget.vaultID } });
     return Response.json({ ok: true, data: { excerpt: { id: EXCERPT } } });
   });
 }

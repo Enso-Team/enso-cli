@@ -57,7 +57,7 @@ export function registerNode(program: Command): void {
     .option("--title-gap <points>", "Icon/title gap in World points", parseTitleGap)
     .option("--lock-ratio <boolean>", "Scale the whole Node proportionally: true or false", parseRatioLock)
     .option("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
-    .option("--canvas <selector|current>", "target canvas", "current")
+    .option("--canvas <selector|current>", "target canvas")
     .option("--x <number>", "world-space center x (omit to auto-place at viewport center)")
     .option("--y <number>", "world-space center y (omit to auto-place at viewport center)")
     .option("--dry-run", "validate without mutating")

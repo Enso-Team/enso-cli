@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { writeConfig } from "../../src/config.js";
 import * as skill from "../../src/commands/skill.js";
 import { buildProgram } from "../../src/index.js";
-import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
+import { fixtureTarget, requestPath, requestBody, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -67,16 +67,16 @@ describe("commands", () => {
     expect(result.code).toBe(0);
     expect(calls).toHaveLength(1);
     const request = calls[0];
-    expect(new URL(request.url).pathname + new URL(request.url).search).toBe(path);
+    expect(requestPath(request)).toBe(path.replace(/\/canvases\/(current|Flow%20Map)\/fit/, `/canvases/${fixtureTarget.canvasID}/fit`).replace("canvas=current", `canvas=${fixtureTarget.canvasID}`));
     expect(request.init.method ?? "GET").toBe(method);
     expect((request.init.headers as Record<string, string>).Authorization).toBe("Bearer test-token");
   });
 
   it("opens a resolved vault folder and passes dry-run", async () => {
     await run(["vault", "open", tempDir, "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: tempDir, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ path: tempDir, dryRun: true });
     await run(["vault", "open", "~"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ path: homedir(), dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ path: homedir(), dryRun: false });
   });
 
   it("rejects files and missing vault folders before contacting the app", async () => {
@@ -99,13 +99,13 @@ describe("commands", () => {
     const url = new URL(calls[0].url);
     expect(url.pathname + url.search).toBe("/v1/vault/create?dryRun=false");
     expect(calls[0].init.method).toBe("POST");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: folder, name: "Research", sync: true, team: "team-1", dryRun: false });
+    expect(requestBody(calls[0])).toEqual({ path: folder, name: "Research", sync: true, team: "team-1", dryRun: false });
   });
 
   it("passes an existing folder through as a local vault by default", async () => {
     const result = await run(["vault", "create", tempDir]);
     expect(result.code).toBe(0);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: tempDir, sync: false, dryRun: false });
+    expect(requestBody(calls[0])).toEqual({ path: tempDir, sync: false, dryRun: false });
   });
 
   it("leaves a missing vault folder uncreated on dry-run", async () => {
@@ -114,7 +114,7 @@ describe("commands", () => {
     expect(result.code).toBe(0);
     expect(existsSync(folder)).toBe(false);
     expect(new URL(calls[0].url).search).toBe("?dryRun=true");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: folder, sync: false, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ path: folder, sync: false, dryRun: true });
   });
 
   it("rejects a file, a missing parent, and --team without --sync before contacting the app", async () => {
@@ -194,14 +194,14 @@ describe("commands", () => {
   it("passes Appearance on node place", async () => {
     const result = await run(["node", "place", "API", "--appearance", "api", "--dry-run"]);
     expect(result.code).toBe(0);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ title: "API", placeExisting: true, appearance: "api", dryRun: true });
+    expect(requestBody(calls[0])).toMatchObject({ title: "API", placeExisting: true, appearance: "api", dryRun: true });
   });
 
   it("resets Appearance through node update", async () => {
     const result = await run(["node", "update", "API", "--appearance", "card", "--dry-run"]);
     expect(result.code).toBe(0);
     expect(calls[0].init.method).toBe("PUT");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ appearance: "card", dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ appearance: "card", dryRun: true });
   });
 
   it("rejects unsupported Appearance before contacting the bridge", async () => {
@@ -211,16 +211,16 @@ describe("commands", () => {
 
   it("sets icon and title sizes separately and clears the explicit icon size", async () => {
     await run(["node", "update", "API", "--glyph-size", "72", "--font-size", "24", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ glyphSize: 72, fontSize: 24, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ glyphSize: 72, fontSize: 24, dryRun: true });
     await run(["node", "update", "API", "--clear-glyph-size"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ glyphSize: null, dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ glyphSize: null, dryRun: false });
   });
 
   it("sets and clears the whole-Node ratio lock", async () => {
     await run(["node", "update", "API", "--lock-ratio", "true", "--title-gap", "12", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ isResizeLocked: true, titleGap: 12, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ isResizeLocked: true, titleGap: 12, dryRun: true });
     await run(["node", "update", "API", "--lock-ratio", "false"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ isResizeLocked: false, dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ isResizeLocked: false, dryRun: false });
   });
 
   it("rejects malformed ratio settings before sending a request", async () => {
@@ -231,7 +231,7 @@ describe("commands", () => {
 
   it("passes size fields on placement", async () => {
     await run(["node", "place", "API", "--appearance", "api", "--glyph-size", "80", "--font-size", "20"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });
+    expect(requestBody(calls[0])).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });
   });
 
   it.each(["0", "161", "NaN"])("rejects invalid glyph size %s", async (value) => {
@@ -243,22 +243,22 @@ describe("commands", () => {
     await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];
     expect(new URL(request.url).searchParams.get("dryRun")).toBe("true");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({ x: 1, y: 2, dryRun: true });
+    expect(requestBody(request)).toMatchObject({ x: 1, y: 2, dryRun: true });
   });
 
   it("passes from-note in body on link delete", async () => {
     await run(["link", "delete", "abc"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: true });
+    expect(requestBody(calls[0])).toMatchObject({ fromNote: true });
   });
 
   it("defaults from-note to false on link delete", async () => {
     await run(["link", "remove", "abc"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: false });
+    expect(requestBody(calls[0])).toMatchObject({ fromNote: false });
   });
 
   it("emits null for primitive clear-title and clear-color", async () => {
     await run(["primitive", "update", "abc", "--clear-title", "--clear-color"]);
-    const body = JSON.parse(String(calls[0].init.body));
+    const body = requestBody(calls[0]);
     expect(body.title).toBeNull();
     expect(body.color).toBeNull();
   });
@@ -305,14 +305,14 @@ describe("commands", () => {
 
   it("places a Vault Note by path and never sends content", async () => {
     await run(["node", "place", "docs/Auth.md", "--dry-run"]);
-    const body = JSON.parse(String(calls[0].init.body));
-    expect(body).toMatchObject({ kind: "note", title: "docs/Auth.md", placeExisting: true, canvas: "current", dryRun: true });
+    const body = requestBody(calls[0]);
+    expect(body).toMatchObject({ kind: "note", title: "docs/Auth.md", placeExisting: true, canvas: fixtureTarget.canvasID, dryRun: true });
     expect(body).not.toHaveProperty("content");
   });
 
   it("places nodes with world-space x/y", async () => {
     await run(["node", "place", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       kind: "note",
       title: "Placed",
       placeExisting: true,
@@ -324,7 +324,7 @@ describe("commands", () => {
 
   it("omits x/y when not provided on place", async () => {
     await run(["node", "place", "Auto"]);
-    const body = JSON.parse(String(calls[0].init.body));
+    const body = requestBody(calls[0]);
     expect(body).not.toHaveProperty("x");
     expect(body).not.toHaveProperty("y");
   });
@@ -332,33 +332,33 @@ describe("commands", () => {
   it("passes portal operations", async () => {
     await run(["portal", "create", "--title", "Auth Detail", "--subcanvas-ref", "Canvases/Auth Detail.json", "--dry-run"]);
     expect(new URL(calls[0].url).pathname + new URL(calls[0].url).search).toBe("/v1/nodes?dryRun=true");
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       kind: "portal",
       title: "Auth Detail",
       subcanvasRef: "Canvases/Auth Detail.json",
-      canvas: "current",
+      canvas: fixtureTarget.canvasID,
       dryRun: true
     });
 
     await run(["portal", "open", "Auth Detail", "--dry-run"]);
     expect(new URL(calls[1].url).pathname + new URL(calls[1].url).search).toBe("/v1/nodes/Auth%20Detail/subcanvas/open?dryRun=true");
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ dryRun: true });
+    expect(requestBody(calls[1])).toMatchObject({ dryRun: true });
 
     await run(["portal", "change-subcanvas", "Auth Detail", "Canvases/New Detail.json"]);
     expect(new URL(calls[2].url).pathname + new URL(calls[2].url).search).toBe("/v1/nodes/Auth%20Detail?dryRun=false");
-    expect(JSON.parse(String(calls[2].init.body))).toMatchObject({
+    expect(requestBody(calls[2])).toMatchObject({
       subcanvasRef: "Canvases/New Detail.json",
       dryRun: false
     });
 
     await run(["portal", "remove", "Auth Detail", "--dry-run"]);
     expect(new URL(calls[3].url).pathname + new URL(calls[3].url).search).toBe("/v1/nodes/Auth%20Detail?dryRun=true");
-    expect(JSON.parse(String(calls[3].init.body))).toMatchObject({ dryRun: true });
+    expect(requestBody(calls[3])).toMatchObject({ dryRun: true });
   });
 
   it("passes link direction and color on create and update", async () => {
     await run(["link", "create", "A", "B", "--label", "uses", "--color", "#3B82F6", "--direction", "bidirectional"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       source: "A",
       target: "B",
       label: "uses",
@@ -369,7 +369,7 @@ describe("commands", () => {
 
     await run(["link", "update", "abc", "--color", "green", "--direction", "undirected", "--dry-run"]);
     expect(new URL(calls[1].url).pathname + new URL(calls[1].url).search).toBe("/v1/links/abc?dryRun=true");
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({
+    expect(requestBody(calls[1])).toMatchObject({
       color: "green",
       direction: "undirected",
       dryRun: true
@@ -385,7 +385,7 @@ describe("commands", () => {
 
   it("sends a Link label size and rejects one out of range", async () => {
     await run(["link", "update", "abc", "--label-font-size", "12"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ labelFontSize: 12, dryRun: false });
+    expect(requestBody(calls[0])).toMatchObject({ labelFontSize: 12, dryRun: false });
     calls.length = 0;
     const tooBig = await run(["link", "update", "abc", "--label-font-size", "40"]);
     expect(tooBig.code).not.toBe(0);
@@ -394,7 +394,7 @@ describe("commands", () => {
 
   it("sends a label-only link update", async () => {
     await run(["link", "update", "abc", "--label", "queries"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+    expect(requestBody(calls[0])).toEqual({
       label: "queries",
       dryRun: false
     });
@@ -404,7 +404,7 @@ describe("commands", () => {
 
   it("sends null label when clearing canvas label", async () => {
     await run(["link", "update", "abc", "--clear-label"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       label: null,
       dryRun: false
     });
@@ -415,27 +415,27 @@ describe("commands", () => {
 
   it("re-sources a link with --source", async () => {
     await run(["link", "update", "abc", "--source", "Cache"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ source: "Cache", dryRun: false });
+    expect(requestBody(calls[0])).toEqual({ source: "Cache", dryRun: false });
   });
 
   it("re-targets a link with --target", async () => {
     await run(["link", "update", "abc", "--target", "Database", "--dry-run"]);
     expect(new URL(calls[0].url).search).toBe("?dryRun=true");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: "Database", dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ target: "Database", dryRun: true });
   });
 
   it("delinks with a null target and carries the dangling head position", async () => {
     await run(["link", "update", "abc", "--delink"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: null, dryRun: false });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("targetPosition");
+    expect(requestBody(calls[0])).toEqual({ target: null, dryRun: false });
+    expect(requestBody(calls[0])).not.toHaveProperty("targetPosition");
 
     await run(["link", "update", "abc", "--delink", "--target-position", "320,-180"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ target: null, targetPosition: { x: 320, y: -180 }, dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ target: null, targetPosition: { x: 320, y: -180 }, dryRun: false });
   });
 
   it("keeps a style change on the same request as an endpoint move", async () => {
     await run(["link", "update", "abc", "--target", "Database", "--label", "reads", "--color", "blue"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: "Database", label: "reads", color: "blue", dryRun: false });
+    expect(requestBody(calls[0])).toEqual({ target: "Database", label: "reads", color: "blue", dryRun: false });
   });
 
   it("rejects a malformed --target-position before sending", async () => {
@@ -561,11 +561,11 @@ describe("commands", () => {
   it("omits vision context by default", async () => {
     await run(["context", "--canvas", "current"]);
     const request = calls[0];
-    expect(JSON.parse(String(request.init.body))).toMatchObject({
-      canvas: "current",
+    expect(requestBody(request)).toMatchObject({
+      canvas: fixtureTarget.canvasID,
       depth: 1
     });
-    expect(JSON.parse(String(request.init.body))).not.toHaveProperty("vision");
+    expect(requestBody(request)).not.toHaveProperty("vision");
   });
 
   const canvas = {
@@ -621,7 +621,7 @@ describe("commands", () => {
     respondWith({ ...canvas, nodes: [canvas.nodes[0], { ...canvas.nodes[1], title: "Entry", ref: "Other/Entry.md" }] });
     const data = JSON.parse((await run(["context", "--spec"])).stdout).data;
     expect(data.edges[0]).toMatchObject({ from: "DBS/Entry.md", to: "Other/Entry.md" });
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ includeContent: false });
+    expect(requestBody(calls[0])).toMatchObject({ includeContent: false });
   });
 
   it("places spec cluster members for a region that stores its center apart from its size", async () => {
@@ -633,7 +633,7 @@ describe("commands", () => {
   it("returns every stored field with --full", async () => {
     respondWith(canvas);
     expect(JSON.parse((await run(["context", "--canvas", "Proposed", "--full"])).stdout).data).toEqual(canvas);
-    expect(new URL(calls[0].url).pathname).toBe("/v1/canvases/Proposed/inspect");
+    expect(new URL(calls[0].url).pathname).toBe(`/v1/canvases/${fixtureTarget.canvasID}/inspect`);
   });
 
   it.each([["--spec", "--full"], ["--spec", "--vision"], ["--full", "--diagnostics"], ["--spec", "--node", "Entry"]])("rejects %s with %s", async (...flags) => {
@@ -670,7 +670,7 @@ describe("commands", () => {
     });
     const result = await run(["context", "--diagnostics"]);
     expect(JSON.parse(result.stdout).data).toEqual({ canvas: { id: "Trial" }, vision: { viewport: { scale: 1 }, diagnostics } });
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ includeContent: false, vision: { enabled: true } });
+    expect(requestBody(calls[0])).toMatchObject({ includeContent: false, vision: { enabled: true } });
   });
 
   it("reports unavailable diagnostics and preserves bridge errors", async () => {
@@ -683,11 +683,11 @@ describe("commands", () => {
 
   it("passes optional-extension paths on Note placement and Link line styles", async () => {
     await run(["node", "place", "DBS/Entry", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body)).title).toBe("DBS/Entry.md");
+    expect(requestBody(calls[0]).title).toBe("DBS/Entry.md");
     await run(["link", "create", "A", "B", "--line-style", "dotted"]);
-    expect(JSON.parse(String(calls[1].init.body)).lineStyle).toBe("dotted");
+    expect(requestBody(calls[1]).lineStyle).toBe("dotted");
     await run(["link", "update", "link", "--line-style", "dashed"]);
-    expect(JSON.parse(String(calls[2].init.body)).lineStyle).toBe("dashed");
+    expect(requestBody(calls[2]).lineStyle).toBe("dashed");
   });
 
   it("requests content for focused context and omits it for focused diagnostics", async () => {
@@ -699,7 +699,7 @@ describe("commands", () => {
     await run(["context", "--query", "Entry"]);
     await run(["context", "--node", "Entry", "--diagnostics"]);
     expect(calls.map(call => JSON.parse(String(call.init.body)).includeContent)).toEqual([true, true, false]);
-    expect(JSON.parse(String(calls[2].init.body))).not.toHaveProperty("node");
+    expect(requestBody(calls[2])).not.toHaveProperty("node");
   });
 
   it("requests file-backed viewport vision context", async () => {
@@ -707,8 +707,8 @@ describe("commands", () => {
     const request = calls[0];
     expect(new URL(request.url).pathname).toBe("/v1/context");
     expect(request.init.method).toBe("POST");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({
-      canvas: "current",
+    expect(requestBody(request)).toMatchObject({
+      canvas: fixtureTarget.canvasID,
       depth: 1,
       vision: {
         enabled: true,

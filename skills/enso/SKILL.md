@@ -18,7 +18,9 @@ For a map of code at any scope (the whole system, a module, or the files one que
 
 Use the Enso CLI for app inspection and edits. Refresh live IDs and geometry after relevant edits. Computer use is reserved for an explicit request to operate the native UI.
 
-Start with `enso status`, `enso vault current`, and `enso canvas list`. When `status` reports `skill.stale`, pass its hint to the user. Write and read Note markdown in the returned Vault `path`. Select the intended Canvas. `current` means the Canvas the app has open. Create a missing Canvas with `enso canvas create` when the request authorizes it. Run `enso vault create <path>` only when the user asks for a new Vault, and add `--sync` only when they ask for it synced.
+Start with `enso status`, `enso vault current`, and `enso canvas list`. When `status` reports `skill.stale`, pass its hint to the user. Write and read Note markdown in the returned Vault `path`. Select the intended Canvas. Each command captures one stable target; `current` captures the active Canvas once for that invocation. Use `--canvas <name|ref|canvasID>` for selection. Open another Canvas with a separate explicit `enso canvas open <selector>` before editing it. Create a missing Canvas with `enso canvas create` when the request authorizes it. Run `enso vault create <path>` only when the user asks for a new Vault, and add `--sync` only when they ask for it synced.
+
+When a caller supplies `ENSO_VAULT_ID` and `ENSO_CANVAS_ID`, preserve that immutable binding on every CLI call. Use no `--canvas` override or navigation; apply/layout inputs use `current` or the bound `canvasID`. Partial bindings and conflicting targets fail. The equivalent flags are `--vault-id <uuid> --canvas-id <uuid>`. Binding checks correctness; app credentials govern access. On `target_not_active`, `wrong_vault`, or `target_changed`, report the error and inspect possible partial effects when the intended target is available. Let the person choose navigation and retries. Targeted commands require app bridge contract 3.
 
 ## Write on the canvas
 

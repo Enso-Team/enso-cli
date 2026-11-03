@@ -6,7 +6,7 @@ Read this before a first build or a multi-element revision, and when recovering 
 
 A Note's identity is the filename stem or Vault-relative path. Place members must exist as markdown files. Before placing new Notes or adding wikilinks, run `enso check "<path>"` on that folder. Wikilink examples inside backticks or fenced blocks are literal text.
 
-Use an exact Canvas selector from `enso canvas list`. A named `canvas apply` opens its target. Typed commands such as `enso node move` act on the open Canvas, so run `enso canvas open <target>` before editing a different Canvas through them.
+Use an exact Canvas selector or stable `canvasID` from `enso canvas list`. Each invocation resolves one stable vault/canvas pair and reuses it across requests, batches and dry runs. Open another Canvas as a separate explicit `enso canvas open <target>` action before targeting it; named apply/layout commands also require that target to be active. With an immutable vault/canvas binding, keep apply/layout `canvas` as `current` or the bound `canvasID` and preserve the binding. Handle inactive or changed targets by reporting the error and inspecting partial effects before a retry.
 
 ## Lay out a new graph
 
