@@ -17,6 +17,7 @@ export class RunnerStorage {
   private log?: number;
   private logBytes?: number; // Acknowledged bytes; a torn tail past this is truncated before the next append.
   private snapshotBytes = 0;
+  private settledBytes = 0; // Log bytes the next compaction ignores: the retained tail, or all of it after a failed attempt.
   private readonly compactBytes: number;
   constructor(directory = runnerDirectory(), options: { compactBytes?: number } = {}) {
     this.directory = resolve(directory);
@@ -57,7 +58,8 @@ export class RunnerStorage {
     } finally { rmSync(guard, { recursive: true }); }
   }
 
-  /** Reads without modifying anything. `events` are the replayed log events, i.e. every event after the snapshot. */
+  /** Reads without modifying anything. `events` are every logged event: the replayed ones after the snapshot, preceded by
+   * any lines it already covers (the tail a compaction retained for cursors). */
   load(): { state: State; events: RunnerEvent[] } {
     const fail = (message: string): never => { throw new EnsoCliError("invalid_runner_storage", `${message}; refusing to dispatch or overwrite it`); };
     const read = (name: string) => {
@@ -80,6 +82,7 @@ export class RunnerStorage {
     const end = log.lastIndexOf(0x0a) + 1;
     const events: RunnerEvent[] = [];
     let last: number | undefined;
+    let covered = 0;
     for (const line of end ? log.subarray(0, end - 1).toString("utf8").split("\n") : []) {
       let transaction!: RunnerEvent[];
       try { transaction = transactionSchema.parse(JSON.parse(line)).events; } catch { fail("Damaged runner log record"); }
@@ -87,13 +90,14 @@ export class RunnerStorage {
       if ((last !== undefined && first !== last + 1) || transaction.some((event, index) => event.sequence !== first + index)) fail("Runner log sequence gap");
       last = transaction.at(-1)!.sequence;
       // Records the snapshot already covers remain after a crash between snapshot rename and log truncation.
-      if (last <= snapshot.sequence) continue;
-      try { transact(state, transaction); } catch { fail("Runner log does not continue its snapshot, or its invariants failed"); }
+      if (last <= snapshot.sequence) covered += Buffer.byteLength(line) + 1;
+      else try { transact(state, transaction); } catch { fail("Runner log does not continue its snapshot, or its invariants failed"); }
       events.push(...transaction);
     }
     if (last !== undefined && last < snapshot.sequence) fail("Runner log does not reach its snapshot");
     this.logBytes = end;
     this.snapshotBytes = file?.length ?? 0;
+    this.settledBytes = covered;
     return { state, events };
   }
 
@@ -118,25 +122,39 @@ export class RunnerStorage {
     this.logBytes += line.length;
   }
 
-  /** Amortized: the log may grow to the snapshot's size, so rewriting the snapshot costs O(1) per appended byte. */
+  /** Amortized: appends may reach the snapshot's size, so rewriting the snapshot costs O(1) per appended byte. */
   compactionDue(): boolean {
-    return this.log !== undefined && this.logBytes! >= Math.max(this.compactBytes, this.snapshotBytes);
+    return this.log !== undefined && this.logBytes! - this.settledBytes >= Math.max(this.compactBytes, this.snapshotBytes);
   }
 
-  /** Atomically replaces the snapshot with `state`, then empties the log. */
-  compact(state: State): void {
+  /** Atomically replaces the snapshot with `state`, then the log with its newest lines (the last, plus earlier ones
+   * within an eighth of `compactBytes`) so recent cursors survive. Returns the sequence before the oldest one kept.
+   * Throws without losing an acknowledged line; the next attempt waits for another threshold of appends. */
+  compact(state: State): number {
     if (this.log === undefined) throw new Error("Runner log is not open");
+    this.settledBytes = this.logBytes!;
     this.snapshotBytes = this.write("state.json", toSnapshot(state));
-    ftruncateSync(this.log, 0);
-    fsyncSync(this.log);
-    this.logBytes = 0;
+    const log = readFileSync(join(this.directory, "log.jsonl")).subarray(0, this.logBytes);
+    const lineStart = (end: number) => log.lastIndexOf(0x0a, end - 2) + 1;
+    let start = lineStart(log.length);
+    while (start > 0 && log.length - lineStart(start) <= this.compactBytes / 8) start = lineStart(start);
+    const tail = log.subarray(start);
+    const base = (JSON.parse(tail.subarray(0, tail.indexOf(0x0a)).toString("utf8")) as { events: RunnerEvent[] }).events[0].sequence - 1;
+    // The next append reopens and size-checks whichever log survives, so a replacement that may have landed fails closed.
+    const fd = this.log;
+    this.log = undefined;
+    closeSync(fd);
+    this.replace("log.jsonl", tail);
+    this.logBytes = this.settledBytes = tail.length;
+    return base;
   }
 
   /** Atomic private file replacement: temporary file, fsync, rename, directory fsync. Returns bytes written. */
-  write(name: string, value: unknown): number {
+  write(name: string, value: unknown): number { return this.replace(name, Buffer.from(JSON.stringify(value) + "\n")); }
+
+  private replace(name: string, text: Buffer): number {
     if (!this.locked) throw new Error("Storage is not owned");
     const temporary = join(this.directory, `.${name}.${randomUUID()}.tmp`);
-    const text = Buffer.from(JSON.stringify(value) + "\n");
     let fd: number | undefined;
     try {
       fd = openSync(temporary, "wx", 0o600);

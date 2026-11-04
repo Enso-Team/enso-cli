@@ -4,6 +4,7 @@ import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
 import { startRunner, type RunnerService } from "../runner/service.js";
 import { currentRequestContext } from "../targeting.js";
+import { withoutUpdateNotice } from "../update.js";
 
 function parseTimeout(value: string): number {
   const timeout = Number(value);
@@ -12,7 +13,7 @@ function parseTimeout(value: string): number {
 }
 
 export function registerRunner(program: Command): void {
-  const runner = program.command("runner").description("Durable local prompt runner (fake provider only)");
+  const runner = withoutUpdateNotice(program.command("runner")).description("Durable local prompt runner (fake provider only)");
   runner.command("serve")
     .description("Run an independent foreground service; stop with runner shutdown, SIGINT or SIGTERM (a third signal force-exits)")
     .requiredOption("--provider <name>", "execution provider (fake)")

@@ -18,7 +18,7 @@ import { registerSkill } from "./commands/skill.js";
 import { registerRunner } from "./commands/runner.js";
 import { registerStatus } from "./commands/status.js";
 import { registerUpdate } from "./commands/update.js";
-import { notifyUpdate } from "./update.js";
+import { notifyUpdate, wantsUpdateNotice } from "./update.js";
 import { registerVault } from "./commands/vault.js";
 import { EnsoCliError, errorEnvelope, printEnvelope, type EnsoEnvelope } from "./errors.js";
 import { withRequestContext, currentRequestContext, type TargetOptions } from "./targeting.js";
@@ -66,7 +66,7 @@ export function buildProgram(): Command {
     if (result) {
       const pretty = Boolean(thisCommand.optsWithGlobals().pretty);
       printEnvelope(result, pretty, result.ok ? process.stdout : process.stderr);
-      if (result.ok && actionCommand.name() !== "update" && actionCommand.parent?.name() !== "runner") await notifyUpdate();
+      if (result.ok && wantsUpdateNotice(actionCommand)) await notifyUpdate();
     }
   });
 
@@ -102,7 +102,7 @@ function wrapActions(command: Command): void {
         return await action(processedArgs) as EnsoEnvelope | undefined;
       });
       command.setOptionValue("__ensoResult", result);
-      process.exitCode = result?.ok === false ? 1 : 0;
+      process.exitCode = result === undefined || result.ok ? 0 : 1;
     } catch (error) {
       const envelope = errorEnvelope(error);
       printEnvelope(envelope, Boolean(program.optsWithGlobals().pretty), process.stderr);

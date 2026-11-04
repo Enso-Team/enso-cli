@@ -12,7 +12,7 @@ const errorSchema = z.object({
   details: z.record(z.unknown()).optional()
 });
 
-const envelopeSchema = z.union([
+export const envelopeSchema = z.union([
   z.object({ ok: z.literal(true), data: z.unknown().optional().default({}) }),
   z.object({ ok: z.literal(false), error: errorSchema })
 ]);

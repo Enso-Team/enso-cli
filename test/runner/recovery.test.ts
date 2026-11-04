@@ -86,7 +86,8 @@ describe("real process crash recovery", () => {
     // Clients rebuild state from a snapshot plus the deltas after its cursor.
     let base = restore({ storageVersion: 2, sequence: 0, sessions: [], runs: [] });
     if (boundary === "compacted") {
-      expect(await call("GET", "/v1/events?after=0")).toMatchObject({ ok: false, error: { code: "cursor_expired" } });
+      // The crash left the covered log in place, so its events stay pollable alongside the new snapshot.
+      expect(await call("GET", "/v1/events?after=0")).toMatchObject({ ok: true });
       const snapshot = (await call("GET", "/v1/snapshot") as any).data;
       base = restore({ storageVersion: 2, sequence: snapshot.cursor, sessions: snapshot.sessions, runs: snapshot.runs });
     }

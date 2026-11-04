@@ -1,10 +1,9 @@
 import type { Command } from "commander";
-import { updateCli } from "../update.js";
+import { updateCli, withoutUpdateNotice } from "../update.js";
 import { refreshInstalledSkill } from "./skill.js";
 
 export function registerUpdate(program: Command): void {
-  program
-    .command("update")
+  withoutUpdateNotice(program.command("update"))
     .description("update a global npm installation to the latest CLI release and refresh the installed skill")
     .option("--check", "check the available version")
     .action(async (options: { check?: boolean }) => {

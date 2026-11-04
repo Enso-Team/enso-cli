@@ -12,7 +12,7 @@ type Fields = Omit<Extract<Change, { type: "run_updated" }>, "type" | "requestID
 
 export class RunnerEngine {
   private state: State;
-  // Retained events are exactly the log: those after the last compaction (`base`). Older cursors need a new snapshot.
+  // Retained events are exactly the log: the tail the last compaction kept, then every later one. `base` precedes the oldest.
   private history: RunnerEvent[];
   private base: number;
   private active = new Map<string, Active>();
@@ -187,26 +187,27 @@ export class RunnerEngine {
   private update(requestID: string, status: Run["status"], fields: Fields = {}): Change {
     return { type: "run_updated", requestID, status, updatedAt: new Date().toISOString(), ...fields };
   }
-  /** Validates via the reducer, appends one log line, then keeps the result. Any failure leaves memory untouched. */
+  /** Validates via the reducer, appends one log line, then keeps the result; a failure there leaves memory untouched and
+   * fails the service closed. Compaction afterwards cannot undo the durable transaction, so its failure is not reported:
+   * storage keeps every line and retries later, and a log it may have replaced fails the next append instead. */
   private commit(changes: Change[]): void {
     this.assertHealthy();
     if (!changes.length) return;
     const events = changes.map((change, index) => ({ sequence: this.state.sequence + index + 1, ...change }) as RunnerEvent);
-    try {
-      transact(this.state, events, () => this.storage.append(events));
-      for (const event of events) this.history.push(event);
-      if (this.storage.compactionDue()) {
-        this.storage.compact(this.state);
-        this.history = [];
-        this.base = this.state.sequence;
-      }
-    } catch {
+    try { transact(this.state, events, () => this.storage.append(events)); }
+    catch {
       this.healthy = false;
       this.accepting = false;
       for (const active of this.active.values()) active.controller.abort();
       this.options.onFatal?.();
       throw new EnsoCliError("runner_storage_failure", "Durable write failed; runner stopped. Reconnect after restart to inspect the outcome");
     }
+    for (const event of events) this.history.push(event);
+    if (!this.storage.compactionDue()) return;
+    let base: number;
+    try { base = this.storage.compact(this.state); } catch { return; }
+    this.history = this.history.slice(base - this.base);
+    this.base = base;
   }
   private assertHealthy(): void {
     if (!this.healthy) throw new EnsoCliError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");

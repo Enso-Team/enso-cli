@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -130,4 +131,31 @@ it("rejects unsupported providers with a structured CLI error", async () => {
   const result = await command(["runner", "serve", "--provider", "claude"]);
   expect(result.code).toBe(1);
   expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+});
+
+it("fails runner calls whose socket reply is not an envelope", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  const replies = ['{"error":"x"}', "[]", '{"ok":false,"error":{"code":"route_not_found","message":"missing"}}'];
+  const server = createServer((_, response) => { response.end(replies.shift()); });
+  await new Promise<void>(resolve => server.listen(join(path, "control.sock"), resolve));
+  writeFileSync(join(path, "connection.json"), JSON.stringify({ socketPath: join(path, "control.sock"), token: "t", protocolVersion: 1, pid: process.pid }));
+  try {
+    for (const method of ["GET", "POST"]) {
+      const result = await command(["runner", "call", method, "/v1/snapshot", "--directory", path]);
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_response", details: method === "GET" ? { status: 200 } : { status: 200, outcome: "unknown" } });
+    }
+    const failed = await command(["runner", "call", "GET", "/v1/snapshot", "--directory", path]);
+    expect(failed.code).toBe(1);
+    expect(JSON.parse(failed.stderr).error.code).toBe("route_not_found");
+  } finally { await new Promise(resolve => server.close(resolve)); }
+}, 15_000);
+
+it("exempts runner and update commands from the update notice", async () => {
+  const [{ buildProgram }, { wantsUpdateNotice }] = await Promise.all([import("../../src/index.js"), import("../../src/update.js")]);
+  const program = buildProgram();
+  const find = (...names: string[]) => names.reduce((command, name) => command.commands.find(child => child.name() === name)!, program);
+  expect(wantsUpdateNotice(find("runner", "call"))).toBe(false);
+  expect(wantsUpdateNotice(find("update"))).toBe(false);
+  expect(wantsUpdateNotice(find("node", "update"))).toBe(true);
 });

@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { request } from "node:http";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
+import { envelopeSchema } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 import { runnerVersion, runnerVersionHeader } from "./protocol.js";
 import { runnerDirectory } from "./storage.js";
@@ -63,8 +64,13 @@ function send(connection: Connection, method: string, path: string, body: unknow
       response.on("data", chunk => chunks.push(Buffer.from(chunk)));
       response.on("error", () => reject(new EnsoCliError("runner_unavailable", "Runner response disconnected; inspect the run after reconnecting")));
       response.on("end", () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")) as EnsoEnvelope); }
-        catch { reject(new EnsoCliError("invalid_response", "Runner returned invalid JSON")); }
+        const details = { status: response.statusCode, ...(method === "GET" ? {} : { outcome: "unknown" }) };
+        let json: unknown;
+        try { json = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+        catch { return reject(new EnsoCliError("invalid_response", "Runner returned invalid JSON", details)); }
+        const parsed = envelopeSchema.safeParse(json);
+        if (parsed.success) resolve(parsed.data as EnsoEnvelope);
+        else reject(new EnsoCliError("invalid_response", "Runner returned an invalid envelope", details));
       });
     });
     // Rejecting before destroy() means the resulting socket error cannot replace the timeout.

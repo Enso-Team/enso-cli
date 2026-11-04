@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFile
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import type { Command } from "commander";
 import { z } from "zod";
 import { configDir } from "./config.js";
 import { EnsoCliError } from "./errors.js";
@@ -15,6 +16,18 @@ const dayMs = 24 * 60 * 60 * 1000;
 const stableVersion = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
 const cacheSchema = z.object({ checkedAt: z.number().finite(), latest: stableVersion.optional() });
 const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+const noticeExempt = new WeakSet<Command>();
+
+/** Exempts a command and its subcommands from the post-success update notice. */
+export function withoutUpdateNotice<T extends Command>(command: T): T {
+  noticeExempt.add(command);
+  return command;
+}
+
+export function wantsUpdateNotice(command: Command): boolean {
+  for (let current: Command | null = command; current; current = current.parent) if (noticeExempt.has(current)) return false;
+  return true;
+}
 
 export function isNewerVersion(latest: string, installed: string): boolean {
   if (!stableVersion.safeParse(latest).success || !stableVersion.safeParse(installed).success) return false;

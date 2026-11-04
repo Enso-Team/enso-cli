@@ -48,23 +48,35 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   });
   server.on("clientError", (_error, socket) => socket.destroy());
 
+  const shutdownReplies = new Set<Promise<void>>();
+  const cleanup = (): Error | undefined => {
+    let first: Error | undefined;
+    for (const step of [
+      () => rmSync(join(storage.directory, "connection.json"), { force: true }),
+      () => rmSync(socketPath, { force: true }),
+      () => storage.release()
+    ]) {
+      try { step(); }
+      catch (error) { first ??= error instanceof Error ? error : new Error("Runner cleanup failed"); }
+    }
+    return first;
+  };
+
   const stop = (): Promise<void> => {
     if (stopTask) return stopTask;
     stopTask = (async () => {
       try { await engine.shutdown(); }
       catch (error) { fatalError ??= error instanceof Error ? error : new Error("Runner shutdown failed"); }
-      await new Promise<void>(resolve => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-      });
-      for (const cleanup of [
-        () => rmSync(join(storage.directory, "connection.json"), { force: true }),
-        () => rmSync(socketPath, { force: true }),
-        () => storage.release()
-      ]) {
-        try { cleanup(); }
-        catch (error) { fatalError ??= error instanceof Error ? error : new Error("Runner cleanup failed"); }
-      }
+      const closedServer = new Promise<void>(resolve => server.close(() => resolve()));
+      server.closeIdleConnections();
+      // Let in-flight shutdown replies flush before force-closing, bounded so a stuck client cannot hang stop.
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([Promise.all(shutdownReplies), new Promise(resolve => { timer = setTimeout(resolve, 1000); })]);
+      clearTimeout(timer);
+      server.closeAllConnections();
+      await closedServer;
+      const cleanupError = cleanup();
+      fatalError ??= cleanupError;
       if (fatalError) fail(fatalError); else finish();
     })();
     return stopTask;
@@ -90,7 +102,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
       return send(response, 200, { ok: true, data: engine.events(Number(after)) });
     }
     const session = /^\/v1\/sessions\/([^/]+)$/.exec(path);
-    if (method === "GET" && session) return send(response, 200, { ok: true, data: engine.session(decodeURIComponent(session[1])) });
+    if (method === "GET" && session) return send(response, 200, { ok: true, data: engine.session(decodeURIComponent(session[1]).toLowerCase()) });
     const run = /^\/v1\/runs\/([^/]+)(?:\/(cancel|respond))?$/.exec(path);
     if (method === "GET" && run && !run[2]) return send(response, 200, { ok: true, data: engine.run(decodeURIComponent(run[1])) });
     if (method === "POST" && path === "/v1/sessions") return send(response, 201, { ok: true, data: engine.createSession(await body(request)) });
@@ -99,7 +111,8 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     if (method === "POST" && run?.[2] === "respond") return send(response, 200, { ok: true, data: engine.answer(decodeURIComponent(run[1]), await body(request)) });
     if (method === "POST" && path === "/v1/shutdown") {
       // "close" fires after the reply is flushed or if the client disconnects mid-shutdown.
-      response.once("close", () => { void stop(); });
+      const replied = new Promise<void>(resolve => response.once("close", () => { shutdownReplies.delete(replied); resolve(); void stop(); }));
+      shutdownReplies.add(replied);
       await engine.shutdown();
       if (fatalError) throw fatalError;
       return send(response, 200, { ok: true, data: { stopped: true } });
@@ -131,9 +144,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     return { directory: storage.directory, socketPath, engine, closed, stop };
   } catch (error) {
     server.close();
-    rmSync(socketPath, { force: true });
-    rmSync(join(storage.directory, "connection.json"), { force: true });
-    storage.release();
+    cleanup();
     throw error;
   }
 }

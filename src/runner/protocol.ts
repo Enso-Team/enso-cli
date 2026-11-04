@@ -7,7 +7,16 @@ export const runnerVersion = 1;
 export const runnerVersionHeader = "Enso-Runner-Version";
 const id = z.string().min(1).max(128);
 const pendingID = z.string().min(1).max(256);
-const target = z.unknown().transform(value => parseTarget(value));
+/** Runner-issued session IDs are lowercase; accept any case from clients. */
+const sessionID = z.string().uuid().transform(value => value.toLowerCase());
+/** Reports a bad target as an issue so safeParse stays non-throwing; `parse()` restores its error code. */
+const target = z.unknown().transform((value, ctx) => {
+  try { return parseTarget(value); } catch (error) {
+    if (!(error instanceof EnsoCliError)) throw error;
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: error.message, params: { code: error.body.code } });
+    return z.NEVER;
+  }
+});
 export const bindingSchema = z.object({
   bridgeUrl: z.string().refine(value => {
     if (!isLoopbackBridgeUrl(value)) return false;
@@ -23,7 +32,7 @@ export const contextSchema = z.object({
 }).strict();
 export const promptSchema = z.object({
   requestID: id,
-  sessionID: z.string().uuid(),
+  sessionID,
   text: z.string().min(1),
   context: contextSchema,
   fake: z.object({
@@ -47,7 +56,7 @@ export const outcomeSchema = z.union([
   z.object({ status: z.literal("cancelled") }).strict()
 ]);
 export const sessionSchema = z.object({
-  id: z.string().uuid(), binding: bindingSchema, provider: z.literal("fake"), createdAt: z.string(),
+  id: sessionID, binding: bindingSchema, provider: z.literal("fake"), createdAt: z.string(),
   providerState: json.optional()
 }).strict();
 export const runSchema = z.object({
@@ -59,7 +68,7 @@ const sequence = z.number().int().positive();
 // Deltas: run_accepted is the only event carrying a request; updates replace every mutable field (absent = cleared).
 export const eventSchema = z.discriminatedUnion("type", [
   z.object({ sequence, type: z.literal("session_created"), session: sessionSchema }).strict(),
-  z.object({ sequence, type: z.literal("session_updated"), sessionID: z.string().uuid(), providerState: json.optional() }).strict(),
+  z.object({ sequence, type: z.literal("session_updated"), sessionID, providerState: json.optional() }).strict(),
   z.object({ sequence, type: z.literal("run_accepted"), run: runSchema }).strict(),
   runSchema.omit({ request: true, createdAt: true }).extend({ sequence, type: z.literal("run_updated"), requestID: id })
 ]);
@@ -82,11 +91,12 @@ export type Change = RunnerEvent extends infer E ? E extends RunnerEvent ? Omit<
 export function terminal(status: Run["status"]): boolean {
   return ["completed", "failed", "cancelled", "interrupted"].includes(status);
 }
-export function invalid(message: string): never { throw new EnsoCliError("invalid_input", message); }
 export function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   const result = schema.safeParse(value);
-  if (!result.success) invalid(result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "));
-  return result.data;
+  if (result.success) return result.data;
+  const coded = result.error.issues.find(issue => issue.code === z.ZodIssueCode.custom && issue.params?.code);
+  if (coded?.code === z.ZodIssueCode.custom) throw new EnsoCliError(coded.params!.code, coded.message);
+  throw new EnsoCliError("invalid_input", result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "));
 }
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;

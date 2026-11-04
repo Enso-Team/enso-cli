@@ -21,7 +21,7 @@ RunnerStorage.prototype.append = function (events) {
   if (statuses.includes(boundary as never)) process.kill(process.pid, "SIGKILL");
 };
 if (boundary === "compacted") {
-  // Compact after every transaction; crash after the snapshot rename, before the log is emptied.
+  // Compact after every transaction; crash after the snapshot rename, before the log is replaced by its tail.
   RunnerStorage.prototype.compactionDue = () => true;
   const originalWrite = RunnerStorage.prototype.write;
   RunnerStorage.prototype.write = function (name, value) {

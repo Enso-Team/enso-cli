@@ -144,6 +144,18 @@ describe("torn and damaged logs", () => {
     await expect(startRunner({ directory })).rejects.toMatchObject({ body: { code: "invalid_runner_storage" } });
     expect(["log.jsonl", "state.json"].map(name => readFileSync(path(name)))).toEqual(files);
   });
+
+  it("refuses a snapshot whose binding has a corrupted canvasTarget", async () => {
+    open();
+    engine!.createSession({ binding: binding() });
+    await engine!.shutdown();
+    abandon();
+    const snapshot = toSnapshot(durable());
+    snapshot.sessions[0].binding.canvasTarget = { vaultID: "vault", canvasID: "canvas" } as never;
+    writeFileSync(path("state.json"), JSON.stringify(snapshot) + "\n");
+    writeFileSync(path("log.jsonl"), "");
+    expect(() => durable()).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_runner_storage" }) }));
+  });
 });
 
 describe("compaction", () => {
@@ -216,8 +228,10 @@ describe("compaction", () => {
     expect(engine!.events(0).events.map(event => event.type)).toEqual(["session_created"]);
     engine!.submit(prompt(s.id, "big", "success", "x".repeat(100 * 1024)));
     expect(existsSync(path("state.json"))).toBe(true);
-    expect(readFileSync(path("log.jsonl")).length).toBe(0);
-    for (const after of [0, 1]) expect(() => engine!.events(after)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
+    // Compaction keeps the triggering line, so a caught-up client still polls across it.
+    expect(readFileSync(path("log.jsonl"), "utf8").trim().split("\n").flatMap(line => JSON.parse(line).events.map((event: { sequence: number }) => event.sequence))).toEqual([2]);
+    expect(engine!.events(1).events.map(event => event.sequence)).toEqual([2]);
+    expect(() => engine!.events(0)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
     expect(() => engine!.events(3)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_cursor" }) }));
     const snapshot = engine!.snapshot();
     expect(snapshot.cursor).toBe(2);
@@ -230,11 +244,13 @@ describe("compaction", () => {
     abandon();
     open({ compactBytes: 64 * 1024 });
     expect(engine!.events(2)).toEqual(delta);
-    expect(() => engine!.events(1)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
+    expect(engine!.events(1).events.map(event => event.sequence)).toEqual([2, 3]);
+    expect(() => engine!.events(0)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
   });
 
   it("reports cursor_expired over HTTP as 410", async () => {
     service = await startRunner({ directory, compactBytes: 1 });
+    service.engine.createSession({ binding: binding() });
     service.engine.createSession({ binding: binding() });
     const { socketPath, token } = JSON.parse(readFileSync(path("connection.json"), "utf8"));
     const response = await new Promise<{ status?: number; body: any }>(resolve => {

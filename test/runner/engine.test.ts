@@ -107,3 +107,40 @@ describe("outcomes", () => {
     expect(engine.session(s.id).providerState).toEqual({ cursor: "c-1" });
   });
 });
+
+describe("compaction", () => {
+  const reopen = (compactBytes?: number) => { storage.release(); storage = new RunnerStorage(directory, { compactBytes }); storage.acquire(); };
+
+  it("keeps the triggering transaction pollable, consistently across restart", async () => {
+    reopen(1);
+    engine = new RunnerEngine(storage, new FakeProvider(), { autoDispatch: false });
+    engine.createSession({ binding: binding() });
+    const { cursor } = engine.snapshot();
+    const compact = vi.spyOn(storage, "compact");
+    const created = engine.createSession({ binding: binding() });
+    expect(compact).toHaveBeenCalledTimes(1);
+    const delta = engine.events(cursor);
+    expect(delta).toEqual({ events: [expect.objectContaining({ sequence: cursor + 1, type: "session_created", session: created })], cursor: cursor + 1 });
+    expect(() => engine!.events(cursor - 1)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
+    await engine.shutdown();
+    reopen(1);
+    engine = new RunnerEngine(storage, new FakeProvider(), { autoDispatch: false });
+    expect(engine.events(cursor)).toEqual(delta);
+    expect(() => engine!.events(cursor - 1)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
+  });
+
+  it("reports a transaction as committed when its compaction fails", async () => {
+    const onFatal = vi.fn();
+    engine = new RunnerEngine(storage, stub(async () => ({ status: "completed", result: null })), { onFatal });
+    const s = engine.createSession({ binding: binding() });
+    const { cursor } = engine.snapshot();
+    vi.spyOn(storage, "compactionDue").mockReturnValueOnce(true);
+    const write = vi.spyOn(storage, "write").mockImplementationOnce(() => { throw new Error("ENOSPC"); });
+    expect(engine.submit(prompt(s.id, "turn")).status).toBe("accepted");
+    expect(write).toHaveBeenCalledTimes(1);
+    const run = await status("turn", "completed");
+    expect(onFatal).not.toHaveBeenCalled();
+    expect(engine.events(cursor).events.map(event => event.type)).toEqual(["run_accepted", "run_updated", "run_updated"]);
+    expect(new RunnerStorage(directory).load().state.runs.get("turn")).toEqual(run);
+  });
+});

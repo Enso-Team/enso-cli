@@ -237,9 +237,12 @@ State reads and transactions are serialized synchronously in one service process
 A transition concurrent with a snapshot is either in that snapshot, or has a
 larger sequence and appears in subsequent events. Events never announce an
 uncommitted change. Repeating an event query is safe. The runner retains the
-events since its last log compaction (below), the same window before and after a
-restart; an older cursor returns `cursor_expired`. A client polling regularly
-rarely sees it, but must handle it. A cursor ahead of the durable history,
+events in its log (below): every event since the last compaction, preceded by the
+transaction that triggered it and earlier ones within 1 MiB of log (an eighth
+of the 8 MiB compaction size). The same window applies before and after a restart;
+an older cursor returns `cursor_expired`. A caught-up client can therefore always
+poll across a compaction; one further behind may not, so every client must
+handle it. A cursor ahead of the durable history,
 negative/noninteger cursor, or omitted cursor returns `invalid_cursor`; get a new
 snapshot if the store was replaced. There is no subscription socket to keep alive.
 
@@ -255,24 +258,31 @@ vault metadata. It consists of two files:
   never repeats the request or its context.
 - `state.json`: a compacted snapshot
   `{"storageVersion":2,"sequence":N,"sessions":[...],"runs":[...]}` covering
-  every event through sequence N. It holds no event history.
+  every event through sequence N. It holds no event history; the log does.
 
 Each state change, idempotency decision and active slot check runs without
-yielding. When the log reaches the larger of 8 MiB and the current snapshot's
-size, the runner compacts: it writes a new snapshot through a private temporary
-file, file fsync, atomic rename, and directory fsync, then truncates and fsyncs
-the log. Snapshot rewrites therefore cost a constant amount per logged byte.
+yielding. When the log has grown by the larger of 8 MiB and the current
+snapshot's size since the last compaction, the runner compacts: it writes a new
+snapshot through a private temporary file, file fsync, atomic rename, and
+directory fsync, then replaces the log the same way with its newest lines (the
+retained event window above). Snapshot rewrites therefore cost a constant amount
+per logged byte. Compaction follows a transaction that is already durable and
+applied, so its failure is not that transaction's failure: the request still
+succeeds, the full log is kept, and compaction is retried after the log grows by
+another threshold. If the log replacement may have landed, the next append finds
+the log shorter than acknowledged and fails the service closed.
 
 Startup reads the snapshot (none means an empty store at sequence 0), then the
 log. Only newline-terminated lines were ever acknowledged: a final line without
 its newline is an unacknowledged, torn transaction. It is ignored and truncated
 before the next append, so none of its events apply. Lines entirely at or below
-the snapshot's sequence are already covered and skipped; the next line must
-continue at the following sequence. The remaining lines are replayed through the
-same reducer that applies live transactions. A crash at any compaction step
-therefore recovers exactly the acknowledged state: before the rename, the old
-snapshot plus the whole log; after the rename, the new snapshot with its covered
-lines skipped; after truncation, the new snapshot alone. A damaged complete line,
+the snapshot's sequence are already covered: they are not replayed, only served
+as retained events. The next line must continue at the following sequence. The
+remaining lines are replayed through the same reducer that applies live
+transactions. A crash at any compaction step therefore recovers exactly the
+acknowledged state: before the snapshot rename, the old snapshot plus the whole
+log; after it, the new snapshot with the whole log covered; after the log
+replacement, the new snapshot with its covered tail. A damaged complete line,
 a sequence gap or overlap, a log that ends before its snapshot, or a failed store
 invariant fails startup with `invalid_runner_storage`; nothing is rewritten.
 `storageVersion` must be 2; earlier unreleased stores are refused, not migrated.
@@ -309,9 +319,8 @@ external conversation/effects before continuing an uncertain session.
 
 A persistence error fails the process closed: no further state is served or work
 dispatched, active waits are aborted, and the service shuts down with an error
-exit status. An HTTP error or disconnect during this failure is ambiguous (a
-failed compaction follows an already durable transaction); restart and inspect
-state. Unsupported/damaged records fail closed and are never
+exit status. An HTTP error or disconnect during this failure is ambiguous;
+restart and inspect state. Unsupported/damaged records fail closed and are never
 reset automatically.
 
 `owner` is an atomic PID symlink that prevents multiple service writers per
