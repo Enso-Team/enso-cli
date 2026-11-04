@@ -2,14 +2,19 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { EnsoCliError } from "../errors.js";
-import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, promptSchema, sessionInputSchema, terminal, type Answer, type Pending, type Run, type Session, type State } from "./protocol.js";
+import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, promptSchema, sessionInputSchema, terminal, type Answer, type Change, type Pending, type Run, type RunnerEvent, type Session } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
+import { transact, type State } from "./state.js";
 import { RunnerStorage } from "./storage.js";
 
 type Active = { controller: AbortController; task: Promise<void>; answer?: (answer: Answer) => void };
+type Fields = Omit<Extract<Change, { type: "run_updated" }>, "type" | "requestID" | "status" | "updatedAt">;
 
 export class RunnerEngine {
   private state: State;
+  // Retained events are exactly the log: those after the last compaction (`base`). Older cursors need a new snapshot.
+  private history: RunnerEvent[];
+  private base: number;
   private active = new Map<string, Active>();
   private accepting = true;
   private healthy = true;
@@ -19,13 +24,13 @@ export class RunnerEngine {
     private readonly provider: RunnerProvider,
     private readonly options: { autoDispatch?: boolean; onFatal?: () => void } = {}
   ) {
-    this.state = storage.load();
-    const uncertain = this.state.runs.filter(run => !terminal(run.status) && run.status !== "accepted");
-    if (uncertain.length) this.commit(next => {
-      for (const old of uncertain) this.transition(next, old.request.requestID, "interrupted", {
-        error: { code: "restart_uncertain", message: "Runner stopped after dispatch was recorded; execution may have begun or completed. No automatic replay." }
-      });
-    });
+    const { state, events } = storage.load();
+    this.state = state;
+    this.history = events;
+    this.base = state.sequence - events.length;
+    this.commit(this.unfinished().filter(run => run.status !== "accepted").map(run => this.update(run.request.requestID, "interrupted", {
+      error: { code: "restart_uncertain", message: "Runner stopped after dispatch was recorded; execution may have begun or completed. No automatic replay." }
+    })));
   }
 
   createSession(input: unknown): Session {
@@ -37,14 +42,14 @@ export class RunnerEngine {
       if (!statSync(binding.workingDirectory).isDirectory()) throw new Error();
     } catch { throw new EnsoCliError("invalid_input", "workingDirectory must be an existing codebase directory"); }
     const session: Session = { id: randomUUID(), binding, provider: this.provider.name, createdAt: new Date().toISOString() };
-    this.commit(next => { next.sessions.push(session); });
+    this.commit([{ type: "session_created", session }]);
     return structuredClone(session);
   }
 
   submit(input: unknown): Run {
     this.assertHealthy();
     const request = parse(promptSchema, input);
-    const existing = this.state.runs.find(run => run.request.requestID === request.requestID);
+    const existing = this.state.runs.get(request.requestID);
     // Idempotency precedes busy/stopping checks, including after a service restart.
     if (existing) {
       if (canonical(existing.request) !== canonical(request)) throw new EnsoCliError("request_conflict", "requestID already belongs to a different payload");
@@ -52,36 +57,37 @@ export class RunnerEngine {
     }
     this.assertAccepting();
     this.session(request.sessionID);
-    if (this.state.runs.some(run => run.request.sessionID === request.sessionID && !terminal(run.status))) {
+    if (this.state.busy.has(request.sessionID)) {
       throw new EnsoCliError("session_busy", "Only one active prompt is allowed per session");
     }
     const now = new Date().toISOString();
     const run: Run = { request, status: "accepted", createdAt: now, updatedAt: now };
-    this.commit(next => { next.runs.push(run); this.record(next, run); });
+    this.commit([{ type: "run_accepted", run }]);
     if (this.options.autoDispatch !== false) setImmediate(() => this.dispatch(request.requestID));
     return structuredClone(run);
   }
 
   snapshot(): { sessions: Session[]; runs: Run[]; cursor: number } {
     this.assertHealthy();
-    return structuredClone({ sessions: this.state.sessions, runs: this.state.runs, cursor: this.state.sequence });
+    return structuredClone({ sessions: [...this.state.sessions.values()], runs: [...this.state.runs.values()], cursor: this.state.sequence });
   }
-  events(after: number) {
+  events(after: number): { events: RunnerEvent[]; cursor: number } {
     this.assertHealthy();
     if (!Number.isSafeInteger(after) || after < 0 || after > this.state.sequence) {
       throw new EnsoCliError("invalid_cursor", "Cursor must be an existing sequence in this runner's durable history");
     }
-    return structuredClone({ events: this.state.events.filter(event => event.sequence > after), cursor: this.state.sequence });
+    if (after < this.base) throw new EnsoCliError("cursor_expired", "Events before this cursor were compacted; read a new snapshot and continue from its cursor");
+    return structuredClone({ events: this.history.slice(after - this.base), cursor: this.state.sequence });
   }
   session(id: string): Session {
     this.assertHealthy();
-    const session = this.state.sessions.find(item => item.id === id);
+    const session = this.state.sessions.get(id);
     if (!session) throw new EnsoCliError("session_not_found", "Session not found");
     return structuredClone(session);
   }
   run(id: string): Run {
     this.assertHealthy();
-    const run = this.state.runs.find(item => item.request.requestID === id);
+    const run = this.state.runs.get(id);
     if (!run) throw new EnsoCliError("run_not_found", "Run not found");
     return structuredClone(run);
   }
@@ -89,11 +95,8 @@ export class RunnerEngine {
   cancel(id: string): Run {
     const run = this.run(id);
     if (terminal(run.status) || run.status === "stopping") return run;
-    if (run.status === "accepted") this.commit(next => this.transition(next, id, "cancelled"));
-    else {
-      this.commit(next => this.transition(next, id, "stopping"));
-      this.active.get(id)?.controller.abort();
-    }
+    this.commit(this.cancelling(run));
+    this.active.get(id)?.controller.abort();
     return this.run(id);
   }
 
@@ -107,7 +110,7 @@ export class RunnerEngine {
     }
     if (run.pending.choices && !run.pending.choices.includes(response.value)) throw new EnsoCliError("invalid_input", "Response must match a pending choice");
     // The answer is not replayed on restart: crossing this boundary is uncertain execution.
-    this.commit(next => this.transition(next, id, "running"));
+    this.commit([this.update(id, "running")]);
     const resolve = active.answer;
     delete active.answer;
     resolve(response);
@@ -115,7 +118,7 @@ export class RunnerEngine {
   }
 
   dispatchAccepted(): void {
-    for (const run of this.state.runs) if (run.status === "accepted") this.dispatch(run.request.requestID);
+    for (const run of this.unfinished()) if (run.status === "accepted") this.dispatch(run.request.requestID);
   }
 
   shutdown(): Promise<void> {
@@ -123,18 +126,23 @@ export class RunnerEngine {
     this.accepting = false;
     this.shutdownTask = (async () => {
       // A failed cancel commit aborts every provider; still await them before storage is released.
-      try { if (this.healthy) for (const run of [...this.state.runs]) if (!terminal(run.status)) this.cancel(run.request.requestID); }
-      finally { await Promise.all([...this.active.values()].map(active => active.task)); }
+      try {
+        const changes = this.healthy ? this.unfinished().flatMap(run => this.cancelling(run)) : [];
+        if (changes.length) {
+          this.commit(changes);
+          for (const active of this.active.values()) active.controller.abort();
+        }
+      } finally { await Promise.all([...this.active.values()].map(active => active.task)); }
     })();
     return this.shutdownTask;
   }
 
   private dispatch(id: string): void {
     if (!this.accepting || !this.healthy || this.active.has(id)) return;
-    const run = this.run(id);
-    if (run.status !== "accepted") return;
+    const run = this.state.runs.get(id);
+    if (run?.status !== "accepted") return;
     // Write-ahead dispatch marker: a crash from here onward must never redispatch.
-    try { this.commit(next => this.transition(next, id, "running")); }
+    try { this.commit([this.update(id, "running")]); }
     catch { return; } // commit has already failed the service closed.
     const controller = new AbortController();
     const active: Active = { controller, task: Promise.resolve() };
@@ -147,20 +155,13 @@ export class RunnerEngine {
           wait: pending => this.wait(id, pendingSchema.parse(pending), controller.signal)
         }));
         if (!this.healthy) return;
-        this.commit(next => {
-          this.transition(next, id, outcome.status, {
-            ...("result" in outcome ? { result: outcome.result } : {}),
-            ...("error" in outcome ? { error: outcome.error } : {}),
-            ...("providerState" in outcome ? { providerState: outcome.providerState } : {})
-          });
-          if (outcome.status === "completed" && outcome.providerState !== undefined) {
-            next.sessions.find(session => session.id === run.request.sessionID)!.providerState = outcome.providerState;
-          }
-        });
+        const { status, ...fields } = outcome;
+        this.commit([this.update(id, status, fields), ...(outcome.status === "completed" && outcome.providerState !== undefined
+          ? [{ type: "session_updated" as const, sessionID: run.request.sessionID, providerState: outcome.providerState }] : [])]);
       } catch {
-        if (this.healthy) this.commit(next => this.transition(next, id, "interrupted", {
+        if (this.healthy) this.commit([this.update(id, "interrupted", {
           error: { code: "provider_uncertain", message: "Provider ended without confirming an outcome; no automatic replay" }
-        }));
+        })]);
       } finally { this.active.delete(id); }
     })().catch(() => { /* A failed durable write already poisoned the service. */ });
   }
@@ -169,36 +170,43 @@ export class RunnerEngine {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
       const active = this.active.get(id)!;
+      // One pending per run: refuse a concurrent wait so the first stays persisted and answerable.
+      if (active.answer) return reject(new Error("Provider contract violation: wait() called while another wait is pending"));
       const aborted = () => { delete active.answer; reject(new Error("Cancelled")); };
       active.answer = answer => { signal.removeEventListener("abort", aborted); resolve(answer); };
       signal.addEventListener("abort", aborted, { once: true });
-      try { this.commit(next => this.transition(next, id, pending.kind === "permission" ? "waiting_permission" : "waiting_input", { pending })); }
+      try { this.commit([this.update(id, pending.kind === "permission" ? "waiting_permission" : "waiting_input", { pending })]); }
       catch (error) { signal.removeEventListener("abort", aborted); delete active.answer; reject(error); }
     });
   }
 
-  private transition(next: State, id: string, status: Run["status"], fields: Partial<Run> = {}): void {
-    const run = next.runs.find(item => item.request.requestID === id)!;
-    delete run.pending;
-    Object.assign(run, fields, { status, updatedAt: new Date().toISOString() });
-    this.record(next, run);
+  private unfinished(): Run[] { return [...this.state.busy.values()].map(id => this.state.runs.get(id)!); }
+  private cancelling(run: Run): Change[] {
+    return terminal(run.status) || run.status === "stopping" ? [] : [this.update(run.request.requestID, run.status === "accepted" ? "cancelled" : "stopping")];
   }
-  private record(next: State, run: Run): void {
-    next.events.push({ sequence: ++next.sequence, run: structuredClone(run) });
+  private update(requestID: string, status: Run["status"], fields: Fields = {}): Change {
+    return { type: "run_updated", requestID, status, updatedAt: new Date().toISOString(), ...fields };
   }
-  private commit(mutate: (next: State) => void): void {
+  /** Validates via the reducer, appends one log line, then keeps the result. Any failure leaves memory untouched. */
+  private commit(changes: Change[]): void {
     this.assertHealthy();
-    const next = structuredClone(this.state);
-    mutate(next);
-    try { this.storage.write("state.json", next); }
-    catch {
+    if (!changes.length) return;
+    const events = changes.map((change, index) => ({ sequence: this.state.sequence + index + 1, ...change }) as RunnerEvent);
+    try {
+      transact(this.state, events, () => this.storage.append(events));
+      for (const event of events) this.history.push(event);
+      if (this.storage.compactionDue()) {
+        this.storage.compact(this.state);
+        this.history = [];
+        this.base = this.state.sequence;
+      }
+    } catch {
       this.healthy = false;
       this.accepting = false;
       for (const active of this.active.values()) active.controller.abort();
       this.options.onFatal?.();
       throw new EnsoCliError("runner_storage_failure", "Durable write failed; runner stopped. Reconnect after restart to inspect the outcome");
     }
-    this.state = next;
   }
   private assertHealthy(): void {
     if (!this.healthy) throw new EnsoCliError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");

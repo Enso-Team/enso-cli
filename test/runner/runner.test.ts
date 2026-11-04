@@ -8,7 +8,8 @@ import { RunnerEngine } from "../../src/runner/engine.js";
 import { FakeProvider } from "../../src/runner/provider.js";
 import { startRunner, type RunnerService } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
-import type { Run } from "../../src/runner/protocol.js";
+import type { Run, RunnerEvent } from "../../src/runner/protocol.js";
+import { apply, restore, toSnapshot } from "../../src/runner/state.js";
 
 let directory: string;
 let service: RunnerService | undefined;
@@ -21,6 +22,7 @@ async function data(method: string, path: string, body?: unknown): Promise<any> 
   if (!result.ok) throw new Error(JSON.stringify(result.error));
   return result.data;
 }
+const durable = () => toSnapshot(new RunnerStorage(directory).load().state);
 async function session() { return data("POST", "/v1/sessions", { binding: binding() }); }
 function prompt(sessionID: string, requestID = "request-1", scenario = "success", delayMs = 30) {
   return { requestID, sessionID, text: "Explain this selection", context, fake: { scenario, delayMs } };
@@ -44,8 +46,7 @@ describe("local runner protocol", () => {
     const accepted = await data("POST", "/v1/prompts", p);
     expect(accepted.status).toBe("accepted");
     expect(await data("POST", "/v1/prompts", p)).toEqual(accepted);
-    const disk = JSON.parse(readFileSync(join(directory, "state.json"), "utf8"));
-    expect(disk.runs[0]).toEqual(accepted);
+    expect(durable().runs[0]).toEqual(accepted);
     service.engine.dispatchAccepted();
     await status("same", "running");
     expect((await data("POST", "/v1/prompts", p)).status).toBe("running");
@@ -97,10 +98,15 @@ describe("local runner protocol", () => {
     });
     const complete = await status("reconnect", "completed");
     const delta = await data("GET", `/v1/events?after=${snapshot.cursor}`);
-    expect(delta.events.at(-1).run).toEqual(complete);
-    expect(delta.events.every((event: any) => event.sequence > snapshot.cursor)).toBe(true);
+    expect(delta.events.map((event: RunnerEvent) => event.type)).toEqual(["run_updated", "session_updated"]);
+    expect(delta.events[0]).toEqual({ sequence: snapshot.cursor + 1, type: "run_updated", requestID: "reconnect", status: "completed",
+      updatedAt: complete.updatedAt, result: complete.result, providerState: { turn: 1 } });
+    // Applying the deltas to the earlier snapshot reproduces the later one.
+    const local = restore({ storageVersion: 2, sequence: snapshot.cursor, sessions: snapshot.sessions, runs: snapshot.runs });
+    for (const event of delta.events) apply(local, event);
     const after = await data("GET", "/v1/snapshot");
     expect(after.runs[0]).toEqual(complete);
+    expect({ sessions: [...local.sessions.values()], runs: [...local.runs.values()], cursor: local.sequence }).toEqual(after);
     expect(await data("GET", `/v1/events?after=${after.cursor}`)).toEqual({ events: [], cursor: after.cursor });
     expect(await call("GET", "/v1/events?after=999999")).toMatchObject({ error: { code: "invalid_cursor" } });
   });
@@ -111,7 +117,7 @@ describe("local runner protocol", () => {
     await data("POST", "/v1/prompts", prompt(s.id, "waiting", scenario));
     const waiting = await status("waiting", `waiting_${scenario}`);
     expect(waiting.pending).toMatchObject({ id: "waiting:wait", kind: scenario });
-    expect(JSON.parse(readFileSync(join(directory, "state.json"), "utf8")).runs[0].pending).toEqual(waiting.pending);
+    expect(durable().runs[0].pending).toEqual(waiting.pending);
     expect(await call("POST", "/v1/runs/waiting/respond", { pendingID: "wrong", value: "allow" })).toMatchObject({ error: { code: "pending_not_found" } });
     if (scenario === "permission") expect(await call("POST", "/v1/runs/waiting/respond", { pendingID: "waiting:wait", value: "invalid" })).toMatchObject({ error: { code: "invalid_input" } });
     await data("POST", "/v1/runs/waiting/respond", { pendingID: "waiting:wait", value: scenario === "permission" ? "allow" : "answer" });
@@ -143,7 +149,7 @@ describe("local runner protocol", () => {
     await status("pending", "waiting_input");
     expect(await data("POST", "/v1/shutdown")).toEqual({ stopped: true });
     await service.closed;
-    expect(JSON.parse(readFileSync(join(directory, "state.json"), "utf8")).runs.every((run: Run) => run.status === "cancelled")).toBe(true);
+    expect(durable().runs.every(run => run.status === "cancelled")).toBe(true);
   });
 
   it.each(["failure", "interrupted"])("persists fake %s outcome without redispatch", async scenario => {
@@ -176,9 +182,8 @@ describe("local runner protocol", () => {
     expect(await raw({ ...auth, "Enso-Runner-Version": "2" })).toMatchObject({ status: 426 });
     expect(await raw({ ...auth, "Enso-Runner-Version": "1", Origin: "http://hostile.example" })).toMatchObject({ status: 401 });
     await session();
-    const state = readFileSync(join(directory, "state.json"), "utf8");
-    expect(state).not.toContain(connection.token);
-    expect(statSync(join(directory, "state.json")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(directory, "log.jsonl"), "utf8")).not.toContain(connection.token);
+    expect(statSync(join(directory, "log.jsonl")).mode & 0o777).toBe(0o600);
     await expect(startRunner({ directory })).rejects.toMatchObject({ body: { code: "runner_locked" } });
     expect((await data("GET", "/v1/snapshot")).sessions).toHaveLength(1);
   });
@@ -218,7 +223,7 @@ describe("durability failure", () => {
     const execute = vi.spyOn(provider, "execute");
     const engine = new RunnerEngine(storage, provider);
     const s = engine.createSession({ binding: binding() });
-    vi.spyOn(storage, "write").mockImplementation(() => { throw new Error("disk full"); });
+    vi.spyOn(storage, "append").mockImplementation(() => { throw new Error("disk full"); });
     expect(() => engine.submit(prompt(s.id))).toThrow("Durable write failed");
     await new Promise(resolve => setImmediate(resolve));
     expect(execute).not.toHaveBeenCalled();
@@ -232,14 +237,14 @@ describe("service persistence failure", () => {
   it("shuts down after losing a terminal write and recovers as uncertain", async () => {
     service = await startRunner({ directory });
     const s = await session();
-    const original = RunnerStorage.prototype.write;
-    vi.spyOn(RunnerStorage.prototype, "write").mockImplementation(function (this: RunnerStorage, name, value) {
-      if (name === "state.json" && (value as any).runs.at(-1)?.status === "completed") throw new Error("disk full");
-      return original.call(this, name, value);
+    const original = RunnerStorage.prototype.append;
+    vi.spyOn(RunnerStorage.prototype, "append").mockImplementation(function (this: RunnerStorage, events) {
+      if (events.some(event => event.type === "run_updated" && event.status === "completed")) throw new Error("disk full");
+      return original.call(this, events);
     });
     await data("POST", "/v1/prompts", prompt(s.id, "unwritten-result", "success", 20));
     await expect(service.closed).rejects.toMatchObject({ body: { code: "runner_storage_failure" } });
-    expect(JSON.parse(readFileSync(join(directory, "state.json"), "utf8")).runs[0].status).toBe("running");
+    expect(durable().runs[0].status).toBe("running");
     vi.restoreAllMocks();
     service = await startRunner({ directory });
     const recovered = await data("GET", "/v1/runs/unwritten-result");

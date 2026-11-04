@@ -1,17 +1,27 @@
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { configDir } from "../config.js";
 import { EnsoCliError } from "../errors.js";
-import { stateSchema, terminal, type State } from "./protocol.js";
+import { snapshotSchema, storageVersion, transactionSchema, type RunnerEvent, type Snapshot } from "./protocol.js";
+import { restore, toSnapshot, transact, type State } from "./state.js";
 
 export function runnerDirectory(): string { return join(configDir(), "runner", "v1"); }
 
-/** Single writer, atomic snapshots. Every acknowledged transaction fsyncs both file and directory. */
+/** Single writer. `state.json` is an atomic snapshot at some sequence; `log.jsonl` holds one line per acknowledged
+ * transaction (O_APPEND, fsync). Only newline-terminated lines were ever acknowledged. Load replays the records past
+ * the snapshot, so a crash at any compaction step neither loses nor double-applies a transaction. */
 export class RunnerStorage {
   readonly directory: string;
   private locked = false;
-  constructor(directory = runnerDirectory()) { this.directory = resolve(directory); }
+  private log?: number;
+  private logBytes?: number; // Acknowledged bytes; a torn tail past this is truncated before the next append.
+  private snapshotBytes = 0;
+  private readonly compactBytes: number;
+  constructor(directory = runnerDirectory(), options: { compactBytes?: number } = {}) {
+    this.directory = resolve(directory);
+    this.compactBytes = options.compactBytes ?? 8 * 1024 * 1024;
+  }
 
   acquire(): void {
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
@@ -47,35 +57,95 @@ export class RunnerStorage {
     } finally { rmSync(guard, { recursive: true }); }
   }
 
-  load(): State {
-    const path = join(this.directory, "state.json");
-    if (!existsSync(path)) return { storageVersion: 1, sequence: 0, sessions: [], runs: [], events: [] };
-    let state: State;
-    try { state = stateSchema.parse(JSON.parse(readFileSync(path, "utf8"))); }
-    catch { throw new EnsoCliError("invalid_runner_storage", "Unsupported or damaged runner state; refusing to overwrite it"); }
-    const sessions = new Set(state.sessions.map(session => session.id));
-    const requests = new Set(state.runs.map(run => run.request.requestID));
-    const activeSessions = state.runs.filter(run => !terminal(run.status)).map(run => run.request.sessionID);
-    if (sessions.size !== state.sessions.length || requests.size !== state.runs.length ||
-      activeSessions.length !== new Set(activeSessions).size || state.runs.some(run => !sessions.has(run.request.sessionID)) ||
-      state.sequence !== state.events.length || state.events.some((event, index) => event.sequence !== index + 1)) {
-      throw new EnsoCliError("invalid_runner_storage", "Runner state invariants failed; refusing to dispatch");
+  /** Reads without modifying anything. `events` are the replayed log events, i.e. every event after the snapshot. */
+  load(): { state: State; events: RunnerEvent[] } {
+    const fail = (message: string): never => { throw new EnsoCliError("invalid_runner_storage", `${message}; refusing to dispatch or overwrite it`); };
+    const read = (name: string) => {
+      try { return readFileSync(join(this.directory, name)); }
+      catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : fail(`Unreadable runner ${name}`); }
+    };
+    const file = read("state.json");
+    let snapshot: Snapshot = { storageVersion, sequence: 0, sessions: [], runs: [] };
+    if (file) {
+      let value: unknown;
+      try { value = JSON.parse(file.toString("utf8")); } catch { fail("Damaged runner snapshot"); }
+      const version = (value as { storageVersion?: unknown } | null)?.storageVersion;
+      if (version !== storageVersion) fail(`Unsupported runner storage version ${JSON.stringify(version) ?? "(none)"}; this runner reads only version ${storageVersion} and never migrates`);
+      const parsed = snapshotSchema.safeParse(value);
+      snapshot = parsed.success ? parsed.data : fail("Damaged runner snapshot");
     }
-    return state;
+    let state!: State;
+    try { state = restore(snapshot); } catch { fail("Runner snapshot invariants failed"); }
+    const log = read("log.jsonl") ?? Buffer.alloc(0);
+    const end = log.lastIndexOf(0x0a) + 1;
+    const events: RunnerEvent[] = [];
+    let last: number | undefined;
+    for (const line of end ? log.subarray(0, end - 1).toString("utf8").split("\n") : []) {
+      let transaction!: RunnerEvent[];
+      try { transaction = transactionSchema.parse(JSON.parse(line)).events; } catch { fail("Damaged runner log record"); }
+      const first = transaction[0].sequence;
+      if ((last !== undefined && first !== last + 1) || transaction.some((event, index) => event.sequence !== first + index)) fail("Runner log sequence gap");
+      last = transaction.at(-1)!.sequence;
+      // Records the snapshot already covers remain after a crash between snapshot rename and log truncation.
+      if (last <= snapshot.sequence) continue;
+      try { transact(state, transaction); } catch { fail("Runner log does not continue its snapshot, or its invariants failed"); }
+      events.push(...transaction);
+    }
+    if (last !== undefined && last < snapshot.sequence) fail("Runner log does not reach its snapshot");
+    this.logBytes = end;
+    this.snapshotBytes = file?.length ?? 0;
+    return { state, events };
   }
 
-  write(name: string, value: unknown): void {
+  /** Appends one transaction as one line and fsyncs it. Throws if it may not be durable. */
+  append(events: RunnerEvent[]): void {
+    if (!this.locked || this.logBytes === undefined) throw new Error("Storage is not owned and loaded");
+    const line = Buffer.from(JSON.stringify({ events }) + "\n");
+    if (this.log === undefined) {
+      const path = join(this.directory, "log.jsonl");
+      const created = !existsSync(path);
+      const fd = openSync(path, "a", 0o600);
+      try {
+        const size = fstatSync(fd).size;
+        if (size < this.logBytes) throw new Error("Runner log shrank while owned");
+        if (size > this.logBytes) { ftruncateSync(fd, this.logBytes); fsyncSync(fd); }
+        if (created) this.syncDirectory();
+      } catch (error) { closeSync(fd); throw error; }
+      this.log = fd;
+    }
+    for (let offset = 0; offset < line.length;) offset += writeSync(this.log, line, offset);
+    fsyncSync(this.log);
+    this.logBytes += line.length;
+  }
+
+  /** Amortized: the log may grow to the snapshot's size, so rewriting the snapshot costs O(1) per appended byte. */
+  compactionDue(): boolean {
+    return this.log !== undefined && this.logBytes! >= Math.max(this.compactBytes, this.snapshotBytes);
+  }
+
+  /** Atomically replaces the snapshot with `state`, then empties the log. */
+  compact(state: State): void {
+    if (this.log === undefined) throw new Error("Runner log is not open");
+    this.snapshotBytes = this.write("state.json", toSnapshot(state));
+    ftruncateSync(this.log, 0);
+    fsyncSync(this.log);
+    this.logBytes = 0;
+  }
+
+  /** Atomic private file replacement: temporary file, fsync, rename, directory fsync. Returns bytes written. */
+  write(name: string, value: unknown): number {
     if (!this.locked) throw new Error("Storage is not owned");
     const temporary = join(this.directory, `.${name}.${randomUUID()}.tmp`);
+    const text = Buffer.from(JSON.stringify(value) + "\n");
     let fd: number | undefined;
     try {
       fd = openSync(temporary, "wx", 0o600);
-      writeFileSync(fd, JSON.stringify(value) + "\n");
+      writeFileSync(fd, text);
       fsyncSync(fd);
       closeSync(fd); fd = undefined;
       renameSync(temporary, join(this.directory, name));
-      const directoryFD = openSync(this.directory, "r");
-      try { fsyncSync(directoryFD); } finally { closeSync(directoryFD); }
+      this.syncDirectory();
+      return text.length;
     } finally {
       if (fd !== undefined) closeSync(fd);
       rmSync(temporary, { force: true });
@@ -84,7 +154,14 @@ export class RunnerStorage {
 
   release(): void {
     if (!this.locked) return;
+    if (this.log !== undefined) { closeSync(this.log); this.log = undefined; }
+    this.logBytes = undefined;
     unlinkSync(join(this.directory, "owner"));
     this.locked = false;
+  }
+
+  private syncDirectory(): void {
+    const fd = openSync(this.directory, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
   }
 }

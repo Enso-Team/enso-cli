@@ -65,10 +65,10 @@ A live runner atomically publishes `connection.json`:
 
 Native clients must read this file locally and connect with HTTP/1.1 over that
 Unix domain socket. There is no TCP listener or unauthenticated discovery route.
-The directory is owner-only (`0700`); the socket, connection file, and snapshots
-are `0600`. The directory must be owned by the current user and must not itself
+The directory is owner-only (`0700`); the socket, connection file, snapshot and
+log are `0600`. The directory must be owned by the current user and must not itself
 be a symlink. The connection token is random and rotates at every startup. It
-is unrelated to app bridge pairing and is never placed in `state.json`, returned
+is unrelated to app bridge pairing and is never placed in runner state, returned
 in normal CLI output, or logged. Same-user processes with filesystem access are
 inside this trust boundary. Do not copy connection files to vaults or logs.
 
@@ -81,19 +81,24 @@ Content-Type: application/json
 ```
 
 Content-Type is required when a route consumes JSON. JSON bodies have a 1 MiB
-limit. Browser Origin headers are rejected; CORS is not enabled. Missing/wrong
-authentication returns HTTP 401 `unauthorized` before checking version. Missing
-or incompatible version returns HTTP 426 `incompatible_runner_version` with
-`details.supportedVersions: [1]`. Responses include `Enso-Runner-Version: 1` and
-`Cache-Control: no-store`. This protocol version is independent of bridge
-contract 3 and the CLI package version. Unsupported storage versions fail
-startup without migration or overwriting data.
+limit; a larger body is read and discarded, then rejected with HTTP 413
+`payload_too_large`. Browser Origin headers are rejected; CORS is not enabled.
+Missing/wrong authentication returns HTTP 401 `unauthorized` before checking
+version. Missing or incompatible version returns HTTP 426
+`incompatible_runner_version` with `details.supportedVersions: [1]`. Responses
+include `Enso-Runner-Version: 1` and `Cache-Control: no-store`. This protocol
+version is independent of bridge contract 3 and the CLI package version.
+Unsupported storage versions fail startup without migration or overwriting data.
 
 If connection fails, reread discovery and reconnect. Do not infer anything about
 execution from a disconnect, PID, HTTP error, or a missing submission response.
 Query the original requestID; if absent, retry the **same ID and payload**.
 The `runner call` CLI performs private discovery and opens a fresh connection
-per call. It does not retry mutations automatically.
+per call. It does not retry mutations automatically. It abandons a call with no
+reply after 30 seconds (default) and reports `runner_timeout`; treat that like a
+disconnect. `enso runner shutdown` returns only after the service process has
+exited and released its owner record, so a new runner can start immediately; it
+reports `runner_timeout` if that takes longer than 30 seconds.
 
 ## Request and response contract
 
@@ -109,7 +114,7 @@ be percent-encoded when they contain reserved URL characters.
 | POST `/v1/prompts` | Prompt below | Existing or newly accepted run (HTTP 200) |
 | GET `/v1/runs/:requestID` | — | Full run, including persisted terminal result/error |
 | GET `/v1/snapshot` | — | `{sessions, runs, cursor}` |
-| GET `/v1/events?after=N` | — | `{events, cursor}`; poll to observe transitions |
+| GET `/v1/events?after=N` | — | `{events, cursor}`; poll to observe changes (HTTP 410 `cursor_expired`: take a new snapshot) |
 | POST `/v1/runs/:requestID/cancel` | — | Current cancelled/stopping/terminal run |
 | POST `/v1/runs/:requestID/respond` | `{pendingID, value}` | Run after accepting response |
 | POST `/v1/shutdown` | — | `{stopped:true}` after active providers confirm outcomes |
@@ -205,36 +210,87 @@ response, inspect the run instead of assuming it is still waiting.
 
 ## Snapshot/event ordering and reconnect
 
-Each accepted run and each lifecycle transition appends one event
-`{sequence,run}` in the **same transaction** as its full run snapshot. Sequences
-are monotonic, gap-free, and retained across restarts. Session creation and
-checkpoint changes are visible in snapshots; events describe run transitions.
+Every durable change is an event with a `sequence` and a `type`. Sequences are
+monotonic, gap-free, and retained across restarts. One transaction (a shutdown
+cancelling several runs, restart recovery, or a completed turn together with its
+session checkpoint) commits all of its events or none of them. Events are deltas:
+
+| `type` | Other fields | Apply to the local copy |
+| --- | --- | --- |
+| `session_created` | `session` | Add the session |
+| `session_updated` | `sessionID`, `providerState?` | Replace the session's `providerState`; absent removes it |
+| `run_accepted` | `run` (full run, status `accepted`) | Add the run |
+| `run_updated` | `requestID`, `status`, `updatedAt`, `pending?`, `result?`, `error?`, `providerState?` | Replace the run's `status`, `updatedAt`, `pending`, `result`, `error` and `providerState` with the event's; an absent field is removed |
+
+Only `run_accepted` carries the request and its captured context; `request` and
+`createdAt` never change afterwards, and terminal runs receive no further updates.
+For example, `{"sequence":7,"type":"run_updated","requestID":"turn-1","status":"running","updatedAt":"..."}`
+also clears the `pending` request that a previous `waiting_input` update set.
 
 1. Read `/v1/snapshot`. Its sessions/runs and cursor describe one committed state.
-2. Poll `/v1/events?after=<cursor>`. Apply events in sequence; each carries the
-   full run at that transition, including terminal results/errors.
+2. Poll `/v1/events?after=<cursor>` and apply the events in sequence order.
 3. Advance to the returned cursor only after applying the events. Persist the
    cursor with local client state if needed, or start with a new snapshot.
+4. On HTTP 410 `cursor_expired`, discard the local copy and return to step 1.
 
 State reads and transactions are serialized synchronously in one service process.
 A transition concurrent with a snapshot is either in that snapshot, or has a
 larger sequence and appears in subsequent events. Events never announce an
-uncommitted terminal result. Repeating an event query is safe. A cursor ahead of
-the durable history, negative/noninteger cursor, or omitted cursor returns
-`invalid_cursor`; get a new snapshot if the store was replaced. There is no
-subscription socket to keep alive and no event retention/compaction in v1.
+uncommitted change. Repeating an event query is safe. The runner retains the
+events since its last log compaction (below), the same window before and after a
+restart; an older cursor returns `cursor_expired`. A client polling regularly
+rarely sees it, but must handle it. A cursor ahead of the durable history,
+negative/noninteger cursor, or omitted cursor returns `invalid_cursor`; get a new
+snapshot if the store was replaced. There is no subscription socket to keep alive.
 
 ## Persistence, restart, and crash uncertainty
 
 Storage is runner-owned and never writes notes, Canvas records, CRDT data, or
-vault metadata. `state.json` contains `storageVersion:1`, `sequence`, `sessions`,
-`runs`, and `events`. Snapshots use a private temporary file, file fsync, atomic
-rename, then directory fsync. Each state change, idempotency decision and active
-slot check runs without yielding; successful replies happen after durable writes.
-The full snapshot model deliberately favors a small inspectable implementation.
-It retains all context, results, and events without bounds and rewrites the
-snapshot per transition; high-volume operation, retention, pagination, streaming,
-and large inputs need a later storage design.
+vault metadata. It consists of two files:
+
+- `log.jsonl`: one line per transaction, `{"events":[...]}` with the events
+  above. A transaction is appended with `O_APPEND` and fsynced before it is
+  applied in memory or any reply is sent; the directory is fsynced when the log
+  is created. Each write is proportional to that transaction alone: a run update
+  never repeats the request or its context.
+- `state.json`: a compacted snapshot
+  `{"storageVersion":2,"sequence":N,"sessions":[...],"runs":[...]}` covering
+  every event through sequence N. It holds no event history.
+
+Each state change, idempotency decision and active slot check runs without
+yielding. When the log reaches the larger of 8 MiB and the current snapshot's
+size, the runner compacts: it writes a new snapshot through a private temporary
+file, file fsync, atomic rename, and directory fsync, then truncates and fsyncs
+the log. Snapshot rewrites therefore cost a constant amount per logged byte.
+
+Startup reads the snapshot (none means an empty store at sequence 0), then the
+log. Only newline-terminated lines were ever acknowledged: a final line without
+its newline is an unacknowledged, torn transaction. It is ignored and truncated
+before the next append, so none of its events apply. Lines entirely at or below
+the snapshot's sequence are already covered and skipped; the next line must
+continue at the following sequence. The remaining lines are replayed through the
+same reducer that applies live transactions. A crash at any compaction step
+therefore recovers exactly the acknowledged state: before the rename, the old
+snapshot plus the whole log; after the rename, the new snapshot with its covered
+lines skipped; after truncation, the new snapshot alone. A damaged complete line,
+a sequence gap or overlap, a log that ends before its snapshot, or a failed store
+invariant fails startup with `invalid_runner_storage`; nothing is rewritten.
+`storageVersion` must be 2; earlier unreleased stores are refused, not migrated.
+
+"Durable" here means surviving a process crash or kernel panic. It does not
+cover sudden power loss on macOS: `fsync` hands data to the drive but does not
+issue `F_FULLFSYNC`, so the drive's volatile cache may drop the latest
+transactions. After power loss the store may roll back to an earlier valid
+state, or keep a damaged log that startup refuses. A run whose `running` marker
+was lost reappears as `accepted` and is dispatched again. That replay is
+harmless for the fake provider. A real provider with external effects must close
+this gap first (`F_FULLFSYNC`, or a store that issues it, such as SQLite with
+`fullfsync`).
+
+The store retains every session and run, including captured context and
+results, without bounds. Compaction rewrites the whole snapshot synchronously, so
+requests wait while it runs; pagination, streaming, and run retention need a
+later design.
 
 Startup validates schema and store invariants. It recovers terminal records
 unchanged, dispatches only accepted work, and converts all previous running,
@@ -246,17 +302,16 @@ waiting, or stopping work to durable `interrupted` records with
 - Provider finished, but result transaction was not durable: uncertain.
 - Result transaction durable, but client never received it: recover that result.
 
-An atomic rename around a crash may expose either old or new state; recovery
-uses whichever valid durable snapshot survived. There is no exactly-once claim
-for external effects. No automatic replay/reconciliation of potentially executed
-work occurs. Retrying its request ID returns the interrupted record. A new
+There is no exactly-once claim for external effects. No automatic
+replay/reconciliation of potentially executed work occurs. Retrying its request ID returns the interrupted record. A new
 explicit prompt can be submitted, but a future real provider must reconcile its
 external conversation/effects before continuing an uncertain session.
 
 A persistence error fails the process closed: no further state is served or work
 dispatched, active waits are aborted, and the service shuts down with an error
-exit status. An HTTP error or disconnect during this failure is ambiguous;
-restart and inspect state. Unsupported/damaged records fail closed and are never
+exit status. An HTTP error or disconnect during this failure is ambiguous (a
+failed compaction follows an already durable transaction); restart and inspect
+state. Unsupported/damaged records fail closed and are never
 reset automatically.
 
 `owner` is an atomic PID symlink that prevents multiple service writers per
@@ -268,14 +323,17 @@ runner is starting or using that directory, remove the orphaned `acquiring/`
 directory and retry. Never remove an owner record for a live process. Stale
 connection/socket files are replaced only after acquiring storage ownership.
 Crash-left temporary snapshot files are ignored; they may be removed while the
-runner is stopped. No daemon/supervisor installation is included.
+runner is stopped. Never edit or truncate `state.json` or `log.jsonl` by hand.
+No daemon/supervisor installation is included.
 
 ## Handoff to PRs 4 and 5
 
 PR 4 should implement the small execution boundary in `src/runner/provider.ts`:
 immutable session binding and captured prompt, abort signal, an awaitable
 permission/input callback, explicit confirmed/uncertain outcomes, and an opaque
-JSON conversation checkpoint committed atomically with a completed turn. The
+JSON conversation checkpoint committed atomically with a completed turn. A
+provider may have at most one wait pending per run; a concurrent second wait is
+rejected without affecting the first, which stays persisted and answerable. The
 runner alone owns lifecycle persistence and cancellation intent. A bridge
 operation succeeding is never evidence that a provider turn completed. Never
 reinterpret a provider exception as a confirmed cancellation or successful turn.

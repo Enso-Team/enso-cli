@@ -14,15 +14,15 @@ export type RunnerService = {
 };
 
 const errorStatus = new Map<string, number>([
-  ["unauthorized", 401],
+  ["unauthorized", 401], ["payload_too_large", 413],
   ["incompatible_runner_version", 426],
   ["session_busy", 409], ["request_conflict", 409], ["pending_not_found", 409], ["runner_stopping", 409],
-  ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404],
+  ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404], ["cursor_expired", 410],
   ["runner_storage_failure", 503]
 ]);
 
-export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean } = {}): Promise<RunnerService> {
-  const storage = new RunnerStorage(options.directory);
+export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; compactBytes?: number } = {}): Promise<RunnerService> {
+  const storage = new RunnerStorage(options.directory, { compactBytes: options.compactBytes });
   storage.acquire();
   const socketPath = join(storage.directory, "control.sock");
   if (Buffer.byteLength(socketPath) > 103) {
@@ -142,13 +142,16 @@ async function body(request: IncomingMessage): Promise<unknown> {
   if (request.headers["content-type"]?.split(";")[0].trim() !== "application/json") {
     throw new EnsoCliError("invalid_input", "JSON requests require Content-Type: application/json");
   }
+  // Replying before the body is consumed closes the socket under a still-writing client,
+  // which then sees EPIPE instead of the reply. Drain (bounded by requestTimeout), then fail.
+  const limit = 1024 * 1024;
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 1024 * 1024) throw new EnsoCliError("invalid_input", "Request exceeds 1 MiB");
-    chunks.push(Buffer.from(chunk));
+    if (size <= limit) chunks.push(Buffer.from(chunk));
   }
+  if (size > limit) throw new EnsoCliError("payload_too_large", "Request exceeds 1 MiB");
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
   catch { throw new EnsoCliError("invalid_input", "Request body must be valid JSON"); }
 }

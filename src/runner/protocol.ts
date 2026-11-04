@@ -55,10 +55,20 @@ export const runSchema = z.object({
   pending: pendingSchema.optional(), result: json.optional(), error: errorSchema.optional(),
   providerState: json.optional()
 }).strict();
-export const eventSchema = z.object({ sequence: z.number().int().positive(), run: runSchema }).strict();
-export const stateSchema = z.object({
-  storageVersion: z.literal(1), sequence: z.number().int().nonnegative(),
-  sessions: z.array(sessionSchema), runs: z.array(runSchema), events: z.array(eventSchema)
+const sequence = z.number().int().positive();
+// Deltas: run_accepted is the only event carrying a request; updates replace every mutable field (absent = cleared).
+export const eventSchema = z.discriminatedUnion("type", [
+  z.object({ sequence, type: z.literal("session_created"), session: sessionSchema }).strict(),
+  z.object({ sequence, type: z.literal("session_updated"), sessionID: z.string().uuid(), providerState: json.optional() }).strict(),
+  z.object({ sequence, type: z.literal("run_accepted"), run: runSchema }).strict(),
+  runSchema.omit({ request: true, createdAt: true }).extend({ sequence, type: z.literal("run_updated"), requestID: id })
+]);
+/** One log line: every event of one transaction. */
+export const transactionSchema = z.object({ events: z.array(eventSchema).min(1) }).strict();
+export const storageVersion = 2;
+export const snapshotSchema = z.object({
+  storageVersion: z.literal(storageVersion), sequence: z.number().int().nonnegative(),
+  sessions: z.array(sessionSchema), runs: z.array(runSchema)
 }).strict();
 export type Binding = z.infer<typeof bindingSchema>;
 export type Session = z.infer<typeof sessionSchema>;
@@ -66,8 +76,9 @@ export type Prompt = z.infer<typeof promptSchema>;
 export type Pending = z.infer<typeof pendingSchema>;
 export type Answer = z.infer<typeof answerSchema>;
 export type Run = z.infer<typeof runSchema>;
-export type State = z.infer<typeof stateSchema>;
+export type Snapshot = z.infer<typeof snapshotSchema>;
 export type RunnerEvent = z.infer<typeof eventSchema>;
+export type Change = RunnerEvent extends infer E ? E extends RunnerEvent ? Omit<E, "sequence"> : never : never;
 export function terminal(status: Run["status"]): boolean {
   return ["completed", "failed", "cancelled", "interrupted"].includes(status);
 }

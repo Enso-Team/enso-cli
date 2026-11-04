@@ -13,6 +13,7 @@ export type Execution = {
 };
 /** Return only after the provider confirms completion/cancellation; uncertain effects use interrupted.
  * providerState is an opaque conversation checkpoint, committed with a completed result.
+ * At most one wait() may be pending per run; a concurrent second wait() rejects and leaves the first answerable.
  * A future provider must reconcile interrupted work explicitly, never by replaying execute(). */
 export interface RunnerProvider {
   readonly name: "fake";

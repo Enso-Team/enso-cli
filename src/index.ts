@@ -99,10 +99,10 @@ function wrapActions(command: Command): void {
           (group === "canvas" && ["open", "create", "delete"].includes(command.name())) ||
           (group === "portal" && command.name() === "open") ||
           (group === "auth" && ["link", "unlink"].includes(command.name())))) context.rejectNavigation();
-        return await action(processedArgs) as EnsoEnvelope;
+        return await action(processedArgs) as EnsoEnvelope | undefined;
       });
       command.setOptionValue("__ensoResult", result);
-      process.exitCode = result.ok ? 0 : 1;
+      process.exitCode = result?.ok === false ? 1 : 0;
     } catch (error) {
       const envelope = errorEnvelope(error);
       printEnvelope(envelope, Boolean(program.optsWithGlobals().pretty), process.stderr);
