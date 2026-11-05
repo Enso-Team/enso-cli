@@ -320,9 +320,10 @@ the rows hide, such as an update to a finished run. It is read-only and runs in
 one read transaction, so it is safe beside a live runner. It reports
 `{cursor, expiredThrough, events, sessions, runs}`, or fails with
 `invalid_runner_storage` and up to 50 `details.differences`. With no store in the
-directory it fails with `runner_storage_not_found`, and creates nothing; a store
-it cannot reach (an unsearchable directory, a dangling symlink) fails with
-`runner_storage_failure` instead.
+directory, or a file where the directory should be, it fails with
+`runner_storage_not_found`, and creates nothing; a store it cannot reach (an
+unsearchable directory, a dangling symlink) fails with `runner_storage_failure`
+instead.
 
 Once its checks pass, startup recovers terminal records unchanged, dispatches
 only accepted work, and converts all previous running, waiting, or stopping work
@@ -381,8 +382,10 @@ their events. The same transaction deletes each session's `session_updated`
 checkpoints at or below the expired cursor except its latest: each replaces every
 mutable field, so only an expired cursor could need the older ones. `runs_deleted`
 events are kept. Hourly passes serve requests between transactions. Each pass then
-returns free pages to the file system (`auto_vacuum = INCREMENTAL`) in steps of
-at most 8 MiB, serving requests between them. A pass goes by the pages actually
+releases free pages (`auto_vacuum = INCREMENTAL`) in steps of 2048 pages (8 MiB
+at SQLite's default 4 KiB page), serving requests between them. In WAL mode the
+file shrinks at the next checkpoint, which an open `runner check` read
+transaction can hold back. A pass goes by the pages actually
 free, not by what it deleted, so space left by a pass that shutdown stopped, or
 whose reclaim failed (reported as a process warning), is returned by the next;
 meanwhile later writes reuse it. Sessions, and runs that are still active, are

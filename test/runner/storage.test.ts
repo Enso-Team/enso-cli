@@ -227,12 +227,25 @@ describe("existing stores", () => {
     ownerReleased();
   });
 
+  it("does not claim to refuse a store it created when initializing it fails", async () => {
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "journal_mode = WAL") throw new Error("no WAL here");
+      return pragma.call(this, source, options);
+    });
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/^Runner database could not be initialized$/));
+    ownerReleased();
+  });
+
   it("refuses another application's database before changing its journal mode", async () => {
     const db = new Database(path("runner.sqlite"));
     db.exec("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('keep me')");
     db.close();
     const before = files();
-    await expect(startRunner({ directory })).rejects.toEqual(storageError(/not an Enso runner database; refusing to dispatch or overwrite it$/));
+    const refusal = await startRunner({ directory }).then(() => undefined, (error: Error) => error);
+    expect(refusal).toEqual(storageError(/not an Enso runner database; refusing to dispatch or overwrite it$/));
+    // Amended in place, so the stack still points at the check that failed.
+    expect(refusal?.stack).not.toContain("at refused");
     expect(files()).toEqual(before);
     // `check` only reads, so it reports the same problem without claiming to refuse anything.
     expect(() => RunnerStorage.check(directory)).toThrow(storageError(/not an Enso runner database$/));
@@ -461,7 +474,10 @@ describe("retention", () => {
     expect(vacuums()).toHaveLength(1);
     expect(engine!.snapshot().runs).toEqual([]);
     expect(await pass).toBe(3);
-    expect(vacuums().length).toBeGreaterThan(5);
+    // The first freelist read is what the deletion freed: one step per 32 of those pages, whatever the layout.
+    const freed = spy.mock.results[spy.mock.calls.findIndex(([source]) => source === "freelist_count")]!.value as number;
+    expect(freed).toBeGreaterThan(32);
+    expect(vacuums()).toHaveLength(Math.ceil(freed / 32));
     expect(new Set(vacuums().map(([source]) => source))).toEqual(new Set(["incremental_vacuum(32)"]));
     expect(external(db => db.pragma("freelist_count", { simple: true }))).toBe(0);
   });
@@ -557,6 +573,13 @@ describe("check", () => {
     expect(readdirSync(directory)).toEqual([]);
   });
 
+  it("reports a file given as the directory as not found", () => {
+    writeFileSync(path("notes.txt"), "not a directory");
+    expect(() => RunnerStorage.check(path("notes.txt"))).toThrow(expect.objectContaining({
+      body: expect.objectContaining({ code: "runner_storage_not_found", details: { directory: path("notes.txt") } })
+    }));
+  });
+
   it("reports a store it cannot reach as an open failure, not as missing", () => {
     // A dangling symlink: unlike file modes, root cannot get past it.
     symlinkSync(path("elsewhere.sqlite"), path("runner.sqlite"));
@@ -571,7 +594,7 @@ describe("check", () => {
     chmodSync(directory, 0o600);
     try {
       expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
-        body: expect.objectContaining({ code: "runner_storage_failure", details: { cause: expect.objectContaining({ code: "EACCES" }) } })
+        body: expect.objectContaining({ code: "runner_storage_failure", details: { directory, cause: expect.objectContaining({ code: "EACCES" }) } })
       }));
     } finally { chmodSync(directory, 0o700); }
   });

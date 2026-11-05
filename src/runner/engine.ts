@@ -13,8 +13,9 @@ type Fields = Omit<Extract<Change, { type: "run_updated" }>, "type" | "requestID
 const eventPageBytes = 1024 * 1024;
 /** Runs deleted per retention transaction, which bounds the size of its runs_deleted event. */
 const retentionBatch = 500;
-/** Pages returned to the file system per step (8 MiB at 4 KiB pages). Each step is a write transaction with a full
- * fsync, so a step stays short while a large backlog takes several steps with requests served between them. */
+/** Pages released per step (8 MiB at SQLite's default 4 KiB page; the file shrinks at the next WAL checkpoint). Each
+ * step is a write transaction with a full fsync, so a step stays short while a large backlog takes several steps with
+ * requests served between them. */
 const reclaimStep = 2048;
 
 /** Durable state lives only in storage. Every decision and its commit run without yielding, and storage calls are

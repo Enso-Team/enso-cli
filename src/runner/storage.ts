@@ -182,10 +182,13 @@ function sqlite(): typeof BetterSqlite3 {
 function invalid(message: string, details?: Record<string, unknown>): EnsoCliError {
   return new EnsoCliError("invalid_runner_storage", message, details);
 }
-/** Startup, unlike the read-only `check`, says what it does about a store it judged invalid. */
+/** Startup, unlike the read-only `check`, says what it does about a store it judged invalid. Amends the error in place
+ * so it keeps the stack of the check that failed. */
 function refused(error: unknown): unknown {
-  if (!(error instanceof EnsoCliError) || error.body.code !== "invalid_runner_storage") return error;
-  return new EnsoCliError("invalid_runner_storage", `${error.body.message}; refusing to dispatch or overwrite it`, error.body.details);
+  if (error instanceof EnsoCliError && error.body.code === "invalid_runner_storage") {
+    error.message = error.body.message = `${error.body.message}; refusing to dispatch or overwrite it`;
+  }
+  return error;
 }
 /** Keeps the SQLite or filesystem cause, and reports a lock or I/O failure as such rather than as a refused store. */
 function failure(error: unknown, message: string): EnsoCliError {
@@ -231,6 +234,8 @@ export class RunnerStorage {
   readonly directory: string;
   private locked = false;
   private db?: Database;
+  /** Set once startup creates the database file, after which a failure is not a refusal of an existing store. */
+  private created = false;
   constructor(directory = runnerDirectory()) { this.directory = resolve(directory); }
 
   /** Takes service ownership, then opens (or creates) the database. Throws, without ownership, if either fails. */
@@ -267,7 +272,7 @@ export class RunnerStorage {
       this.locked = true;
     } finally { rmSync(guard, { recursive: true }); }
     try { this.open(); }
-    catch (error) { this.release(); throw refused(error); }
+    catch (error) { this.release(); throw this.created ? error : refused(error); }
   }
 
   /**
@@ -284,15 +289,15 @@ export class RunnerStorage {
   static check(directory = runnerDirectory()): StoreCheck {
     const storage = new RunnerStorage(directory);
     const path = join(storage.directory, databaseName);
-    // Only a missing entry means no store: a directory this user cannot search is a store that could not be opened,
-    // and a dangling symlink is left for SQLite to report the same way.
+    // Only a missing entry, or a file where the directory should be, means no store: a directory this user cannot
+    // search is a store that could not be opened, and a dangling symlink is left for SQLite to report the same way.
     try { lstatSync(path); }
     catch (error) {
       const { code, message } = error as NodeJS.ErrnoException;
-      if (code === "ENOENT") {
+      if (code === "ENOENT" || code === "ENOTDIR") {
         throw new EnsoCliError("runner_storage_not_found", `No runner store in ${storage.directory}; \`enso runner serve\` creates one`, { directory: storage.directory });
       }
-      throw new EnsoCliError("runner_storage_failure", "Runner database could not be opened", { cause: { code, message } });
+      throw new EnsoCliError("runner_storage_failure", "Runner database could not be opened", { directory: storage.directory, cause: { code, message } });
     }
     const db = storage.db = openDatabase(sqlite(), path, { readonly: true, fileMustExist: true });
     try { return db.transaction(() => { storage.verify(); return storage.rebuild(); })(); }
@@ -300,6 +305,7 @@ export class RunnerStorage {
   }
 
   private open(): void {
+    this.created = false;
     const names = readdirSync(this.directory);
     const found = names.filter(legacy);
     if (found.length) {
@@ -317,6 +323,7 @@ export class RunnerStorage {
     try {
       // Created private, with a durable directory entry: SQLite gives -wal/-shm this mode but syncs the directory only for those.
       closeSync(openSync(path, "wx", 0o600));
+      this.created = true;
       this.syncDirectory();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
