@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -248,7 +248,7 @@ describe("existing stores", () => {
 
   it.each([
     ["an invalid binding", "DROP TRIGGER events_no_update; UPDATE events SET event_json = json_set(event_json, '$.session.binding', json('{}')) WHERE sequence = 1", /event/],
-    ["an event gap", "PRAGMA foreign_keys = OFF; DROP TRIGGER events_deleted_runs_only; DELETE FROM events WHERE sequence = 1", /sequence gap/],
+    ["an event gap", "PRAGMA foreign_keys = OFF; DROP TRIGGER events_deleted_expired_only; DELETE FROM events WHERE sequence = 1", /sequence gap/],
     ["a damaged event", "DROP TRIGGER events_no_update; PRAGMA ignore_check_constraints = ON; UPDATE events SET event_json = '{' WHERE sequence = 1", /event/],
     ["a row pointing at an older event", "DROP TRIGGER sessions_updated; UPDATE sessions SET last_sequence = sequence - 1 WHERE sequence = 2", /reference|rows do not match/],
     ["an event without its row", "DROP TRIGGER sessions_no_delete; PRAGMA foreign_keys = OFF; DELETE FROM sessions WHERE sequence = 2", /rows do not match/]
@@ -296,8 +296,7 @@ describe("existing stores", () => {
     ownerReleased();
   });
 
-  // A store moved or deleted without its journals: SQLite would apply them to the new file, corrupting it and
-  // destroying the moved store's last commits.
+  // A store moved or deleted without its WAL files: SQLite would discard them, destroying the moved store's last commits.
   it.each([["missing", null], ["empty", ""]])("refuses journals beside a %s database without creating or changing anything", async (_name, main) => {
     const source = mkdtempSync(join(tmpdir(), "enso-source-"));
     const owner = new RunnerStorage(source);
@@ -322,6 +321,27 @@ describe("existing stores", () => {
     open();
     engine!.createSession({ binding: binding() });
     expect(durable(directory).cursor).toBe(1);
+  });
+
+  // Initializing an empty file writes its first page through a rollback journal. SQLite discards a journal beside an
+  // empty database rather than applying it.
+  it("initializes an empty database left beside the journal of a crash during initialization", async () => {
+    const source = mkdtempSync(join(tmpdir(), "enso-source-"));
+    try {
+      const db = new Database(join(source, "runner.sqlite"));
+      db.exec("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('before')");
+      db.exec("BEGIN IMMEDIATE; UPDATE notes SET body = 'during'");
+      // Copied mid-transaction, as SIGKILL would leave it.
+      copyFileSync(join(source, "runner.sqlite-journal"), path("runner.sqlite-journal"));
+      db.exec("ROLLBACK");
+      db.close();
+    } finally { rmSync(source, { recursive: true, force: true }); }
+    expect(statSync(path("runner.sqlite-journal")).size).toBeGreaterThan(0);
+    writeFileSync(path("runner.sqlite"), "");
+    open();
+    engine!.createSession({ binding: binding() });
+    expect(durable(directory).cursor).toBe(1);
+    expect(existsSync(path("runner.sqlite-journal"))).toBe(false);
   });
 });
 
@@ -363,7 +383,7 @@ describe("retention", () => {
     engine!.submit(prompt(other.id, "active"));
     const caughtUp = engine!.snapshot();
 
-    expect(engine!.deleteFinishedBefore(cutoff)).toBe(2);
+    expect(await engine!.deleteFinishedBefore(cutoff)).toBe(2);
     const after = engine!.snapshot();
     expect(after.runs.map(run => run.request.requestID)).toEqual(["new", "active"]);
     expect(() => engine!.run("old-1")).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "run_not_found" }) }));
@@ -374,7 +394,7 @@ describe("retention", () => {
     // One below it would miss events, so it must take a new snapshot.
     expect(() => engine!.events(beforeOld.cursor - 1)).toThrow(expired);
     expect(() => engine!.events(0)).toThrow(expired);
-    expect(engine!.deleteFinishedBefore(cutoff)).toBe(0);
+    expect(await engine!.deleteFinishedBefore(cutoff)).toBe(0);
 
     abandon();
     open({ autoDispatch: false });
@@ -383,9 +403,34 @@ describe("retention", () => {
     // A deleted request ID is free: resubmitting it is a new run, which retention can delete again.
     engine!.submit(prompt(s.id, "old-1"));
     engine!.cancel("old-1");
-    expect(engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(2);
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(2);
     expect(engine!.snapshot().runs.map(run => run.request.requestID)).toEqual(["active"]);
     expect(RunnerStorage.check(directory).differences).toEqual([]);
+  });
+
+  it("deletes the session checkpoints that expired history superseded, keeping each session's latest", async () => {
+    open();
+    const s = engine!.createSession({ binding: binding() });
+    for (const id of ["t1", "t2", "t3"]) { engine!.submit(prompt(s.id, id)); await status(id, "completed"); }
+    const checkpoints = () => external(db => db.prepare("SELECT sequence FROM events WHERE type = 'session_updated' ORDER BY sequence").pluck().all() as number[]);
+    const all = checkpoints();
+    expect(all).toHaveLength(3);
+    const { sessions } = engine!.snapshot();
+
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(3);
+    expect(checkpoints()).toEqual([all[2]]);
+    expect(engine!.snapshot().sessions).toEqual(sessions);
+    expect(RunnerStorage.check(directory).differences).toEqual([]);
+    // The latest checkpoint is the session's state, so the schema refuses to delete it.
+    external(db => expect(() => db.exec(`DELETE FROM events WHERE sequence = ${all[2]}`)).toThrow(expect.objectContaining({ code: expect.stringMatching(/^SQLITE_CONSTRAINT/) })));
+
+    abandon();
+    open();
+    expect(engine!.snapshot().sessions).toEqual(sessions);
+    // The next turn continues from the kept checkpoint.
+    engine!.submit(prompt(s.id, "t4"));
+    await status("t4", "completed");
+    expect(engine!.snapshot().sessions[0].providerState).toEqual({ turn: 4 });
   });
 
   it("stores each payload once and returns deleted space to the file system", async () => {
@@ -398,9 +443,26 @@ describe("retention", () => {
     const full = pages().pages;
     // Three captured contexts, each stored once: well under the six copies a row and its event would hold.
     expect((full - empty) * 4096).toBeLessThan(3 * content.length * 1.2);
-    expect(engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(3);
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(3);
     expect(pages()).toEqual({ pages: expect.any(Number), free: 0 });
     expect(pages().pages).toBeLessThan(empty + (full - empty) / 10);
+  });
+
+  it("keeps serving when returning freed space fails after the deletion committed", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "done", "success", "x".repeat(64 * 1024)));
+    engine!.cancel("done");
+    const pragma = Database.prototype.pragma;
+    const spy = vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "incremental_vacuum") throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+      return pragma.call(this, source, options);
+    });
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(1);
+    expect(spy.mock.calls.map(([source]) => source)).toContain("incremental_vacuum");
+    expect(engine!.snapshot().runs).toEqual([]);
+    engine!.submit(prompt(s.id, "next"));
+    expect(engine!.run("next").status).toBe("accepted");
   });
 
   it("serve --retain-days deletes expired runs at startup", async () => {
@@ -445,5 +507,23 @@ describe("check", () => {
     open({ autoDispatch: false });
     abandon();
     expect(RunnerStorage.check(directory).differences).toEqual([{ problem: "update of a finished run", sequence: cursor + 1, requestID: "done" }]);
+  });
+
+  it("reports a missing store as not found, without creating it", () => {
+    expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
+      body: expect.objectContaining({ code: "runner_storage_not_found", details: { directory } })
+    }));
+    expect(readdirSync(directory)).toEqual([]);
+  });
+
+  it("reports a database it cannot open as an open failure, not a refused store", () => {
+    open();
+    abandon();
+    chmodSync(path("runner.sqlite"), 0);
+    try {
+      expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
+        body: expect.objectContaining({ code: "runner_storage_failure", details: { cause: expect.objectContaining({ code: expect.stringMatching(/^SQLITE_CANTOPEN/) }) } })
+      }));
+    } finally { chmodSync(path("runner.sqlite"), 0o600); }
   });
 });

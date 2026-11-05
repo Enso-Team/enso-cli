@@ -319,7 +319,8 @@ client does, and compares the result with what the rows read. It catches history
 the rows hide, such as an update to a finished run. It is read-only and runs in
 one read transaction, so it is safe beside a live runner. It reports
 `{cursor, expiredThrough, events, sessions, runs}`, or fails with
-`invalid_runner_storage` and up to 50 `details.differences`. It recovers terminal records unchanged,
+`invalid_runner_storage` and up to 50 `details.differences`. With no store in the
+directory it fails with `runner_storage_not_found`, and creates nothing. It recovers terminal records unchanged,
 dispatches only accepted work, and converts all previous running, waiting, or
 stopping work to durable `interrupted` records with
 `error.code: "restart_uncertain"` in one transaction. A crash part way through a
@@ -347,10 +348,12 @@ Existing stores are handled explicitly, never discarded:
 
 - No `runner.sqlite`: an empty store is created.
 - An empty `runner.sqlite` (a crash right after creating it): initialized.
-- `runner.sqlite-wal`, `-shm` or `-journal` with no `runner.sqlite`, or beside an
-  empty one: refused, listing them in `details.journalFiles`. They belong to a
-  store that was moved or deleted, and SQLite would apply them to the new file.
-  Move them back beside their store, or delete them to start empty.
+- `runner.sqlite-wal` or `-shm` with no `runner.sqlite`, or beside an empty one:
+  refused, listing them in `details.journalFiles`. They belong to a store that
+  was moved or deleted, and SQLite would discard the commits they hold. Move
+  them back beside their store, or delete them to start empty. A
+  `runner.sqlite-journal` beside an empty file is left by a crash while
+  initializing it; SQLite discards it and the file is initialized.
 - `state.json`, `log.jsonl` or their `.tmp` files from the earlier JSONL store
   (unreleased storage version 2): startup fails with `invalid_runner_storage`,
   listing them in `details.legacyFiles`. They are not migrated, modified, or
@@ -370,8 +373,12 @@ finished runs (`completed`, `failed`, `cancelled`, `interrupted`) whose last upd
 is more than N days old, at startup and then hourly. Each deletion is one
 transaction, of at most 500 runs, that appends a `runs_deleted` event naming them,
 advances the expired cursor to their last event, and deletes the run rows and all
-their events; the freed pages return to the file system (`auto_vacuum =
-INCREMENTAL`). Sessions, and runs that are still active, are never deleted.
+their events. The same transaction deletes each session's `session_updated`
+checkpoints at or below the expired cursor except its latest: each replaces every
+mutable field, so only an expired cursor could need the older ones. `runs_deleted`
+events are kept. Hourly passes serve requests between transactions. Once a pass ends,
+the freed pages return to the file system (`auto_vacuum = INCREMENTAL`); if that
+fails, later writes reuse them instead. Sessions, and runs that are still active, are never deleted.
 After deletion, the run's `requestID` is unknown (`run_not_found`) and free for a
 new submission. Pagination of snapshots needs a later design.
 

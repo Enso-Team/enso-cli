@@ -119,16 +119,24 @@ export class RunnerEngine {
     return this.run(id);
   }
 
-  /** Retention: deletes finished runs last updated before `cutoff`, with their events, and returns how many. */
-  deleteFinishedBefore(cutoff: Date): number {
+  /**
+   * Retention: deletes finished runs last updated before `cutoff`, with their events, and returns how many. Yields
+   * between batches so requests are served meanwhile, and stops once the runner stops accepting. Each batch is still
+   * chosen and committed without yielding, and a finished run never changes, so interleaving is safe.
+   */
+  async deleteFinishedBefore(cutoff: Date): Promise<number> {
     this.assertAccepting();
     let deleted = 0;
     for (;;) {
+      if (deleted) await new Promise(resolve => setImmediate(resolve));
+      if (!this.accepting) return deleted;
       const requestIDs = this.read(() => this.storage.finishedBefore(cutoff.toISOString(), retentionBatch));
-      if (!requestIDs.length) return deleted;
+      if (!requestIDs.length) break;
       this.commit([{ type: "runs_deleted", requestIDs }]);
       deleted += requestIDs.length;
     }
+    if (deleted) this.storage.reclaim();
+    return deleted;
   }
 
   dispatchAccepted(): void {

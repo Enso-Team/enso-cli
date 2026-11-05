@@ -65,7 +65,7 @@ export function registerRunner(program: Command): void {
     .action(async function (this: Command) {
       const { differences, ...summary } = RunnerStorage.check(this.opts().directory);
       if (differences.length) {
-        throw new EnsoCliError("invalid_runner_storage", `Runner rows disagree with the event history in ${differences.length} place(s); refusing to dispatch or overwrite it`, { ...summary, differences: differences.slice(0, 50) });
+        throw new EnsoCliError("invalid_runner_storage", `Runner rows disagree with the event history in ${differences.length} place(s)`, { ...summary, differences: differences.slice(0, 50) });
       }
       return { ok: true, data: summary };
     });

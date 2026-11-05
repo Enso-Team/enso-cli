@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -15,8 +15,12 @@ const applicationID = 0x456e736f;
 const schemaVersion = 1;
 /** Files of the pre-SQLite store. Their presence refuses startup: they are neither migrated nor modified. */
 const legacy = (name: string) => name === "state.json" || name === "log.jsonl" || /^\.(state\.json|log\.jsonl)\..+\.tmp$/.test(name);
-/** SQLite's journals for the database. Applied to a different database file, they corrupt it. */
-const journals = ["-wal", "-shm", "-journal"].map(suffix => databaseName + suffix);
+/**
+ * The database's WAL files. Beside a missing or empty database they belong to a store that was moved or deleted, and
+ * SQLite would discard its uncheckpointed commits. A `-journal` is not among them: this store writes one only while
+ * initializing an empty file, and SQLite itself discards a journal beside an empty database without applying it.
+ */
+const walFiles = ["-wal", "-shm"].map(suffix => databaseName + suffix);
 const sqlList = (values: readonly string[]) => values.map(value => `'${value}'`).join(", ");
 const terminalSQL = sqlList(terminalStatuses);
 const activeSQL = sqlList(activeStatuses);
@@ -60,10 +64,14 @@ CREATE TRIGGER retention_forward BEFORE UPDATE ON retention
   WHEN NEW.singleton IS NOT 1 OR NEW.expired_through < OLD.expired_through OR NEW.expired_through >= ${latestEvent}
     OR (SELECT type FROM events WHERE sequence = ${latestEvent}) IS NOT 'runs_deleted'
   ${abort("expired history only advances, below the runs_deleted event that announces it")};
-CREATE TRIGGER events_deleted_runs_only BEFORE DELETE ON events
-  WHEN OLD.type NOT IN (${runEventsSQL}) OR OLD.sequence > (SELECT expired_through FROM retention)
-    OR EXISTS (SELECT 1 FROM runs WHERE request_id = OLD.subject)
-  ${abort("only expired events of deleted runs are deleted")};
+-- A session_updated event replaces every mutable field, so one its session has superseded is not needed to fold the
+-- history; its latest one is.
+CREATE TRIGGER events_deleted_expired_only BEFORE DELETE ON events
+  WHEN OLD.sequence > (SELECT expired_through FROM retention) OR CASE
+    WHEN OLD.type IN (${runEventsSQL}) THEN EXISTS (SELECT 1 FROM runs WHERE request_id = OLD.subject)
+    WHEN OLD.type = 'session_updated' THEN OLD.sequence >= (SELECT last_sequence FROM sessions WHERE id = OLD.subject)
+    ELSE 1 END IS NOT 0
+  ${abort("only expired events of deleted runs, and superseded session checkpoints, are deleted")};
 
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
@@ -79,6 +87,8 @@ CREATE TRIGGER sessions_updated BEFORE UPDATE ON sessions
     OR NOT EXISTS (SELECT 1 FROM events WHERE sequence = NEW.last_sequence AND type = 'session_updated' AND subject = NEW.id)
   ${abort("a session changes only by its latest session_updated event")};
 CREATE TRIGGER sessions_no_delete BEFORE DELETE ON sessions ${abort("sessions are retained")};
+-- Deleting an event checks every reference to it; unindexed, each check would scan the table.
+CREATE INDEX sessions_last_sequence ON sessions (last_sequence);
 
 CREATE TABLE runs (
   request_id TEXT PRIMARY KEY,
@@ -88,6 +98,7 @@ CREATE TABLE runs (
   status TEXT NOT NULL CHECK (status IN (${activeSQL}, ${terminalSQL}))
 ) STRICT;
 CREATE UNIQUE INDEX runs_one_active_per_session ON runs (session_id) WHERE status IN (${activeSQL});
+CREATE INDEX runs_last_sequence ON runs (last_sequence);
 CREATE TRIGGER runs_accepted BEFORE INSERT ON runs
   WHEN NEW.sequence IS NOT ${latestEvent} OR NEW.last_sequence IS NOT NEW.sequence OR NEW.status IS NOT 'accepted'
     OR NOT EXISTS (SELECT 1 FROM events WHERE sequence = NEW.sequence AND type = 'run_accepted' AND subject = NEW.request_id
@@ -181,6 +192,8 @@ function failure(error: unknown, message: string): EnsoCliError {
   if (code === "SQLITE_FULL" || code.startsWith("SQLITE_IOERR")) {
     return new EnsoCliError("runner_storage_failure", "Runner database could not be read or written", cause);
   }
+  // Missing, or not readable by this user: nothing was judged, so nothing is refused.
+  if (code.startsWith("SQLITE_CANTOPEN")) return new EnsoCliError("runner_storage_failure", "Runner database could not be opened", cause);
   return invalid(message, cause);
 }
 /**
@@ -252,21 +265,24 @@ export class RunnerStorage {
     catch (error) { this.release(); throw error; }
   }
 
-  /** Reads a store without ownership or modification (beyond SQLite's -wal/-shm files), e.g. to inspect a live runner. */
-  static inspect(directory = runnerDirectory()): RunnerStorage {
-    const storage = new RunnerStorage(directory);
-    storage.db = openDatabase(sqlite(), join(storage.directory, databaseName), { readonly: true, fileMustExist: true });
-    try { storage.verify(); } catch (error) { storage.release(); throw error; }
-    return storage;
-  }
-
   /**
    * Validates the store as startup does, then rebuilds every session and run from the event history alone and
    * compares them with what the rows read. Read-only, so it can run beside a live runner; one read transaction.
+   *
+   * Known limitation: `verify` runs first and throws on the first row that does not match its events (`linkage`), so
+   * most row/event mismatches surface as one bare "Runner rows do not match their events" with no session or run
+   * named, and never reach `differences`. Only history the rows hide (an update to a finished run, a deletion of an
+   * unfinished one) is listed. The schema's triggers keep such mismatches from committing, so this matters only for
+   * repairing a store damaged by hand or by the disk. Listing them would need `linkage` to return every mismatch with
+   * its ID, and `rebuild` to record an unreadable row instead of throwing.
    */
   static check(directory = runnerDirectory()): StoreCheck {
     const storage = new RunnerStorage(directory);
-    const db = storage.db = openDatabase(sqlite(), join(storage.directory, databaseName), { readonly: true, fileMustExist: true });
+    const path = join(storage.directory, databaseName);
+    if (!existsSync(path)) {
+      throw new EnsoCliError("runner_storage_not_found", `No runner store in ${storage.directory}; \`enso runner serve\` creates one`, { directory: storage.directory });
+    }
+    const db = storage.db = openDatabase(sqlite(), path, { readonly: true, fileMustExist: true });
     try { return db.transaction(() => { storage.verify(); return storage.rebuild(); })(); }
     finally { storage.release(); }
   }
@@ -278,9 +294,9 @@ export class RunnerStorage {
       throw invalid("Found a pre-SQLite runner store, which this runner does not migrate. Keep it with a runner build that reads it, or move it out of this directory to start empty", { legacyFiles: found.sort() });
     }
     const path = join(this.directory, databaseName);
-    // Enabling WAL writes the database header before any journal exists, so journals beside a missing or empty file
-    // belong to another database: a moved or deleted store. Opening would apply them to this file.
-    const orphans = names.filter(name => journals.includes(name));
+    // An empty file is given its first page before WAL mode creates any WAL file, so WAL files beside a missing or
+    // empty file are another store's.
+    const orphans = names.filter(name => walFiles.includes(name));
     if (orphans.length && (!names.includes(databaseName) || lstatSync(path).size === 0)) {
       throw invalid(`Found SQLite journal files without their ${databaseName}. Move them back beside the store they belong to, or delete them to start empty`, { journalFiles: orphans.sort() });
     }
@@ -370,6 +386,7 @@ export class RunnerStorage {
     }, "Runner event sequence gap");
     check(() => { if ((db.pragma("foreign_key_check") as unknown[]).length) throw new Error(); }, "Runner record references a missing event or session");
     check(() => { for (const row of prepare(db, "SELECT sequence, type, event_json FROM events").iterate()) this.event(row as EventRow); }, "Damaged runner event");
+    // Names no row, and stops `check` before it can list differences: see the limitation noted on `check`.
     check(() => { if (prepare(db, linkage).get() !== undefined) throw new Error(); }, "Runner rows do not match their events");
     check(() => this.sessions(), "Damaged runner session");
     check(() => this.runs(), "Damaged runner run");
@@ -440,7 +457,15 @@ export class RunnerStorage {
         this.apply(db, event);
       }
     }).immediate();
-    if (changes.some(change => change.type === "runs_deleted")) db.pragma("incremental_vacuum");
+  }
+
+  /**
+   * Returns pages freed by retention to the file system. Best effort: the deletion has already committed, and a
+   * failure only leaves free pages for later writes to reuse, so it must not fail the runner.
+   */
+  reclaim(): void {
+    if (!this.locked) throw new Error("Storage is not owned");
+    try { this.database().pragma("incremental_vacuum"); } catch { /* see above */ }
   }
 
   private apply(db: Database, event: RunnerEvent): void {
@@ -466,6 +491,9 @@ export class RunnerStorage {
       expected = event.requestIDs.length;
       changed = prepare(db, "DELETE FROM runs WHERE request_id IN (SELECT value FROM json_each(?))").run(ids).changes;
       prepare(db, `DELETE FROM events WHERE ${owned}`).run(ids);
+      // Session checkpoints superseded below the expired cursor, which only expired cursors could still need.
+      prepare(db, `DELETE FROM events WHERE sequence IN (SELECT e.sequence FROM sessions s JOIN events e ON e.subject = s.id
+        AND e.sequence < s.last_sequence WHERE e.type = 'session_updated' AND e.sequence <= (SELECT expired_through FROM retention))`).run();
     }
     if (changed !== expected) throw new Error(`Runner ${event.type} matched no record`);
   }
@@ -491,8 +519,8 @@ export class RunnerStorage {
   }
   /** Events at or below this sequence may have been deleted: a cursor below it cannot be replayed. */
   expiredThrough(): number { return prepare(this.database(), "SELECT expired_through FROM retention").pluck().get() as number; }
-  /** One committed state and the sequence of its last event. The transaction holds one WAL read view across the
-   * three reads, which matters for a reader on its own connection (`inspect`) while the runner commits. */
+  /** One committed state and the sequence of its last event: the transaction holds one WAL read view across the
+   * three reads. */
   snapshot(): StoredSnapshot {
     const db = this.database();
     return db.transaction(() => ({ sessions: this.sessions(), runs: this.runs(), cursor: this.cursor() }))();
@@ -567,7 +595,7 @@ export class RunnerStorage {
     }
   }
 
-  /** Closes the database, then gives up ownership. Also closes an inspecting reader. */
+  /** Closes the database, then gives up ownership. Also closes a checking reader. */
   release(): void {
     if (this.db?.open) this.db.close();
     this.db = undefined;
