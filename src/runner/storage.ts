@@ -159,15 +159,24 @@ export class RunnerStorage {
     }
     const Sqlite = sqlite();
     const path = join(this.directory, databaseName);
+    let identity: "empty" | "store" = "empty";
     try {
       // Created private, with a durable directory entry: SQLite gives -wal/-shm this mode but syncs the directory only for those.
       closeSync(openSync(path, "wx", 0o600));
       this.syncDirectory();
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Judge an existing file read-only: closing a read-write connection folds its WAL into it, even one being refused.
+      const reader = this.db = openDatabase(Sqlite, path, { readonly: true, fileMustExist: true });
+      try {
+        identity = this.identify(reader);
+        if (identity === "store") this.verify();
+      } finally { reader.close(); this.db = undefined; }
+    }
     const db = this.db = openDatabase(Sqlite, path, { fileMustExist: true, timeout: 1000 });
     try {
-      // Identify the file before any pragma can write to it.
-      const identity = this.identify(db);
+      // Ownership excludes other writers, so this is the file just judged.
+      if (this.identify(db) !== identity) throw new Error("Runner database changed during startup");
       db.pragma("journal_mode = WAL");
       db.pragma("synchronous = FULL"); // WAL commits sync the log (NORMAL defers to checkpoints and can lose commits).
       db.pragma("fullfsync = ON"); // macOS: F_FULLFSYNC flushes the drive's volatile cache; plain fsync does not.
@@ -189,8 +198,8 @@ export class RunnerStorage {
           db.pragma(`application_id = ${applicationID}`);
           db.pragma(`user_version = ${schemaVersion}`);
         }).immediate();
+        this.verify();
       }
-      this.verify();
     } catch (error) {
       db.close();
       this.db = undefined;
@@ -294,8 +303,9 @@ export class RunnerStorage {
     const events: RunnerEvent[] = [];
     let bytes = 0;
     for (const row of this.database().prepare("SELECT * FROM events WHERE sequence > ? ORDER BY sequence").iterate(after)) {
-      if (events.length && bytes + (row as EventRow).event_json.length > maxBytes) break;
-      bytes += (row as EventRow).event_json.length;
+      const size = Buffer.byteLength((row as EventRow).event_json);
+      if (events.length && bytes + size > maxBytes) break;
+      bytes += size;
       events.push(this.event(row as EventRow));
     }
     return events;

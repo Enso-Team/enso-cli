@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -219,6 +219,38 @@ describe("existing stores", () => {
     const before = readFileSync(path("runner.sqlite"));
     await expect(startRunner({ directory })).rejects.toEqual(storageError(message));
     expect(readFileSync(path("runner.sqlite"))).toEqual(before);
+    ownerReleased();
+  });
+
+  // A crash leaves committed transactions in runner.sqlite-wal. Refusal must not fold them into the main file.
+  it.each([
+    ["another application's database", null, /not an Enso runner database/],
+    ["a newer runner store", "PRAGMA user_version = 2", /Unsupported runner storage version 2/],
+    ["a damaged runner store", "INSERT INTO sessions SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 99, provider, '{}', created_at, NULL FROM sessions LIMIT 1", /session/]
+  ])("refuses %s with a live WAL, leaving the database and WAL unchanged", async (_name, damage, message) => {
+    const source = mkdtempSync(join(tmpdir(), "enso-source-"));
+    const owner = new RunnerStorage(source);
+    try {
+      let open: Database.Database;
+      if (damage === null) {
+        open = new Database(join(source, "runner.sqlite"));
+        open.pragma("journal_mode = WAL");
+        open.exec("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('keep me')");
+      } else {
+        owner.acquire();
+        new RunnerEngine(owner, new FakeProvider(), { autoDispatch: false }).createSession({ binding: binding() });
+        open = new Database(join(source, "runner.sqlite"));
+        open.exec(damage);
+      }
+      // Copied while still open, as SIGKILL would leave it.
+      for (const name of ["runner.sqlite", "runner.sqlite-wal"]) copyFileSync(join(source, name), path(name));
+      open.close();
+    } finally { owner.release(); rmSync(source, { recursive: true, force: true }); }
+    expect(statSync(path("runner.sqlite-wal")).size).toBeGreaterThan(0);
+    const data = () => ["runner.sqlite", "runner.sqlite-wal"].map(name => readFileSync(path(name)));
+    const before = data();
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(message));
+    expect(data()).toEqual(before);
     ownerReleased();
   });
 

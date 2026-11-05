@@ -243,7 +243,7 @@ also clears the `pending` request that a previous `waiting_input` update set.
 4. On HTTP 410 `cursor_expired`, discard the local copy and return to step 1.
 
 A reply is one page: events after the cursor in order, stopping before the one
-that would take it past about 1 MiB of event data (a page always holds at least
+that would take it past 1 MiB of UTF-8 event JSON (a page always holds at least
 one event when any are newer). The returned `cursor` is the sequence of the last
 event in the page, or the requested cursor when there are none, so a client that
 is behind repeats the query until `events` is empty.
@@ -333,10 +333,11 @@ Existing stores are handled explicitly, never discarded:
   listing them in `details.legacyFiles`. They are not migrated, modified, or
   shadowed by a new database. Keep them with the runner build that wrote them,
   or move them out of the directory to start empty.
-- A file that is not SQLite, another application's database, or a runner
-  database of a different version: refused before any pragma writes to it, and
-  left byte-for-byte unchanged.
-- A damaged runner database: refused without being rewritten.
+- A file that is not SQLite, another application's database, a runner database
+  of a different version, or a damaged runner database: refused. An existing
+  file is judged through a read-only connection, so the database and any
+  `-wal` left by a crash stay byte-for-byte unchanged (SQLite may rebuild the
+  `-shm` index).
 
 The store retains every session, run and event, including captured context and
 results, without bounds. Pagination of snapshots and run retention need a later
