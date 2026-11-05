@@ -9,7 +9,7 @@ import { FakeProvider } from "../../src/runner/provider.js";
 import { startRunner, type RunnerService } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
 import type { Run, RunnerEvent } from "../../src/runner/protocol.js";
-import { apply, restore, toSnapshot } from "../../src/runner/state.js";
+import { applyEvents, durable as stored } from "./replica.js";
 
 let directory: string;
 let service: RunnerService | undefined;
@@ -22,7 +22,7 @@ async function data(method: string, path: string, body?: unknown): Promise<any> 
   if (!result.ok) throw new Error(JSON.stringify(result.error));
   return result.data;
 }
-const durable = () => toSnapshot(new RunnerStorage(directory).load().state);
+const durable = () => stored(directory);
 async function session() { return data("POST", "/v1/sessions", { binding: binding() }); }
 function prompt(sessionID: string, requestID = "request-1", scenario = "success", delayMs = 30) {
   return { requestID, sessionID, text: "Explain this selection", context, fake: { scenario, delayMs } };
@@ -102,11 +102,9 @@ describe("local runner protocol", () => {
     expect(delta.events[0]).toEqual({ sequence: snapshot.cursor + 1, type: "run_updated", requestID: "reconnect", status: "completed",
       updatedAt: complete.updatedAt, result: complete.result, providerState: { turn: 1 } });
     // Applying the deltas to the earlier snapshot reproduces the later one.
-    const local = restore({ storageVersion: 2, sequence: snapshot.cursor, sessions: snapshot.sessions, runs: snapshot.runs });
-    for (const event of delta.events) apply(local, event);
     const after = await data("GET", "/v1/snapshot");
     expect(after.runs[0]).toEqual(complete);
-    expect({ sessions: [...local.sessions.values()], runs: [...local.runs.values()], cursor: local.sequence }).toEqual(after);
+    expect(applyEvents(snapshot, delta.events)).toEqual(after);
     expect(await data("GET", `/v1/events?after=${after.cursor}`)).toEqual({ events: [], cursor: after.cursor });
     expect(await call("GET", "/v1/events?after=999999")).toMatchObject({ error: { code: "invalid_cursor" } });
   });
@@ -182,8 +180,10 @@ describe("local runner protocol", () => {
     expect(await raw({ ...auth, "Enso-Runner-Version": "2" })).toMatchObject({ status: 426 });
     expect(await raw({ ...auth, "Enso-Runner-Version": "1", Origin: "http://hostile.example" })).toMatchObject({ status: 401 });
     await session();
-    expect(readFileSync(join(directory, "log.jsonl"), "utf8")).not.toContain(connection.token);
-    expect(statSync(join(directory, "log.jsonl")).mode & 0o777).toBe(0o600);
+    for (const name of ["runner.sqlite", "runner.sqlite-wal", "runner.sqlite-shm"]) {
+      expect(readFileSync(join(directory, name), "latin1")).not.toContain(connection.token);
+      expect(statSync(join(directory, name)).mode & 0o777).toBe(0o600);
+    }
     await expect(startRunner({ directory })).rejects.toMatchObject({ body: { code: "runner_locked" } });
     expect((await data("GET", "/v1/snapshot")).sessions).toHaveLength(1);
   });
@@ -254,7 +254,7 @@ describe("durability failure", () => {
     const execute = vi.spyOn(provider, "execute");
     const engine = new RunnerEngine(storage, provider);
     const s = engine.createSession({ binding: binding() });
-    vi.spyOn(storage, "append").mockImplementation(() => { throw new Error("disk full"); });
+    vi.spyOn(storage, "commit").mockImplementation(() => { throw new Error("disk full"); });
     expect(() => engine.submit(prompt(s.id))).toThrow("Durable write failed");
     await new Promise(resolve => setImmediate(resolve));
     expect(execute).not.toHaveBeenCalled();
@@ -268,10 +268,10 @@ describe("service persistence failure", () => {
   it("shuts down after losing a terminal write and recovers as uncertain", async () => {
     service = await startRunner({ directory });
     const s = await session();
-    const original = RunnerStorage.prototype.append;
-    vi.spyOn(RunnerStorage.prototype, "append").mockImplementation(function (this: RunnerStorage, events) {
-      if (events.some(event => event.type === "run_updated" && event.status === "completed")) throw new Error("disk full");
-      return original.call(this, events);
+    const original = RunnerStorage.prototype.commit;
+    vi.spyOn(RunnerStorage.prototype, "commit").mockImplementation(function (this: RunnerStorage, changes) {
+      if (changes.some(change => change.type === "run_updated" && change.status === "completed")) throw new Error("disk full");
+      return original.call(this, changes);
     });
     await data("POST", "/v1/prompts", prompt(s.id, "unwritten-result", "success", 20));
     await expect(service.closed).rejects.toMatchObject({ body: { code: "runner_storage_failure" } });

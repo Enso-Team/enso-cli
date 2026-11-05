@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { RunnerStorage } from "../../src/runner/storage.js";
+import { durable } from "../runner/replica.js";
 
 let child: ChildProcess | undefined;
 let directory: string | undefined;
@@ -34,7 +34,7 @@ async function serve() {
   });
   return output;
 }
-function leftovers(path: string) { return ["acquiring", "owner", "connection.json", "control.sock"].filter(name => existsSync(join(path, name))); }
+function leftovers(path: string) { return ["acquiring", "owner", "connection.json", "control.sock", "runner.sqlite-wal", "runner.sqlite-shm"].filter(name => existsSync(join(path, name))); }
 async function command(args: string[]) {
   const process = start(args);
   let stdout = "", stderr = "";
@@ -70,7 +70,7 @@ it("runs the standalone CLI service without an app and gracefully shuts down", a
   expect(output.stdout.trim().split("\n")).toHaveLength(1);
   expect(output.stdout).not.toContain('"token"');
   expect(leftovers(directory)).toEqual([]);
-  expect(new RunnerStorage(directory).load().state.runs.get("cli-turn")?.status).toBe("cancelled");
+  expect(durable(directory).runs.find(run => run.request.requestID === "cli-turn")?.status).toBe("cancelled");
 }, 15_000);
 
 it("stops cleanly on SIGTERM with a single ready envelope and no leftover runtime files", async () => {

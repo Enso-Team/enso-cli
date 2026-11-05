@@ -1,36 +1,38 @@
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunnerEngine } from "../../src/runner/engine.js";
-import { FakeProvider } from "../../src/runner/provider.js";
-import { startRunner, type RunnerService } from "../../src/runner/service.js";
-import { apply, restore, toSnapshot, type State } from "../../src/runner/state.js";
+import { FakeProvider, type RunnerProvider } from "../../src/runner/provider.js";
+import { startRunner } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
 import type { Run } from "../../src/runner/protocol.js";
+import { allEvents, applyEvents, durable, empty } from "./replica.js";
 
 let directory: string;
 let storage: RunnerStorage;
 let engine: RunnerEngine | undefined;
-let service: RunnerService | undefined;
 const binding = () => ({ bridgeUrl: "http://127.0.0.1:17650", canvasTarget: {
   vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
 }, workingDirectory: realpathSync(directory) });
 const prompt = (sessionID: string, requestID: string, scenario = "success", content = "") =>
   ({ requestID, sessionID, text: "Explain", context: { selectedNodes: [{ nodeID: "n", content }] }, fake: { scenario, delayMs: 0 } });
-const live = (target: RunnerEngine) => (target as unknown as { state: State }).state;
-const durable = () => new RunnerStorage(directory).load().state;
 const path = (name: string) => join(directory, name);
-const lines = () => readFileSync(path("log.jsonl"), "utf8").split("\n").slice(0, -1);
-function open(options: { compactBytes?: number; autoDispatch?: boolean } = {}): RunnerEngine {
+const storageError = (message?: RegExp) => expect.objectContaining({ body: expect.objectContaining({ code: "invalid_runner_storage", ...(message ? { message: expect.stringMatching(message) } : {}) }) });
+function open(options: { autoDispatch?: boolean; provider?: RunnerProvider; onFatal?: () => void } = {}): RunnerEngine {
   storage.release();
-  storage = new RunnerStorage(directory, { compactBytes: options.compactBytes });
+  storage = new RunnerStorage(directory);
   storage.acquire();
-  return engine = new RunnerEngine(storage, new FakeProvider(), { autoDispatch: options.autoDispatch });
+  return engine = new RunnerEngine(storage, options.provider ?? new FakeProvider(), options);
 }
 /** Leaves the store as a crash would: no shutdown transaction, owner released. */
 function abandon(): void { engine = undefined; storage.release(); }
+/** A second, independent writer: what a hand edit or a fault injected beneath the runner looks like. */
+function external<T>(action: (db: Database.Database) => T): T {
+  const db = new Database(path("runner.sqlite"), { fileMustExist: true });
+  try { return action(db); } finally { db.close(); }
+}
 async function status(id: string, wanted: Run["status"]): Promise<Run> {
   for (let n = 0; n < 200; n++) {
     const run = engine!.run(id);
@@ -59,206 +61,191 @@ async function history(): Promise<string> {
 
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "enso-storage-")); storage = new RunnerStorage(directory); });
 afterEach(async () => {
-  await engine?.shutdown(); engine = undefined;
-  await service?.stop(); service = undefined;
+  await engine?.shutdown().catch(() => {}); engine = undefined;
   vi.restoreAllMocks(); storage.release();
   rmSync(directory, { recursive: true, force: true });
 });
 
-describe("replay", () => {
-  it.each([undefined, 1])("recovers state deep-equal to the live state (compactBytes %s)", async compactBytes => {
-    open({ compactBytes });
+describe("transactions", () => {
+  it("recovers exactly the committed state, which snapshot plus events reproduce", async () => {
+    open();
     await history();
-    expect(existsSync(path("state.json"))).toBe(compactBytes === 1);
-    expect(durable()).toEqual(live(engine!));
+    const live = engine!.snapshot();
+    expect(durable(directory)).toEqual(live);
+    expect(applyEvents(empty(), allEvents(engine!))).toEqual(live);
     await engine!.shutdown();
-    const stopped = structuredClone(live(engine!));
-    expect(durable()).toEqual(stopped);
-    open({ compactBytes });
-    expect(live(engine!)).toEqual(stopped);
-    expect(engine!.snapshot().runs.map(run => run.status)).toEqual(["completed", "failed", "completed", "interrupted", "cancelled"]);
-    expect(engine!.session(engine!.snapshot().sessions[0].id).providerState).toEqual({ turn: 1 });
+    const stopped = engine!.snapshot();
+    expect(stopped.runs.map(run => run.status)).toEqual(["completed", "failed", "completed", "interrupted", "cancelled"]);
+    open();
+    expect(engine!.snapshot()).toEqual(stopped);
+    expect(applyEvents(empty(), allEvents(engine!))).toEqual(stopped);
+    expect(engine!.session(stopped.sessions[0].id).providerState).toEqual({ turn: 1 });
   });
 
   it("converts recovered dispatched work to restart_uncertain in one transaction", async () => {
     open();
     await history();
+    const { cursor } = engine!.snapshot();
     abandon();
-    const before = lines().length;
+    const commit = vi.spyOn(RunnerStorage.prototype, "commit");
     open();
-    expect(lines()).toHaveLength(before + 1);
-    expect(engine!.run("waiting")).toMatchObject({ status: "interrupted", error: { code: "restart_uncertain" } });
-    expect(durable()).toEqual(live(engine!));
-  });
-});
-
-describe("torn and damaged logs", () => {
-  it("ignores and truncates a torn final line, then appends durably", async () => {
-    open({ autoDispatch: false });
-    const s = engine!.createSession({ binding: binding() });
-    engine!.submit(prompt(s.id, "a"));
-    const before = structuredClone(live(engine!));
-    abandon();
-    appendFileSync(path("log.jsonl"), '{"events":[{"sequence":3,"type":"run_upd');
-    const torn = readFileSync(path("log.jsonl"));
-    expect(durable()).toEqual(before);
-    expect(readFileSync(path("log.jsonl"))).toEqual(torn);
-    open({ autoDispatch: false });
-    expect(live(engine!)).toEqual(before);
-    engine!.cancel("a");
-    expect(lines().map(line => JSON.parse(line).events[0].sequence)).toEqual([1, 2, 3]);
-    abandon();
-    expect(durable().runs.get("a")!.status).toBe("cancelled");
-    expect(durable().sequence).toBe(3);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(engine!.events(cursor).events).toEqual([expect.objectContaining({
+      sequence: cursor + 1, type: "run_updated", requestID: "waiting", status: "interrupted", error: expect.objectContaining({ code: "restart_uncertain" })
+    })]);
+    expect(durable(directory)).toEqual(engine!.snapshot());
   });
 
-  it.each(["newline", "half"])("applies none of a multi-event transaction torn at its %s", async cut => {
+  it("rolls back a transaction that fails part way, fails closed, and continues gap-free after restart", async () => {
     open({ autoDispatch: false });
     for (const id of ["a", "b", "c"]) engine!.submit(prompt(engine!.createSession({ binding: binding() }).id, id));
-    const before = structuredClone(live(engine!));
-    await engine!.shutdown();
+    const before = durable(directory);
+    // The second of shutdown's three cancellations fails inside the database.
+    external(db => db.exec(`CREATE TRIGGER inject BEFORE UPDATE ON runs WHEN NEW.request_id = 'b'
+      BEGIN SELECT RAISE(ABORT, 'injected failure'); END`));
+    await expect(engine!.shutdown()).rejects.toMatchObject({ body: { code: "runner_storage_failure" } });
+    expect(() => engine!.snapshot()).toThrow("Runner storage failed");
+    expect(durable(directory)).toEqual(before);
     abandon();
-    const text = readFileSync(path("log.jsonl"), "utf8");
-    const last = text.slice(text.lastIndexOf("\n", text.length - 2) + 1);
-    expect(JSON.parse(last).events).toHaveLength(3);
-    writeFileSync(path("log.jsonl"), text.slice(0, text.length - (cut === "newline" ? 1 : Math.floor(last.length / 2))));
-    expect(durable()).toEqual(before);
+    external(db => db.exec("DROP TRIGGER inject"));
+    open({ autoDispatch: false });
+    expect(engine!.snapshot()).toEqual(before);
+    engine!.cancel("b");
+    expect(engine!.events(before.cursor).events.map(event => event.sequence)).toEqual([before.cursor + 1]);
+    expect(applyEvents(empty(), allEvents(engine!))).toEqual(durable(directory));
   });
 
-  it.each([
-    ["a corrupt middle line", (all: string[]) => { all[2] = "{not json"; }],
-    ["a missing middle line", (all: string[]) => { all.splice(2, 1); }],
-    ["a repeated line", (all: string[]) => { all.splice(2, 0, all[2]); }],
-    ["a complete but invalid last line", (all: string[]) => { all.push('{"events":[]}'); }],
-    ["an invariant violation", (all: string[]) => { all[1] = all[0].replace('"sequence":1,', '"sequence":2,'); }]
-  ])("refuses %s without touching the files", async (_name, damage) => {
-    open();
-    await history();
-    await engine!.shutdown();
+  it("commits a completed result and its session checkpoint together or not at all", async () => {
+    const onFatal = vi.fn();
+    open({ onFatal, provider: { name: "fake", execute: async () => ({ status: "completed", result: { text: "done" }, providerState: { turn: 1 } }) } });
+    const s = engine!.createSession({ binding: binding() });
+    external(db => db.exec(`CREATE TRIGGER inject BEFORE UPDATE OF provider_state_json ON sessions
+      BEGIN SELECT RAISE(ABORT, 'injected failure'); END`));
+    engine!.submit(prompt(s.id, "turn"));
+    await vi.waitFor(() => expect(onFatal).toHaveBeenCalled());
+    const stored = durable(directory);
+    expect(stored.runs[0]).toMatchObject({ status: "running" });
+    expect(stored.runs[0].result).toBeUndefined();
+    expect(stored.sessions[0].providerState).toBeUndefined();
     abandon();
-    const all = lines();
-    damage(all);
-    writeFileSync(path("log.jsonl"), all.join("\n") + "\n");
-    writeFileSync(path("state.json"), JSON.stringify({ storageVersion: 2, sequence: 0, sessions: [], runs: [] }) + "\n");
-    const files = ["log.jsonl", "state.json"].map(name => readFileSync(path(name)));
-    await expect(startRunner({ directory })).rejects.toMatchObject({ body: { code: "invalid_runner_storage" } });
-    expect(["log.jsonl", "state.json"].map(name => readFileSync(path(name)))).toEqual(files);
+    external(db => db.exec("DROP TRIGGER inject"));
+    open();
+    expect(engine!.run("turn")).toMatchObject({ status: "interrupted", error: { code: "restart_uncertain" } });
+    expect(engine!.session(s.id).providerState).toBeUndefined();
   });
 
-  it("refuses a snapshot whose binding has a corrupted canvasTarget", async () => {
-    open();
-    engine!.createSession({ binding: binding() });
-    await engine!.shutdown();
+  it("enforces immutability, single active runs and gap-free events in the schema itself", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "active"));
+    engine!.submit(prompt(engine!.createSession({ binding: binding() }).id, "done"));
+    engine!.cancel("done");
     abandon();
-    const snapshot = toSnapshot(durable());
-    snapshot.sessions[0].binding.canvasTarget = { vaultID: "vault", canvasID: "canvas" } as never;
-    writeFileSync(path("state.json"), JSON.stringify(snapshot) + "\n");
-    writeFileSync(path("log.jsonl"), "");
-    expect(() => durable()).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_runner_storage" }) }));
+    const before = readFileSync(path("runner.sqlite"));
+    external(db => {
+      for (const statement of [
+        "UPDATE sessions SET binding_json = '{}'",
+        "UPDATE runs SET request_json = '{}' WHERE request_id = 'active'",
+        "UPDATE runs SET status = 'completed' WHERE request_id = 'done'",
+        "UPDATE runs SET status = 'accepted' WHERE request_id = 'active'",
+        `INSERT INTO runs (request_id, session_id, sequence, request_json, created_at, status, updated_at)
+          SELECT 'second', session_id, 99, request_json, created_at, 'accepted', updated_at FROM runs WHERE request_id = 'active'`,
+        "INSERT INTO events (sequence, type, event_json) VALUES (99, 'session_updated', '{}')",
+        "DELETE FROM events WHERE sequence = 1",
+        "UPDATE events SET event_json = '{}' WHERE sequence = 1",
+        "DELETE FROM sessions"
+      ]) expect(() => db.exec(statement), statement).toThrow();
+    });
+    expect(readFileSync(path("runner.sqlite"))).toEqual(before);
   });
 });
 
-describe("compaction", () => {
+describe("existing stores", () => {
+  const files = () => Object.fromEntries(readdirSync(directory).sort().map(name => [name, readFileSync(path(name))]));
+  const ownerReleased = () => expect(() => lstatSync(path("owner"))).toThrow();
+
   it.each([
-    ["the snapshot rename", "tmp"],
-    ["log truncation", "renamed"],
-    ["the next append", "truncated"],
-    ["an earlier compaction", "earlier"]
-  ])("recovers a crash before %s without loss or double apply", async (_name, step) => {
+    [["state.json", "log.jsonl"]],
+    [["log.jsonl"]],
+    [[".state.json.1234.tmp"]]
+  ])("refuses a pre-SQLite store (%j) without migrating, modifying or shadowing it", async names => {
+    for (const name of names) writeFileSync(path(name), `${JSON.stringify({ storageVersion: 2, sequence: 0, sessions: [], runs: [] })}\n`);
+    const before = files();
+    await expect(startRunner({ directory })).rejects.toMatchObject({ body: {
+      code: "invalid_runner_storage", message: expect.stringContaining("pre-SQLite"), details: { legacyFiles: [...names].sort() }
+    } });
+    expect(files()).toEqual(before);
+    expect(existsSync(path("runner.sqlite"))).toBe(false);
+    ownerReleased();
+  });
+
+  it("refuses a file that is not a database", async () => {
+    writeFileSync(path("runner.sqlite"), "x".repeat(4096));
+    const before = files();
+    await expect(startRunner({ directory })).rejects.toEqual(storageError());
+    expect(files()).toEqual(before);
+    ownerReleased();
+  });
+
+  it("refuses another application's database before changing its journal mode", async () => {
+    const db = new Database(path("runner.sqlite"));
+    db.exec("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('keep me')");
+    db.close();
+    const before = files();
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/not an Enso runner database/));
+    expect(files()).toEqual(before);
+  });
+
+  it("refuses an unsupported schema version without migrating it", async () => {
     open();
-    await history();
-    const middle = toSnapshot(structuredClone(live(engine!)));
-    await engine!.shutdown();
-    const final = structuredClone(live(engine!));
-    abandon();
-    const log = readFileSync(path("log.jsonl"));
-    const snapshot = JSON.stringify(toSnapshot(final)) + "\n";
-    if (step === "tmp") writeFileSync(path(".state.json.crash.tmp"), snapshot);
-    if (step === "renamed" || step === "truncated") writeFileSync(path("state.json"), snapshot);
-    if (step === "truncated") writeFileSync(path("log.jsonl"), "");
-    if (step === "earlier") writeFileSync(path("state.json"), JSON.stringify(middle) + "\n");
-    expect(readFileSync(path("log.jsonl")).length).toBe(step === "truncated" ? 0 : log.length);
-    expect(durable()).toEqual(final);
-    open();
-    expect(live(engine!)).toEqual(final);
     engine!.createSession({ binding: binding() });
-    expect(durable()).toEqual(live(engine!));
+    abandon();
+    external(db => db.pragma("user_version = 2"));
+    const before = readFileSync(path("runner.sqlite"));
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/Unsupported runner storage version 2/));
+    expect(readFileSync(path("runner.sqlite"))).toEqual(before);
   });
 
-  it("refuses a log that skips past or falls short of its snapshot", async () => {
+  it.each([
+    ["an invalid binding", "INSERT INTO sessions SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 99, provider, '{}', created_at, NULL FROM sessions LIMIT 1", /session/],
+    ["an event gap", "DROP TRIGGER events_no_delete; DELETE FROM events WHERE sequence = 1", /sequence gap/],
+    ["a damaged event", "DROP TRIGGER events_no_update; UPDATE events SET event_json = '{' WHERE sequence = 1", /event/]
+  ])("refuses a store with %s", async (_name, damage, message) => {
     open();
-    await history();
-    const middle = toSnapshot(structuredClone(live(engine!)));
-    await engine!.shutdown();
+    engine!.createSession({ binding: binding() });
+    engine!.createSession({ binding: binding() });
     abandon();
-    const all = lines();
-    writeFileSync(path("state.json"), JSON.stringify(middle) + "\n");
-    writeFileSync(path("log.jsonl"), all.slice(0, 2).join("\n") + "\n");
-    expect(() => durable()).toThrow(/does not reach its snapshot/);
-    writeFileSync(path("state.json"), JSON.stringify({ ...middle, sequence: 1, sessions: middle.sessions.slice(0, 1), runs: [] }) + "\n");
-    writeFileSync(path("log.jsonl"), all.slice(3).join("\n") + "\n");
-    expect(() => durable()).toThrow(/does not continue its snapshot/);
+    external(db => db.exec(damage));
+    const before = readFileSync(path("runner.sqlite"));
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(message));
+    expect(readFileSync(path("runner.sqlite"))).toEqual(before);
+    ownerReleased();
   });
 
-  it("keeps per-transaction writes independent of history size", async () => {
+  it("initializes a database file left empty by a crash during creation", async () => {
+    writeFileSync(path("runner.sqlite"), "");
+    open();
+    engine!.createSession({ binding: binding() });
+    expect(durable(directory).cursor).toBe(1);
+  });
+});
+
+describe("events", () => {
+  it("pages large histories while snapshot and cursor stay consistent", async () => {
     open({ autoDispatch: false });
-    const size = () => statSync(path("log.jsonl")).size;
-    const measure = (action: () => void) => { const before = size(); action(); return size() - before; };
-    const first = engine!.createSession({ binding: binding() });
-    const sessionBytes = measure(() => engine!.createSession({ binding: binding() }));
-    const cancelBytes = measure(() => { engine!.submit(prompt(first.id, "small")); engine!.cancel("small"); });
-    const write = vi.spyOn(storage, "write");
-    const content = "x".repeat(200 * 1024);
-    for (let n = 0; n < 20; n++) {
-      engine!.submit(prompt(first.id, `big-${n}`, "success", content));
-      engine!.cancel(`big-${n}`);
-    }
-    expect(size()).toBeGreaterThan(20 * 200 * 1024);
-    expect(Math.abs(measure(() => engine!.createSession({ binding: binding() })) - sessionBytes)).toBeLessThan(8);
-    expect(measure(() => { engine!.submit(prompt(first.id, "late")); engine!.cancel("late"); }) - cancelBytes).toBeLessThan(8);
-    // A transition of a large run carries only its delta, never the captured context.
-    engine!.submit(prompt(first.id, "big-last", "success", content));
-    expect(measure(() => engine!.cancel("big-last"))).toBeLessThan(512);
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it("expires cursors before the retained window, consistently across restart", async () => {
-    open({ compactBytes: 64 * 1024, autoDispatch: false });
     const s = engine!.createSession({ binding: binding() });
-    expect(engine!.events(0).events.map(event => event.type)).toEqual(["session_created"]);
-    engine!.submit(prompt(s.id, "big", "success", "x".repeat(100 * 1024)));
-    expect(existsSync(path("state.json"))).toBe(true);
-    // Compaction keeps the triggering line, so a caught-up client still polls across it.
-    expect(readFileSync(path("log.jsonl"), "utf8").trim().split("\n").flatMap(line => JSON.parse(line).events.map((event: { sequence: number }) => event.sequence))).toEqual([2]);
-    expect(engine!.events(1).events.map(event => event.sequence)).toEqual([2]);
-    expect(() => engine!.events(0)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
-    expect(() => engine!.events(3)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_cursor" }) }));
+    const content = "x".repeat(600 * 1024);
+    for (const id of ["a", "b", "c"]) { engine!.submit(prompt(s.id, id, "success", content)); engine!.cancel(id); }
+    const first = engine!.events(0);
+    expect(first.events.map(event => event.type)).toEqual(["session_created", "run_accepted", "run_updated"]);
+    expect(first.cursor).toBe(3);
+    const events = allEvents(engine!);
+    expect(events.map(event => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     const snapshot = engine!.snapshot();
-    expect(snapshot.cursor).toBe(2);
-    engine!.cancel("big");
-    const delta = engine!.events(snapshot.cursor);
-    expect(delta.events).toEqual([expect.objectContaining({ sequence: 3, type: "run_updated", requestID: "big", status: "cancelled" })]);
-    const local = restore({ storageVersion: 2, sequence: snapshot.cursor, sessions: snapshot.sessions, runs: snapshot.runs });
-    for (const event of delta.events) apply(local, event);
-    expect(local).toEqual(live(engine!));
-    abandon();
-    open({ compactBytes: 64 * 1024 });
-    expect(engine!.events(2)).toEqual(delta);
-    expect(engine!.events(1).events.map(event => event.sequence)).toEqual([2, 3]);
-    expect(() => engine!.events(0)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) }));
-  });
-
-  it("reports cursor_expired over HTTP as 410", async () => {
-    service = await startRunner({ directory, compactBytes: 1 });
-    service.engine.createSession({ binding: binding() });
-    service.engine.createSession({ binding: binding() });
-    const { socketPath, token } = JSON.parse(readFileSync(path("connection.json"), "utf8"));
-    const response = await new Promise<{ status?: number; body: any }>(resolve => {
-      request({ socketPath, path: "/v1/events?after=0", headers: { Authorization: `Bearer ${token}`, "Enso-Runner-Version": "1" } }, res => {
-        let text = ""; res.on("data", chunk => { text += chunk; });
-        res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
-      }).end();
-    });
-    expect(response).toMatchObject({ status: 410, body: { ok: false, error: { code: "cursor_expired" } } });
+    expect(applyEvents(empty(), events)).toEqual(snapshot);
+    expect(engine!.events(snapshot.cursor)).toEqual({ events: [], cursor: snapshot.cursor });
+    expect(() => engine!.events(snapshot.cursor + 1)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_cursor" }) }));
+    // A transition of a large run carries only its delta, never the captured context.
+    expect(JSON.stringify(events.at(-1)).length).toBeLessThan(512);
   });
 });

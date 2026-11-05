@@ -115,7 +115,9 @@ notes, files and sync writes.
 
 Run `enso runner serve --provider fake` in its own terminal. The independent local
 service persists canvas-bound sessions, captured prompt context, lifecycle events,
-and results outside the vault. `enso runner call` accesses its authenticated Unix
+and results in a private SQLite database outside the vault. It needs the optional
+`better-sqlite3` native module; with npm 12, install the CLI with
+`npm install -g @enso-app/cli --allow-scripts=better-sqlite3`. `enso runner call` accesses its authenticated Unix
 socket; `enso runner shutdown` cancels active work and stops it. No Claude or
 native prompt UI integration is included yet.
 

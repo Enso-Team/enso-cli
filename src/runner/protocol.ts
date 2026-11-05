@@ -81,20 +81,12 @@ export const eventSchema = z.discriminatedUnion("type", [
   z.object({ sequence, type: z.literal("run_accepted"), run: runSchema }).strict(),
   runSchema.omit({ request: true, createdAt: true }).extend({ sequence, type: z.literal("run_updated"), requestID: id })
 ]);
-/** One log line: every event of one transaction. */
-export const transactionSchema = z.object({ events: z.array(eventSchema).min(1) }).strict();
-export const storageVersion = 2;
-export const snapshotSchema = z.object({
-  storageVersion: z.literal(storageVersion), sequence: z.number().int().nonnegative(),
-  sessions: z.array(sessionSchema), runs: z.array(runSchema)
-}).strict();
 export type Binding = z.infer<typeof bindingSchema>;
 export type Session = z.infer<typeof sessionSchema>;
 export type Prompt = z.infer<typeof promptSchema>;
 export type Pending = z.infer<typeof pendingSchema>;
 export type Answer = z.infer<typeof answerSchema>;
 export type Run = z.infer<typeof runSchema>;
-export type Snapshot = z.infer<typeof snapshotSchema>;
 export type RunnerEvent = z.infer<typeof eventSchema>;
 export type Change = RunnerEvent extends infer E ? E extends RunnerEvent ? Omit<E, "sequence"> : never : never;
 export function terminal(status: Run["status"]): boolean {
