@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, symlinkSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -20,7 +20,7 @@ const prompt = (sessionID: string, requestID: string, scenario = "success", cont
   ({ requestID, sessionID, text: "Explain", context: { selectedNodes: [{ nodeID: "n", content }] }, fake: { scenario, delayMs: 0 } });
 const path = (name: string) => join(directory, name);
 const storageError = (message?: RegExp) => expect.objectContaining({ body: expect.objectContaining({ code: "invalid_runner_storage", ...(message ? { message: expect.stringMatching(message) } : {}) }) });
-function open(options: { autoDispatch?: boolean; provider?: RunnerProvider; onFatal?: () => void } = {}): RunnerEngine {
+function open(options: { autoDispatch?: boolean; provider?: RunnerProvider; onFatal?: () => void; reclaimStep?: number } = {}): RunnerEngine {
   storage.release();
   storage = new RunnerStorage(directory);
   storage.acquire();
@@ -232,8 +232,10 @@ describe("existing stores", () => {
     db.exec("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('keep me')");
     db.close();
     const before = files();
-    await expect(startRunner({ directory })).rejects.toEqual(storageError(/not an Enso runner database/));
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/not an Enso runner database; refusing to dispatch or overwrite it$/));
     expect(files()).toEqual(before);
+    // `check` only reads, so it reports the same problem without claiming to refuse anything.
+    expect(() => RunnerStorage.check(directory)).toThrow(storageError(/not an Enso runner database$/));
   });
 
   it("refuses an unsupported schema version without migrating it", async () => {
@@ -448,6 +450,37 @@ describe("retention", () => {
     expect(pages().pages).toBeLessThan(empty + (full - empty) / 10);
   });
 
+  it("returns freed space in bounded steps, serving requests between them", async () => {
+    open({ autoDispatch: false, reclaimStep: 32 });
+    const s = engine!.createSession({ binding: binding() });
+    for (const id of ["a", "b", "c"]) { engine!.submit(prompt(s.id, id, "success", "x".repeat(600 * 1024))); engine!.cancel(id); }
+    const spy = vi.spyOn(Database.prototype, "pragma");
+    const vacuums = () => spy.mock.calls.filter(([source]) => source.startsWith("incremental_vacuum"));
+    const pass = engine!.deleteFinishedBefore(new Date(Date.now() + 1000));
+    // The deletion and the first step ran before the pass yielded; requests are served while the rest waits.
+    expect(vacuums()).toHaveLength(1);
+    expect(engine!.snapshot().runs).toEqual([]);
+    expect(await pass).toBe(3);
+    expect(vacuums().length).toBeGreaterThan(5);
+    expect(new Set(vacuums().map(([source]) => source))).toEqual(new Set(["incremental_vacuum(32)"]));
+    expect(external(db => db.pragma("freelist_count", { simple: true }))).toBe(0);
+  });
+
+  it("leaves the rest of the free space to the next pass when shutdown stops one", async () => {
+    open({ autoDispatch: false, reclaimStep: 32 });
+    const s = engine!.createSession({ binding: binding() });
+    for (const id of ["a", "b"]) { engine!.submit(prompt(s.id, id, "success", "x".repeat(600 * 1024))); engine!.cancel(id); }
+    const pass = engine!.deleteFinishedBefore(new Date(Date.now() + 1000));
+    await engine!.shutdown();
+    expect(await pass).toBe(2);
+    const free = () => external(db => db.pragma("freelist_count", { simple: true }) as number);
+    expect(free()).toBeGreaterThan(0);
+    open({ autoDispatch: false });
+    // Nothing left to delete, but the free pages the stopped pass left are still returned.
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(0);
+    expect(free()).toBe(0);
+  });
+
   it("keeps serving when returning freed space fails after the deletion committed", async () => {
     open({ autoDispatch: false });
     const s = engine!.createSession({ binding: binding() });
@@ -455,14 +488,22 @@ describe("retention", () => {
     engine!.cancel("done");
     const pragma = Database.prototype.pragma;
     const spy = vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
-      if (source === "incremental_vacuum") throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+      if (source.startsWith("incremental_vacuum")) throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
       return pragma.call(this, source, options);
     });
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(1);
-    expect(spy.mock.calls.map(([source]) => source)).toContain("incremental_vacuum");
+    expect(spy.mock.calls.map(([source]) => source)).toContain("incremental_vacuum(2048)");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("disk I/O error"), { code: "SQLITE_IOERR" });
     expect(engine!.snapshot().runs).toEqual([]);
     engine!.submit(prompt(s.id, "next"));
     expect(engine!.run("next").status).toBe("accepted");
+    // The next pass returns the space this one could not, though it deletes nothing.
+    spy.mockRestore();
+    const free = () => external(db => db.pragma("freelist_count", { simple: true }) as number);
+    expect(free()).toBeGreaterThan(0);
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() - 1000))).toBe(0);
+    expect(free()).toBe(0);
   });
 
   it("serve --retain-days deletes expired runs at startup", async () => {
@@ -516,7 +557,26 @@ describe("check", () => {
     expect(readdirSync(directory)).toEqual([]);
   });
 
-  it("reports a database it cannot open as an open failure, not a refused store", () => {
+  it("reports a store it cannot reach as an open failure, not as missing", () => {
+    // A dangling symlink: unlike file modes, root cannot get past it.
+    symlinkSync(path("elsewhere.sqlite"), path("runner.sqlite"));
+    expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
+      body: expect.objectContaining({ code: "runner_storage_failure", details: { cause: expect.objectContaining({ code: expect.stringMatching(/^SQLITE_CANTOPEN/) }) } })
+    }));
+    expect(existsSync(path("elsewhere.sqlite"))).toBe(false);
+  });
+
+  // Root ignores file modes, so this one cannot fail an open there.
+  it.skipIf(process.getuid?.() === 0)("reports a directory it cannot search as an open failure, not as missing", () => {
+    chmodSync(directory, 0o600);
+    try {
+      expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
+        body: expect.objectContaining({ code: "runner_storage_failure", details: { cause: expect.objectContaining({ code: "EACCES" }) } })
+      }));
+    } finally { chmodSync(directory, 0o700); }
+  });
+
+  it.skipIf(process.getuid?.() === 0)("reports a database it cannot open as an open failure, not a refused store", () => {
     open();
     abandon();
     chmodSync(path("runner.sqlite"), 0);

@@ -320,10 +320,14 @@ the rows hide, such as an update to a finished run. It is read-only and runs in
 one read transaction, so it is safe beside a live runner. It reports
 `{cursor, expiredThrough, events, sessions, runs}`, or fails with
 `invalid_runner_storage` and up to 50 `details.differences`. With no store in the
-directory it fails with `runner_storage_not_found`, and creates nothing. It recovers terminal records unchanged,
-dispatches only accepted work, and converts all previous running, waiting, or
-stopping work to durable `interrupted` records with
-`error.code: "restart_uncertain"` in one transaction. A crash part way through a
+directory it fails with `runner_storage_not_found`, and creates nothing; a store
+it cannot reach (an unsearchable directory, a dangling symlink) fails with
+`runner_storage_failure` instead.
+
+Once its checks pass, startup recovers terminal records unchanged, dispatches
+only accepted work, and converts all previous running, waiting, or stopping work
+to durable `interrupted` records with `error.code: "restart_uncertain"` in one
+transaction. A crash part way through a
 transaction leaves no trace of it. In particular:
 
 - Crash after acceptance, before the dispatch marker: safe to dispatch once.
@@ -376,9 +380,13 @@ advances the expired cursor to their last event, and deletes the run rows and al
 their events. The same transaction deletes each session's `session_updated`
 checkpoints at or below the expired cursor except its latest: each replaces every
 mutable field, so only an expired cursor could need the older ones. `runs_deleted`
-events are kept. Hourly passes serve requests between transactions. Once a pass ends,
-the freed pages return to the file system (`auto_vacuum = INCREMENTAL`); if that
-fails, later writes reuse them instead. Sessions, and runs that are still active, are never deleted.
+events are kept. Hourly passes serve requests between transactions. Each pass then
+returns free pages to the file system (`auto_vacuum = INCREMENTAL`) in steps of
+at most 8 MiB, serving requests between them. A pass goes by the pages actually
+free, not by what it deleted, so space left by a pass that shutdown stopped, or
+whose reclaim failed (reported as a process warning), is returned by the next;
+meanwhile later writes reuse it. Sessions, and runs that are still active, are
+never deleted.
 After deletion, the run's `requestID` is unknown (`run_not_found`) and free for a
 new submission. Pagination of snapshots needs a later design.
 

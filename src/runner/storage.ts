@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -180,7 +180,12 @@ function sqlite(): typeof BetterSqlite3 {
   } catch { throw unavailable(); }
 }
 function invalid(message: string, details?: Record<string, unknown>): EnsoCliError {
-  return new EnsoCliError("invalid_runner_storage", `${message}; refusing to dispatch or overwrite it`, details);
+  return new EnsoCliError("invalid_runner_storage", message, details);
+}
+/** Startup, unlike the read-only `check`, says what it does about a store it judged invalid. */
+function refused(error: unknown): unknown {
+  if (!(error instanceof EnsoCliError) || error.body.code !== "invalid_runner_storage") return error;
+  return new EnsoCliError("invalid_runner_storage", `${error.body.message}; refusing to dispatch or overwrite it`, error.body.details);
 }
 /** Keeps the SQLite or filesystem cause, and reports a lock or I/O failure as such rather than as a refused store. */
 function failure(error: unknown, message: string): EnsoCliError {
@@ -262,7 +267,7 @@ export class RunnerStorage {
       this.locked = true;
     } finally { rmSync(guard, { recursive: true }); }
     try { this.open(); }
-    catch (error) { this.release(); throw error; }
+    catch (error) { this.release(); throw refused(error); }
   }
 
   /**
@@ -279,8 +284,15 @@ export class RunnerStorage {
   static check(directory = runnerDirectory()): StoreCheck {
     const storage = new RunnerStorage(directory);
     const path = join(storage.directory, databaseName);
-    if (!existsSync(path)) {
-      throw new EnsoCliError("runner_storage_not_found", `No runner store in ${storage.directory}; \`enso runner serve\` creates one`, { directory: storage.directory });
+    // Only a missing entry means no store: a directory this user cannot search is a store that could not be opened,
+    // and a dangling symlink is left for SQLite to report the same way.
+    try { lstatSync(path); }
+    catch (error) {
+      const { code, message } = error as NodeJS.ErrnoException;
+      if (code === "ENOENT") {
+        throw new EnsoCliError("runner_storage_not_found", `No runner store in ${storage.directory}; \`enso runner serve\` creates one`, { directory: storage.directory });
+      }
+      throw new EnsoCliError("runner_storage_failure", "Runner database could not be opened", { cause: { code, message } });
     }
     const db = storage.db = openDatabase(sqlite(), path, { readonly: true, fileMustExist: true });
     try { return db.transaction(() => { storage.verify(); return storage.rebuild(); })(); }
@@ -460,12 +472,26 @@ export class RunnerStorage {
   }
 
   /**
-   * Returns pages freed by retention to the file system. Best effort: the deletion has already committed, and a
-   * failure only leaves free pages for later writes to reuse, so it must not fail the runner.
+   * Returns up to `pages` pages freed by retention to the file system, and how many free pages remain. Best effort:
+   * the deletion has already committed, and a failure only leaves free pages for later writes to reuse, so it must
+   * not fail the runner. It is still reported, since an I/O or corruption error here is the first sign of a fault
+   * the next commit will fail closed on, and counts as nothing left so the caller stops.
    */
-  reclaim(): void {
+  reclaim(pages: number): number {
     if (!this.locked) throw new Error("Storage is not owned");
-    try { this.database().pragma("incremental_vacuum"); } catch { /* see above */ }
+    if (!Number.isSafeInteger(pages) || pages <= 0) throw new Error("Reclaim needs a positive page count");
+    const db = this.database();
+    const free = () => db.pragma("freelist_count", { simple: true }) as number;
+    try {
+      // Most passes free nothing: skip the write transaction.
+      if (free() === 0) return 0;
+      db.pragma(`incremental_vacuum(${pages})`);
+      return free();
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      process.emitWarning(`Runner could not return freed pages to the file system: ${(error as Error)?.message ?? String(error)}`, { code: typeof code === "string" ? code : "runner_reclaim_failed" });
+      return 0;
+    }
   }
 
   private apply(db: Database, event: RunnerEvent): void {

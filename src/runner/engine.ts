@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { setImmediate as yieldTurn } from "node:timers/promises";
 import { EnsoCliError } from "../errors.js";
 import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Pending, type Run, type RunnerEvent, type Session } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
@@ -12,6 +13,9 @@ type Fields = Omit<Extract<Change, { type: "run_updated" }>, "type" | "requestID
 const eventPageBytes = 1024 * 1024;
 /** Runs deleted per retention transaction, which bounds the size of its runs_deleted event. */
 const retentionBatch = 500;
+/** Pages returned to the file system per step (8 MiB at 4 KiB pages). Each step is a write transaction with a full
+ * fsync, so a step stays short while a large backlog takes several steps with requests served between them. */
+const reclaimStep = 2048;
 
 /** Durable state lives only in storage. Every decision and its commit run without yielding, and storage calls are
  * synchronous, so an idempotency or active-slot check cannot interleave with another request's commit. */
@@ -23,7 +27,7 @@ export class RunnerEngine {
   constructor(
     private readonly storage: RunnerStorage,
     private readonly provider: RunnerProvider,
-    private readonly options: { autoDispatch?: boolean; onFatal?: () => void } = {}
+    private readonly options: { autoDispatch?: boolean; onFatal?: () => void; reclaimStep?: number } = {}
   ) {
     // Anything past its dispatch marker may have executed: record it as uncertain, never dispatch it again.
     this.commit(this.read(() => storage.unfinished()).filter(run => run.status !== "accepted").map(run => this.update(run.request.requestID, "interrupted", {
@@ -123,19 +127,31 @@ export class RunnerEngine {
    * Retention: deletes finished runs last updated before `cutoff`, with their events, and returns how many. Yields
    * between batches so requests are served meanwhile, and stops once the runner stops accepting. Each batch is still
    * chosen and committed without yielding, and a finished run never changes, so interleaving is safe.
+   *
+   * Then returns free pages to the file system in bounded steps, also yielding between them. It goes by the pages
+   * actually free rather than by what this pass deleted, so a pass cut short by shutdown, or whose reclaim failed,
+   * is finished by the next one.
    */
   async deleteFinishedBefore(cutoff: Date): Promise<number> {
     this.assertAccepting();
     let deleted = 0;
     for (;;) {
-      if (deleted) await new Promise(resolve => setImmediate(resolve));
+      if (deleted) await yieldTurn();
       if (!this.accepting) return deleted;
       const requestIDs = this.read(() => this.storage.finishedBefore(cutoff.toISOString(), retentionBatch));
-      if (!requestIDs.length) break;
-      this.commit([{ type: "runs_deleted", requestIDs }]);
+      if (requestIDs.length) this.commit([{ type: "runs_deleted", requestIDs }]);
       deleted += requestIDs.length;
+      // A short batch drained the backlog.
+      if (requestIDs.length < retentionBatch) break;
     }
-    if (deleted) this.storage.reclaim();
+    const step = this.options.reclaimStep ?? reclaimStep;
+    for (let free = Infinity; this.accepting;) {
+      const left = this.storage.reclaim(step);
+      // Stops on a failure (reported as 0) and on a step that frees nothing, which cannot otherwise end.
+      if (left === 0 || left >= free) break;
+      free = left;
+      await yieldTurn();
+    }
     return deleted;
   }
 
