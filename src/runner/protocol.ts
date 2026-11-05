@@ -58,7 +58,20 @@ export const activeStatuses = ["accepted", "running", "waiting_permission", "wai
 export const terminalStatuses = ["completed", "failed", "cancelled", "interrupted"] as const;
 export const runStatusSchema = z.enum([...activeStatuses, ...terminalStatuses]);
 // JSON data is deliberately opaque at the runner/provider boundary.
-const json: z.ZodType<Json> = z.lazy(() => z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.array(json), z.record(json)]));
+// Checked by hand: a recursive z.union builds an error for every failed branch at every node, and made each read of a
+// stored run ~150µs. Only values JSON.stringify writes as-is pass, so a committed value reloads unchanged.
+function isJson(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) if (!(index in value) || !isJson(value[index])) return false;
+    return true;
+  }
+  if (typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJson);
+}
+const json = z.custom<Json>(isJson, "Expected a JSON value");
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 export const errorSchema = z.object({ code: z.string(), message: z.string(), details: z.record(json).optional() }).strict();
 // Provider output is validated before commit so a durable write can never produce state that fails to reload.
