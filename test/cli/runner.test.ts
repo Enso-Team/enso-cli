@@ -107,6 +107,38 @@ it("defers an early signal until startup finishes, then stops without announcing
   process.exitCode = undefined;
 });
 
+it("starts the service outside the invocation's request context", async () => {
+  let context: unknown = "unset";
+  vi.doMock("../../src/runner/service.js", () => ({ startRunner: async () => {
+    context = (await import("../../src/targeting.js")).currentRequestContext();
+    return { directory: "/unused", closed: Promise.resolve(), stop: async () => {} };
+  } }));
+  const { buildProgram } = await import("../../src/index.js");
+  vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  await buildProgram().parseAsync(["node", "enso", "runner", "serve", "--provider", "fake"]);
+  expect(context).toBeUndefined();
+  process.exitCode = undefined;
+});
+
+it("force-exits on the third signal with that signal's conventional code", async () => {
+  for (const [name, code] of [["SIGTERM", 143], ["SIGINT", 130]] as const) {
+    let finishStart!: (service: unknown) => void;
+    vi.doMock("../../src/runner/service.js", () => ({ startRunner: () => new Promise(resolve => { finishStart = resolve; }) }));
+    const { buildProgram } = await import("../../src/index.js");
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const before = process.listeners(name);
+    const parsed = buildProgram().parseAsync(["node", "enso", "runner", "serve", "--provider", "fake"]);
+    await vi.waitFor(() => expect(process.listeners(name).length).toBeGreaterThan(before.length));
+    const handler = process.listeners(name).find(listener => !before.includes(listener))!;
+    handler(name); handler(name); handler(name);
+    expect(exit).toHaveBeenCalledWith(code);
+    finishStart({ directory: "/unused", closed: Promise.resolve(), stop: async () => {} });
+    await parsed;
+    vi.restoreAllMocks(); vi.resetModules();
+  }
+  process.exitCode = undefined;
+});
+
 it("removes signal handlers when startup fails", async () => {
   vi.doMock("../../src/runner/service.js", () => ({ startRunner: async () => { throw new Error("boom"); } }));
   const { buildProgram } = await import("../../src/index.js");

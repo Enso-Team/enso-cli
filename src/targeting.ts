@@ -130,6 +130,8 @@ export function currentRequestContext(): RequestContext | undefined { return inv
 export function withRequestContext<T>(options: TargetOptions, work: () => T): T {
   return invocation.run(new RequestContext(options), work);
 }
+/** Runs `work` (and everything it schedules) outside any invocation's context. */
+export function withoutRequestContext<T>(work: () => T): T { return invocation.exit(work); }
 
 export type RouteScope = "health" | "pairing" | "discovery" | "vault" | "navigation" | "canvas";
 export function routeScope(path: string, method: string): RouteScope {

@@ -26,7 +26,8 @@ export async function shutdownRunner(directory = runnerDirectory(), options: { t
   const exited = () => {
     if (connection.pid === process.pid) return gone("connection.json") && gone("owner");
     try { process.kill(connection.pid, 0); return false; }
-    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+    // EPERM: the PID now belongs to another user's process, so the runner (same user) is gone.
+    catch (error) { return ["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? ""); }
   };
   while (!exited()) {
     if (Date.now() >= deadline) throw timeout("Runner accepted shutdown but has not exited; check the process before starting another runner");

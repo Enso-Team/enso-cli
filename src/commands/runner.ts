@@ -3,7 +3,7 @@ import { EnsoCliError, printEnvelope } from "../errors.js";
 import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
 import { startRunner, type RunnerService } from "../runner/service.js";
-import { currentRequestContext } from "../targeting.js";
+import { currentRequestContext, withoutRequestContext } from "../targeting.js";
 import { withoutUpdateNotice } from "../update.js";
 
 function parseTimeout(value: string): number {
@@ -26,11 +26,13 @@ export function registerRunner(program: Command): void {
       // Handlers precede startup so an early signal stops the service once it exists instead of killing a half-acquired lock.
       let service: RunnerService | undefined;
       let signals = 0;
-      const signal = () => { if (++signals >= 3) process.exit(130); void service?.stop(); };
+      const signal = (name: NodeJS.Signals) => { if (++signals >= 3) process.exit(name === "SIGTERM" ? 143 : 130); void service?.stop(); };
       process.on("SIGINT", signal);
       process.on("SIGTERM", signal);
       try {
-        service = await startRunner({ directory: this.opts().directory });
+        // Sessions carry their own binding; requests and runs must not inherit this invocation's context.
+        const directory = this.opts().directory;
+        service = await withoutRequestContext(() => startRunner({ directory }));
         if (signals) void service.stop();
         else printEnvelope({ ok: true, data: { ready: true, protocolVersion: runnerVersion, directory: service.directory } }, Boolean(this.optsWithGlobals().pretty));
         await service.closed;

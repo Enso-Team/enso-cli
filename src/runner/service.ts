@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { finished } from "node:stream/promises";
 import { EnsoCliError, errorEnvelope } from "../errors.js";
 import { RunnerEngine } from "./engine.js";
 import { FakeProvider, type RunnerProvider } from "./provider.js";
@@ -40,7 +41,10 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   // Library callers may only await stop(); retain the rejection for callers of closed.
   void closed.catch(() => {});
   const server = createServer({ maxHeaderSize: 8192, requestTimeout: 5000, headersTimeout: 5000 }, (request, response) => {
-    void handle(request, response).catch(error => {
+    void handle(request, response).catch(async error => {
+      // Replying before the body is consumed closes the socket under a still-writing client,
+      // which then sees EPIPE instead of the reply. Drain (bounded by requestTimeout), then reply.
+      if (!request.complete) { request.resume(); await finished(request).catch(() => {}); }
       const envelope = errorEnvelope(error);
       const code = !envelope.ok ? envelope.error.code : "invalid_input";
       send(response, errorStatus.get(code) ?? 400, envelope);
@@ -150,11 +154,10 @@ export async function startRunner(options: { directory?: string; provider?: Runn
 }
 
 async function body(request: IncomingMessage): Promise<unknown> {
-  if (request.headers["content-type"]?.split(";")[0].trim() !== "application/json") {
+  if (request.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
     throw new EnsoCliError("invalid_input", "JSON requests require Content-Type: application/json");
   }
-  // Replying before the body is consumed closes the socket under a still-writing client,
-  // which then sees EPIPE instead of the reply. Drain (bounded by requestTimeout), then fail.
+  // Oversized bodies are drained here rather than buffered; see the error handler.
   const limit = 1024 * 1024;
   const chunks: Buffer[] = [];
   let size = 0;

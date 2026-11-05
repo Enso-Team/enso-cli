@@ -47,6 +47,38 @@ it("rejects oversized bodies with a delivered payload_too_large reply", async ()
   expect(await runnerCall("GET", "/v1/snapshot", undefined, directory)).toMatchObject({ ok: true });
 });
 
+async function raw(headers: Record<string, string>, body: string): Promise<{ status?: number; body: string }> {
+  const { socketPath, token } = JSON.parse(readFileSync(join(directory, "connection.json"), "utf8"));
+  return new Promise((resolve, reject) => {
+    const req = request({ socketPath, path: "/v1/sessions", method: "POST", agent: false, headers: {
+      Authorization: `Bearer ${token}`, [runnerVersionHeader]: String(runnerVersion), ...headers
+    } }, response => {
+      let text = "";
+      response.on("data", chunk => { text += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, body: text }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+it("delivers early rejections to a client still writing its body", async () => {
+  service = await startRunner({ directory, autoDispatch: false });
+  const body = "x".repeat(900 * 1024);
+  const wrongType = await raw({ "Content-Type": "text/plain" }, body);
+  expect(wrongType.status).toBe(400);
+  expect(JSON.parse(wrongType.body)).toMatchObject({ error: { code: "invalid_input" } });
+  const unauthorized = await raw({ Authorization: "Bearer stale", "Content-Type": "application/json" }, body);
+  expect(unauthorized.status).toBe(401);
+  expect(JSON.parse(unauthorized.body)).toMatchObject({ error: { code: "unauthorized" } });
+});
+
+it("accepts media types case-insensitively", async () => {
+  service = await startRunner({ directory, autoDispatch: false });
+  const reply = await raw({ "Content-Type": "Application/JSON; charset=utf-8" }, JSON.stringify({ binding: {} }));
+  expect(JSON.parse(reply.body).error.message).not.toContain("Content-Type");
+});
+
 it("times out a stalled runner without reporting a disconnect", async () => {
   const storage = new RunnerStorage(directory);
   storage.acquire();
