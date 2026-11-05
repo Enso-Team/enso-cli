@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { EnsoCliError } from "../errors.js";
-import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, promptSchema, sessionInputSchema, terminal, type Answer, type Change, type Pending, type Run, type RunnerEvent, type Session } from "./protocol.js";
+import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Pending, type Run, type RunnerEvent, type Session } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
 import { transact, type State } from "./state.js";
 import { RunnerStorage } from "./storage.js";
@@ -48,7 +48,7 @@ export class RunnerEngine {
 
   submit(input: unknown): Run {
     this.assertHealthy();
-    const request = parse(promptSchema, input);
+    const request = parse(submitSchema, input);
     const existing = this.state.runs.get(request.requestID);
     // Idempotency precedes busy/stopping checks, including after a service restart.
     if (existing) {

@@ -96,8 +96,10 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     if (request.headers[runnerVersionHeader.toLowerCase()] !== String(runnerVersion)) {
       throw new EnsoCliError("incompatible_runner_version", "This runner requires protocol version 1", { supportedVersions: [runnerVersion] });
     }
-    const url = new URL(request.url ?? "/", "http://runner.local");
-    const path = url.pathname;
+    const target = request.url ?? "/";
+    // Route on the raw path: URL normalization would rewrite dot segments (even percent-encoded) into other routes.
+    const path = target.split("?", 1)[0];
+    const url = new URL(target, "http://runner.local");
     const method = request.method;
     if (method === "GET" && path === "/v1/snapshot") return send(response, 200, { ok: true, data: engine.snapshot() });
     if (method === "GET" && path === "/v1/events") {

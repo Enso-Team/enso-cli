@@ -201,6 +201,37 @@ describe("local runner protocol", () => {
     expect(await data("POST", "/v1/prompts", p)).toEqual(completed);
   });
 
+  it("rejects request IDs that cannot be addressed as a run path segment", async () => {
+    service = await startRunner({ directory });
+    const s = await session();
+    for (const id of [".", "..", "\ud800", "a\udc00b"]) {
+      expect(await call("POST", "/v1/prompts", prompt(s.id, id))).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+    }
+    expect(durable().runs).toEqual([]);
+    for (const id of ["...", ".a", "a.b", "a/b", "😀"]) {
+      await data("POST", "/v1/prompts", prompt(s.id, id, "success", 0));
+      await status(encodeURIComponent(id), "completed");
+    }
+  });
+
+  it("routes on the raw path without normalizing dot segments", async () => {
+    service = await startRunner({ directory });
+    const s = await session();
+    await data("POST", "/v1/prompts", prompt(s.id, "cancel", "success", 0));
+    await status("cancel", "completed");
+    const answer = { pendingID: "p", value: "allow" };
+    for (const [method, path, body] of [
+      ["GET", "/v1/runs/%2e%2e"], ["GET", "/v1/runs/%2E"], ["GET", "/v1/runs/.%2e"],
+      ["POST", "/v1/runs/%2e%2e/cancel"], ["POST", "/v1/runs/../cancel"], ["POST", "/v1/runs/%2e/respond", answer]
+    ] as const) {
+      expect(await call(method, path, body)).toMatchObject({ ok: false, error: { code: "run_not_found" } });
+    }
+    // Normalized, these would reach GET /v1/runs/cancel and GET /v1/snapshot.
+    for (const path of ["/v1/runs/%2e/cancel", "/v1/runs/../snapshot", "/v1/runs/%2e%2e/snapshot", "/v1/./snapshot"]) {
+      expect(await call("GET", path)).toMatchObject({ ok: false, error: { code: "route_not_found" } });
+    }
+  });
+
   it("validates explicit targets, origins, cwd and captured context", async () => {
     service = await startRunner({ directory });
     for (const bad of [

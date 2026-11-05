@@ -40,6 +40,15 @@ export const promptSchema = z.object({
     delayMs: z.number().int().min(0).max(60_000).default(20)
   }).strict().default({ scenario: "success", delayMs: 20 })
 }).strict();
+/**
+ * New request IDs must stay addressable as a /v1/runs/{id} path segment: URL parsers drop "." and ".." (even
+ * percent-encoded), and lone surrogates cannot be percent-encoded. Persisted runs keep the looser promptSchema so
+ * state written before this rule still loads.
+ */
+export const submitSchema = promptSchema.extend({
+  requestID: id.refine(value => value !== "." && value !== ".." && !/\p{Cs}/u.test(value),
+    "requestID must not be \".\" or \"..\" and must be well-formed Unicode")
+});
 export const pendingSchema = z.object({
   id: pendingID, kind: z.enum(["permission", "input"]), message: z.string(), choices: z.array(z.string()).optional()
 }).strict();
