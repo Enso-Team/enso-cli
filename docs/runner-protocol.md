@@ -172,7 +172,8 @@ version, not a general provider configuration interface.
 Request IDs are **global to a store**, not scoped to a session. After schema
 normalization (including defaults), object key order is ignored; text and array
 order must agree exactly. Equivalent resubmissions return the current original
-run before busy checks, including terminal and interrupted runs. A different
+run before busy checks, including terminal and interrupted runs, until retention
+deletes it (see Retention); after that the ID is free and a submission is new. A different
 payload or session under the same ID returns HTTP 409 `request_conflict`.
 Concurrent calls obey the same rule. Different IDs compete for the single active
 slot in a session: losers receive HTTP 409 `session_busy`. There is no queue or
@@ -220,7 +221,8 @@ response, inspect the run instead of assuming it is still waiting.
 ## Snapshot/event ordering and reconnect
 
 Every durable change is an event with a `sequence` and a `type`. Sequences are
-monotonic, gap-free, and retained across restarts. One transaction (a shutdown
+monotonic and retained across restarts, and gap-free after any cursor that has
+not expired: retention deletes events only below the expired cursor. One transaction (a shutdown
 cancelling several runs, restart recovery, or a completed turn together with its
 session checkpoint) commits all of its events or none of them. Events are deltas:
 
@@ -230,6 +232,7 @@ session checkpoint) commits all of its events or none of them. Events are deltas
 | `session_updated` | `sessionID`, `providerState?` | Replace the session's `providerState`; absent removes it |
 | `run_accepted` | `run` (full run, status `accepted`) | Add the run |
 | `run_updated` | `requestID`, `status`, `updatedAt`, `pending?`, `result?`, `error?`, `providerState?` | Replace the run's `status`, `updatedAt`, `pending`, `result`, `error` and `providerState` with the event's; an absent field is removed |
+| `runs_deleted` | `requestIDs` | Remove those runs (retention deleted them, finished); ignore IDs you do not hold |
 
 Only `run_accepted` carries the request and its captured context; `request` and
 `createdAt` never change afterwards, and terminal runs receive no further updates.
@@ -251,9 +254,10 @@ is behind repeats the query until `events` is empty.
 State reads and transactions are serialized synchronously in one service process.
 A transition concurrent with a snapshot is either in that snapshot, or has a
 larger sequence and appears in subsequent events. Events never announce an
-uncommitted change. Repeating an event query is safe. This version keeps every
-event, so it never returns `cursor_expired`; clients must still handle it, since
-a later version may bound history. A cursor ahead of the durable history,
+uncommitted change. Repeating an event query is safe. Without retention the
+runner keeps every event and never returns `cursor_expired`. With retention, a
+cursor below the last event it deleted returns `cursor_expired`, since replaying
+from it would miss changes; a snapshot's cursor never has. A cursor ahead of the durable history,
 negative/noninteger cursor, or omitted cursor returns `invalid_cursor`; get a new
 snapshot if the store was replaced. There is no subscription socket to keep alive.
 
@@ -264,13 +268,19 @@ vault metadata. It is one SQLite database, `runner.sqlite`, identified by
 `PRAGMA application_id` (`0x456E736F`, "Enso") and schema version 1
 (`PRAGMA user_version`):
 
-- `events`: every event above, keyed by `sequence`. A trigger refuses any insert
-  that is not the next sequence, and events are never updated or deleted.
-- `sessions`: one row per session. Its identity and binding cannot change; only
-  the opaque `providerState` checkpoint does.
-- `runs`: one row per accepted request, keyed by the global `requestID`. The
-  request and its captured context cannot change, terminal runs cannot change,
-  and a partial unique index allows at most one non-terminal run per session.
+- `events`: every event above, keyed by `sequence`, with the session or run it
+  belongs to. Events are the record: each payload (captured context, result,
+  error, pending request, checkpoint) is stored once, in its event. A trigger
+  refuses any insert that is not the next sequence, and events are never updated;
+  only retention deletes them.
+- `sessions` and `runs`: one row per session and per accepted request (keyed by
+  the global `requestID`), indexing its events: the event that created it, its
+  latest event, and the keys and run status the constraints need. A row reads as
+  its first event with its latest event applied. Triggers let a row be created or
+  changed only in the transaction that appends its event, and only as that event
+  says; terminal runs cannot change, and a partial unique index allows at most
+  one non-terminal run per session.
+- `retention`: the expired cursor, which only advances.
 
 Every state change is one `BEGIN IMMEDIATE` transaction that appends its events
 and applies them to the session/run rows. It commits before any reply or dispatch
@@ -278,8 +288,7 @@ depends on it; if any statement fails it rolls back entirely. Acceptance
 commits before dispatch, the `running` dispatch marker commits before the provider
 is called, and a completed result commits together with its session checkpoint.
 A transaction carries only its own changes: a run update never repeats the request
-or its context (only `run_accepted` carries the captured context, once in the run
-row and once in its event).
+or its context (only `run_accepted` carries the captured context, stored once).
 
 Commits are durable when they return, including across sudden power loss on
 macOS, provided the drive honors `F_FULLFSYNC` (Apple internal storage does; some
@@ -299,8 +308,18 @@ statements: they do not establish service ownership (below), which is taken
 before the database is opened.
 
 Startup checks the store before serving or dispatching anything: identity and
-version, `PRAGMA quick_check`, foreign keys, a gap-free event sequence, and the
-schema of every event, session and run. It recovers terminal records unchanged,
+version, `PRAGMA quick_check`, a gap-free event sequence above the expired
+cursor, foreign keys, the schema of every event, and that every row points at the
+right events (its creating event, its latest event and its status) and every
+event at a row.
+
+`enso runner check [--directory]` goes further: it runs the startup checks, then
+rebuilds every session and run from the event history alone, applying events as a
+client does, and compares the result with what the rows read. It catches history
+the rows hide, such as an update to a finished run. It is read-only and runs in
+one read transaction, so it is safe beside a live runner. It reports
+`{cursor, expiredThrough, events, sessions, runs}`, or fails with
+`invalid_runner_storage` and up to 50 `details.differences`. It recovers terminal records unchanged,
 dispatches only accepted work, and converts all previous running, waiting, or
 stopping work to durable `interrupted` records with
 `error.code: "restart_uncertain"` in one transaction. A crash part way through a
@@ -328,6 +347,10 @@ Existing stores are handled explicitly, never discarded:
 
 - No `runner.sqlite`: an empty store is created.
 - An empty `runner.sqlite` (a crash right after creating it): initialized.
+- `runner.sqlite-wal`, `-shm` or `-journal` with no `runner.sqlite`, or beside an
+  empty one: refused, listing them in `details.journalFiles`. They belong to a
+  store that was moved or deleted, and SQLite would apply them to the new file.
+  Move them back beside their store, or delete them to start empty.
 - `state.json`, `log.jsonl` or their `.tmp` files from the earlier JSONL store
   (unreleased storage version 2): startup fails with `invalid_runner_storage`,
   listing them in `details.legacyFiles`. They are not migrated, modified, or
@@ -339,9 +362,18 @@ Existing stores are handled explicitly, never discarded:
   `-wal` left by a crash stay byte-for-byte unchanged (SQLite may rebuild the
   `-shm` index).
 
-The store retains every session, run and event, including captured context and
-results, without bounds. Pagination of snapshots and run retention need a later
-design.
+### Retention
+
+By default the store retains every session, run and event, including captured
+context and results, without bounds. `enso runner serve --retain-days N` deletes
+finished runs (`completed`, `failed`, `cancelled`, `interrupted`) whose last update
+is more than N days old, at startup and then hourly. Each deletion is one
+transaction, of at most 500 runs, that appends a `runs_deleted` event naming them,
+advances the expired cursor to their last event, and deletes the run rows and all
+their events; the freed pages return to the file system (`auto_vacuum =
+INCREMENTAL`). Sessions, and runs that are still active, are never deleted.
+After deletion, the run's `requestID` is unknown (`run_not_found`) and free for a
+new submission. Pagination of snapshots needs a later design.
 
 `owner` is an atomic PID symlink that prevents multiple service writers per
 store. Startup reclaims it only after the old PID is no longer alive. PID reuse

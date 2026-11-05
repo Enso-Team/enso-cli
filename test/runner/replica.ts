@@ -16,6 +16,8 @@ export function applyEvents(replica: Replica, events: RunnerEvent[]): Replica {
       const index = next.sessions.findIndex(session => session.id === event.sessionID);
       const { providerState: _, ...session } = next.sessions[index];
       next.sessions[index] = event.providerState === undefined ? session : { ...session, providerState: event.providerState };
+    } else if (event.type === "runs_deleted") {
+      next.runs = next.runs.filter(run => !event.requestIDs.includes(run.request.requestID));
     } else {
       const index = next.runs.findIndex(run => run.request.requestID === event.requestID);
       const { sequence: _, type: __, requestID: ___, ...fields } = event;

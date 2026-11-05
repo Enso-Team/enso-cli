@@ -20,5 +20,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # npm 12 skips install scripts not covered by allowScripts; fail here, not as a missing binding in every test.
+      - run: node -e "new (require('better-sqlite3'))(':memory:').close()"
       - run: npm run typecheck
       - run: npm test

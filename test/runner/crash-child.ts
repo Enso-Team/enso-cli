@@ -12,20 +12,19 @@ const boundary = process.argv[3];
 const kill = () => process.kill(process.pid, "SIGKILL");
 const statuses = (changes: Change[]) => changes.map(change => change.type === "run_accepted" ? change.run.status : change.type === "run_updated" ? change.status : undefined);
 const storage = RunnerStorage.prototype as unknown as {
-  commit(changes: Change[]): RunnerEvent[];
+  commit(changes: Change[]): void;
   apply(db: BetterSqlite3.Database, event: RunnerEvent): void;
 };
 const commit = storage.commit;
 storage.commit = function (changes) {
   if (boundary === "before_completed" && statuses(changes).includes("completed")) kill();
-  const events = commit.call(this, changes);
+  commit.call(this, changes);
   if (boundary === "checkpointed" && statuses(changes).includes("completed")) {
     // Move the commit from the WAL into the main database file first.
     (this as unknown as { db: BetterSqlite3.Database }).db.pragma("wal_checkpoint(TRUNCATE)");
     kill();
   }
   if (statuses(changes).includes(boundary as never)) kill();
-  return events;
 };
 const apply = storage.apply;
 storage.apply = function (db, event) {

@@ -22,7 +22,11 @@ const errorStatus = new Map<string, number>([
   ["runner_storage_failure", 503]
 ]);
 
-export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean } = {}): Promise<RunnerService> {
+/** How often a runner with retention looks for finished runs to delete. */
+const retentionIntervalMs = 60 * 60 * 1000;
+
+/** `retainDays`: delete finished runs (and their events) this many days after their last update; unset keeps everything. */
+export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number } = {}): Promise<RunnerService> {
   const storage = new RunnerStorage(options.directory);
   storage.acquire();
   const socketPath = join(storage.directory, "control.sock");
@@ -35,6 +39,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   let stopTask: Promise<void> | undefined;
   let initialized = false;
   let fatalError: Error | undefined;
+  let retention: NodeJS.Timeout | undefined;
   let finish!: () => void;
   let fail!: (error: Error) => void;
   const closed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
@@ -69,6 +74,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   const stop = (): Promise<void> => {
     if (stopTask) return stopTask;
     stopTask = (async () => {
+      clearInterval(retention);
       try { await engine.shutdown(); }
       catch (error) { fatalError ??= error instanceof Error ? error : new Error("Runner shutdown failed"); }
       const closedServer = new Promise<void>(resolve => server.close(() => resolve()));
@@ -136,6 +142,9 @@ export async function startRunner(options: { directory?: string; provider?: Runn
         }
       }
     });
+    const retain = options.retainDays;
+    const expire = retain === undefined ? undefined : () => engine.deleteFinishedBefore(new Date(Date.now() - retain * 24 * 60 * 60 * 1000));
+    expire?.();
     // Ownership is established before removing stale runtime files.
     rmSync(socketPath, { force: true });
     rmSync(join(storage.directory, "connection.json"), { force: true });
@@ -146,6 +155,8 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     chmodSync(socketPath, 0o600);
     storage.write("connection.json", { protocolVersion: runnerVersion, socketPath, token, pid: process.pid });
     initialized = true;
+    // A failed deletion has already failed the engine closed, which stops the service; stopping refuses the rest.
+    if (expire) (retention = setInterval(() => { try { expire(); } catch { /* see above */ } }, retentionIntervalMs)).unref();
     if (options.autoDispatch !== false) engine.dispatchAccepted();
     return { directory: storage.directory, socketPath, engine, closed, stop };
   } catch (error) {

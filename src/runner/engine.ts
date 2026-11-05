@@ -10,6 +10,8 @@ type Active = { controller: AbortController; task: Promise<void>; answer?: (answ
 type Fields = Omit<Extract<Change, { type: "run_updated" }>, "type" | "requestID" | "status" | "updatedAt">;
 /** Event data per /v1/events reply, beyond its first event. */
 const eventPageBytes = 1024 * 1024;
+/** Runs deleted per retention transaction, which bounds the size of its runs_deleted event. */
+const retentionBatch = 500;
 
 /** Durable state lives only in storage. Every decision and its commit run without yielding, and storage calls are
  * synchronous, so an idempotency or active-slot check cannot interleave with another request's commit. */
@@ -73,6 +75,9 @@ export class RunnerEngine {
     if (!Number.isSafeInteger(after) || after < 0 || after > this.read(() => this.storage.cursor())) {
       throw new EnsoCliError("invalid_cursor", "Cursor must be an existing sequence in this runner's durable history");
     }
+    if (after < this.read(() => this.storage.expiredThrough())) {
+      throw new EnsoCliError("cursor_expired", "Retention deleted events after this cursor; take a new snapshot");
+    }
     const events = this.read(() => this.storage.events(after, eventPageBytes));
     return { events, cursor: events.at(-1)?.sequence ?? after };
   }
@@ -112,6 +117,18 @@ export class RunnerEngine {
     delete active.answer;
     resolve(response);
     return this.run(id);
+  }
+
+  /** Retention: deletes finished runs last updated before `cutoff`, with their events, and returns how many. */
+  deleteFinishedBefore(cutoff: Date): number {
+    this.assertAccepting();
+    let deleted = 0;
+    for (;;) {
+      const requestIDs = this.read(() => this.storage.finishedBefore(cutoff.toISOString(), retentionBatch));
+      if (!requestIDs.length) return deleted;
+      this.commit([{ type: "runs_deleted", requestIDs }]);
+      deleted += requestIDs.length;
+    }
   }
 
   dispatchAccepted(): void {

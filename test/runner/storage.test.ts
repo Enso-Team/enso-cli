@@ -119,7 +119,7 @@ describe("transactions", () => {
     const onFatal = vi.fn();
     open({ onFatal, provider: { name: "fake", execute: async () => ({ status: "completed", result: { text: "done" }, providerState: { turn: 1 } }) } });
     const s = engine!.createSession({ binding: binding() });
-    external(db => db.exec(`CREATE TRIGGER inject BEFORE UPDATE OF provider_state_json ON sessions
+    external(db => db.exec(`CREATE TRIGGER inject BEFORE UPDATE ON sessions
       BEGIN SELECT RAISE(ABORT, 'injected failure'); END`));
     engine!.submit(prompt(s.id, "turn"));
     await vi.waitFor(() => expect(onFatal).toHaveBeenCalled());
@@ -134,7 +134,22 @@ describe("transactions", () => {
     expect(engine!.session(s.id).providerState).toBeUndefined();
   });
 
-  it("enforces immutability, single active runs and gap-free events in the schema itself", async () => {
+  it("compiles each statement once per connection and reuses it", async () => {
+    open({ autoDispatch: false });
+    const exercise = (id: string) => {
+      const s = engine!.createSession({ binding: binding() });
+      engine!.submit(prompt(s.id, id));
+      engine!.cancel(id);
+      engine!.snapshot();
+      engine!.events(0);
+    };
+    exercise("warm");
+    const prepare = vi.spyOn(Database.prototype, "prepare");
+    exercise("again");
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("enforces immutability, single active runs, gap-free events and row-event linkage in the schema itself", async () => {
     open({ autoDispatch: false });
     const s = engine!.createSession({ binding: binding() });
     engine!.submit(prompt(s.id, "active"));
@@ -142,19 +157,42 @@ describe("transactions", () => {
     engine!.cancel("done");
     abandon();
     const before = readFileSync(path("runner.sqlite"));
+    const next = durable(directory).cursor + 1;
+    const updated = (requestID: string, status: string) =>
+      `INSERT INTO events (sequence, type, subject, event_json) VALUES (${next}, 'run_updated', '${requestID}', json_object('type', 'run_updated', 'requestID', '${requestID}', 'status', '${status}', 'updatedAt', 'now'))`;
     external(db => {
-      for (const statement of [
-        "UPDATE sessions SET binding_json = '{}'",
-        "UPDATE runs SET request_json = '{}' WHERE request_id = 'active'",
-        "UPDATE runs SET status = 'completed' WHERE request_id = 'done'",
-        "UPDATE runs SET status = 'accepted' WHERE request_id = 'active'",
-        `INSERT INTO runs (request_id, session_id, sequence, request_json, created_at, status, updated_at)
-          SELECT 'second', session_id, 99, request_json, created_at, 'accepted', updated_at FROM runs WHERE request_id = 'active'`,
-        "INSERT INTO events (sequence, type, event_json) VALUES (99, 'session_updated', '{}')",
-        "DELETE FROM events WHERE sequence = 1",
-        "UPDATE events SET event_json = '{}' WHERE sequence = 1",
-        "DELETE FROM sessions"
-      ]) expect(() => db.exec(statement), statement).toThrow();
+      for (const statements of [
+        // Rows change only with the event that changes them, and only the way that event says.
+        ["UPDATE sessions SET sequence = 99"],
+        ["UPDATE sessions SET last_sequence = 1"],
+        ["UPDATE runs SET session_id = (SELECT id FROM sessions WHERE id <> runs.session_id) WHERE request_id = 'active'"],
+        ["UPDATE runs SET status = 'running' WHERE request_id = 'active'"],
+        [updated("active", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'completed' WHERE request_id = 'active'`],
+        [updated("done", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'running' WHERE request_id = 'done'`],
+        [updated("active", "accepted"), `UPDATE runs SET last_sequence = ${next}, status = 'accepted' WHERE request_id = 'active'`],
+        ["INSERT INTO runs (request_id, session_id, sequence, last_sequence, status) SELECT 'second', session_id, 2, 2, 'accepted' FROM runs WHERE request_id = 'active'"],
+        [`INSERT INTO sessions (id, sequence, last_sequence) VALUES ('${s.id}', 1, 1)`],
+        // Events are append-only, gap-free, and name their own subject.
+        ["INSERT INTO events (sequence, type, subject, event_json) VALUES (99, 'session_updated', NULL, '{}')"],
+        [`INSERT INTO events (sequence, type, subject, event_json) VALUES (${next}, 'session_updated', 'someone-else', json_object('type', 'session_updated', 'sessionID', '${s.id}'))`],
+        ["UPDATE events SET event_json = '{}' WHERE sequence = 1"],
+        // Only retention deletes, and only announced, finished runs and their expired events.
+        ["DELETE FROM events WHERE sequence = 1"],
+        ["DELETE FROM sessions"],
+        ["DELETE FROM runs WHERE request_id = 'done'"],
+        [`INSERT INTO events (sequence, type, subject, event_json) VALUES (${next}, 'runs_deleted', NULL, json_object('type', 'runs_deleted', 'requestIDs', json_array('active')))`,
+          "DELETE FROM runs WHERE request_id = 'active'"],
+        ["UPDATE retention SET expired_through = 1"],
+        ["DELETE FROM retention"]
+      ]) {
+        // Each case runs alone and rolls back, so only its final statement can be the one refused.
+        db.exec("BEGIN");
+        try {
+          for (const statement of statements.slice(0, -1)) db.exec(statement);
+          // A constraint or trigger, not a mistyped statement, must be what refuses it.
+          expect(() => db.exec(statements.at(-1)!), statements.at(-1)).toThrow(expect.objectContaining({ code: expect.stringMatching(/^SQLITE_CONSTRAINT/) }));
+        } finally { db.exec("ROLLBACK"); }
+      }
     });
     expect(readFileSync(path("runner.sqlite"))).toEqual(before);
   });
@@ -182,7 +220,9 @@ describe("existing stores", () => {
   it("refuses a file that is not a database", async () => {
     writeFileSync(path("runner.sqlite"), "x".repeat(4096));
     const before = files();
-    await expect(startRunner({ directory })).rejects.toEqual(storageError());
+    await expect(startRunner({ directory })).rejects.toMatchObject({ body: {
+      code: "invalid_runner_storage", details: { cause: { code: "SQLITE_NOTADB" } }
+    } });
     expect(files()).toEqual(before);
     ownerReleased();
   });
@@ -207,9 +247,11 @@ describe("existing stores", () => {
   });
 
   it.each([
-    ["an invalid binding", "INSERT INTO sessions SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 99, provider, '{}', created_at, NULL FROM sessions LIMIT 1", /session/],
-    ["an event gap", "DROP TRIGGER events_no_delete; DELETE FROM events WHERE sequence = 1", /sequence gap/],
-    ["a damaged event", "DROP TRIGGER events_no_update; UPDATE events SET event_json = '{' WHERE sequence = 1", /event/]
+    ["an invalid binding", "DROP TRIGGER events_no_update; UPDATE events SET event_json = json_set(event_json, '$.session.binding', json('{}')) WHERE sequence = 1", /event/],
+    ["an event gap", "PRAGMA foreign_keys = OFF; DROP TRIGGER events_deleted_runs_only; DELETE FROM events WHERE sequence = 1", /sequence gap/],
+    ["a damaged event", "DROP TRIGGER events_no_update; PRAGMA ignore_check_constraints = ON; UPDATE events SET event_json = '{' WHERE sequence = 1", /event/],
+    ["a row pointing at an older event", "DROP TRIGGER sessions_updated; UPDATE sessions SET last_sequence = sequence - 1 WHERE sequence = 2", /reference|rows do not match/],
+    ["an event without its row", "DROP TRIGGER sessions_no_delete; PRAGMA foreign_keys = OFF; DELETE FROM sessions WHERE sequence = 2", /rows do not match/]
   ])("refuses a store with %s", async (_name, damage, message) => {
     open();
     engine!.createSession({ binding: binding() });
@@ -226,7 +268,7 @@ describe("existing stores", () => {
   it.each([
     ["another application's database", null, /not an Enso runner database/],
     ["a newer runner store", "PRAGMA user_version = 2", /Unsupported runner storage version 2/],
-    ["a damaged runner store", "INSERT INTO sessions SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 99, provider, '{}', created_at, NULL FROM sessions LIMIT 1", /session/]
+    ["a damaged runner store", "DROP TRIGGER events_no_update; UPDATE events SET event_json = json_set(event_json, '$.session.binding', json('{}')) WHERE sequence = 1", /event/]
   ])("refuses %s with a live WAL, leaving the database and WAL unchanged", async (_name, damage, message) => {
     const source = mkdtempSync(join(tmpdir(), "enso-source-"));
     const owner = new RunnerStorage(source);
@@ -251,6 +293,27 @@ describe("existing stores", () => {
     const before = data();
     await expect(startRunner({ directory })).rejects.toEqual(storageError(message));
     expect(data()).toEqual(before);
+    ownerReleased();
+  });
+
+  // A store moved or deleted without its journals: SQLite would apply them to the new file, corrupting it and
+  // destroying the moved store's last commits.
+  it.each([["missing", null], ["empty", ""]])("refuses journals beside a %s database without creating or changing anything", async (_name, main) => {
+    const source = mkdtempSync(join(tmpdir(), "enso-source-"));
+    const owner = new RunnerStorage(source);
+    try {
+      owner.acquire();
+      new RunnerEngine(owner, new FakeProvider(), { autoDispatch: false }).createSession({ binding: binding() });
+      // Copied while still open, as SIGKILL would leave it.
+      for (const name of ["runner.sqlite-wal", "runner.sqlite-shm"]) copyFileSync(join(source, name), path(name));
+    } finally { owner.release(); rmSync(source, { recursive: true, force: true }); }
+    if (main !== null) writeFileSync(path("runner.sqlite"), main);
+    expect(statSync(path("runner.sqlite-wal")).size).toBeGreaterThan(0);
+    const before = files();
+    await expect(startRunner({ directory })).rejects.toMatchObject({ body: {
+      code: "invalid_runner_storage", details: { journalFiles: ["runner.sqlite-shm", "runner.sqlite-wal"] }
+    } });
+    expect(files()).toEqual(before);
     ownerReleased();
   });
 
@@ -279,5 +342,108 @@ describe("events", () => {
     expect(() => engine!.events(snapshot.cursor + 1)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_cursor" }) }));
     // A transition of a large run carries only its delta, never the captured context.
     expect(JSON.stringify(events.at(-1)).length).toBeLessThan(512);
+  });
+});
+
+describe("retention", () => {
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const expired = expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) });
+
+  it("deletes finished runs older than the cutoff with their events, expiring only cursors that cannot replay", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    const other = engine!.createSession({ binding: binding() });
+    for (const id of ["old-1", "old-2"]) { engine!.submit(prompt(s.id, id)); engine!.cancel(id); }
+    const beforeOld = engine!.snapshot();
+    await sleep(5);
+    const cutoff = new Date();
+    await sleep(5);
+    engine!.submit(prompt(s.id, "new"));
+    engine!.cancel("new");
+    engine!.submit(prompt(other.id, "active"));
+    const caughtUp = engine!.snapshot();
+
+    expect(engine!.deleteFinishedBefore(cutoff)).toBe(2);
+    const after = engine!.snapshot();
+    expect(after.runs.map(run => run.request.requestID)).toEqual(["new", "active"]);
+    expect(() => engine!.run("old-1")).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "run_not_found" }) }));
+    expect(allEvents(engine!, beforeOld.cursor).at(-1)).toEqual({ sequence: after.cursor, type: "runs_deleted", requestIDs: ["old-1", "old-2"] });
+    // A client at or past the last deleted event replays to the same state, removing the deleted runs.
+    expect(applyEvents(caughtUp, allEvents(engine!, caughtUp.cursor))).toEqual(after);
+    expect(applyEvents(beforeOld, allEvents(engine!, beforeOld.cursor))).toEqual(after);
+    // One below it would miss events, so it must take a new snapshot.
+    expect(() => engine!.events(beforeOld.cursor - 1)).toThrow(expired);
+    expect(() => engine!.events(0)).toThrow(expired);
+    expect(engine!.deleteFinishedBefore(cutoff)).toBe(0);
+
+    abandon();
+    open({ autoDispatch: false });
+    expect(engine!.snapshot()).toEqual(after);
+    expect(RunnerStorage.check(directory)).toMatchObject({ runs: 2, expiredThrough: beforeOld.cursor, differences: [] });
+    // A deleted request ID is free: resubmitting it is a new run, which retention can delete again.
+    engine!.submit(prompt(s.id, "old-1"));
+    engine!.cancel("old-1");
+    expect(engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(2);
+    expect(engine!.snapshot().runs.map(run => run.request.requestID)).toEqual(["active"]);
+    expect(RunnerStorage.check(directory).differences).toEqual([]);
+  });
+
+  it("stores each payload once and returns deleted space to the file system", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    const content = "x".repeat(600 * 1024);
+    const pages = () => external(db => ({ pages: db.pragma("page_count", { simple: true }) as number, free: db.pragma("freelist_count", { simple: true }) }));
+    const empty = pages().pages;
+    for (const id of ["a", "b", "c"]) { engine!.submit(prompt(s.id, id, "success", content)); engine!.cancel(id); }
+    const full = pages().pages;
+    // Three captured contexts, each stored once: well under the six copies a row and its event would hold.
+    expect((full - empty) * 4096).toBeLessThan(3 * content.length * 1.2);
+    expect(engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(3);
+    expect(pages()).toEqual({ pages: expect.any(Number), free: 0 });
+    expect(pages().pages).toBeLessThan(empty + (full - empty) / 10);
+  });
+
+  it("serve --retain-days deletes expired runs at startup", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "done"));
+    engine!.cancel("done");
+    abandon();
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 2 * 24 * 60 * 60 * 1000);
+    const service = await startRunner({ directory, retainDays: 3, autoDispatch: false });
+    expect(service.engine.snapshot().runs).toHaveLength(1);
+    await service.stop();
+    const later = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    expect(later.engine.snapshot().runs).toEqual([]);
+    await later.stop();
+  });
+});
+
+describe("check", () => {
+  it("rebuilds a live store from its events and finds the rows consistent", async () => {
+    open();
+    await history();
+    const live = engine!.snapshot();
+    expect(RunnerStorage.check(directory)).toEqual({
+      cursor: live.cursor, expiredThrough: 0, events: live.cursor, sessions: live.sessions.length, runs: live.runs.length, differences: []
+    });
+  });
+
+  it("finds history that startup's checks accept but the rows hide", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "done"));
+    engine!.cancel("done");
+    const { cursor } = engine!.snapshot();
+    abandon();
+    // A finished run reopened by hand: every row still points at its latest event, so startup accepts it.
+    external(db => db.exec(`DROP TRIGGER runs_terminal_final;
+      INSERT INTO events (sequence, type, subject, event_json) VALUES (${cursor + 1}, 'run_updated', 'done',
+        json_object('type', 'run_updated', 'requestID', 'done', 'status', 'running', 'updatedAt', '${new Date().toISOString()}'));
+      UPDATE runs SET last_sequence = ${cursor + 1}, status = 'running' WHERE request_id = 'done'`));
+    open({ autoDispatch: false });
+    abandon();
+    expect(RunnerStorage.check(directory).differences).toEqual([{ problem: "update of a finished run", sequence: cursor + 1, requestID: "done" }]);
   });
 });
