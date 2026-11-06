@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import Module from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BridgeClient } from "../../src/client.js";
-import { claudeLoadError, ClaudeProvider, type ClaudeConfig, type ClaudeQuery } from "../../src/runner/claude.js";
+import { claudeLoadError, ClaudeProvider, loadClaudeQuery, type ClaudeConfig, type ClaudeQuery } from "../../src/runner/claude.js";
 import { RunnerEngine } from "../../src/runner/engine.js";
 import { FakeProvider } from "../../src/runner/provider.js";
 import type { Run } from "../../src/runner/protocol.js";
@@ -233,6 +234,63 @@ describe("provider-reported failure", () => {
     expect(persisted("turn")).toEqual(run);
     expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
     expect(engine!.session(session.id)).not.toHaveProperty("providerState");
+  });
+
+  it("reports the real SDK's missing platform binary without making the session uncertain", async () => {
+    const query = await loadClaudeQuery();
+    // Simulate an install missing the SDK's optional platform package without changing node_modules.
+    const resolver = Module as typeof Module & { _resolveFilename: (name: string, ...args: unknown[]) => string };
+    const resolve = resolver._resolveFilename;
+    vi.spyOn(resolver, "_resolveFilename").mockImplementation((name, ...args) => {
+      if (name.startsWith("@anthropic-ai/claude-agent-sdk-")) {
+        throw Object.assign(new Error("Optional platform package missing"), { code: "MODULE_NOT_FOUND" });
+      }
+      return resolve.call(Module, name, ...args);
+    });
+    start(none(), { wrap: () => params => query({ ...params, options: {
+      ...params.options,
+      // If SDK resolution changes, fail the test instead of launching a real Claude process.
+      spawnClaudeCodeProcess: () => { throw new Error("This test must not launch Claude Code"); }
+    } }) });
+    const session = engine!.createSession({ binding: binding() });
+    for (const requestID of ["missing", "retry"]) {
+      submit(session.id, requestID, transcript("simple"));
+      const run = await commits.reached(requestID, "failed");
+      expect(run.error).toMatchObject({ code: "claude_unavailable", details: {
+        cause: expect.stringContaining("Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional")
+      } });
+      expect(persisted(requestID)).toEqual(run);
+      expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
+      expect(engine!.session(session.id)).not.toHaveProperty("providerState");
+    }
+  });
+
+  it.each(["ENOENT", "EACCES"])("handles a synchronous %s from query creation and retains the existing checkpoint", async code => {
+    const simple = transcript("simple");
+    const sid = nativeSessionID(simple);
+    let opens = 0;
+    start(simple, { newID: ids(sid), wrap: query => params => {
+      if (opens++) throw Object.assign(new Error("Claude Code executable unavailable"), { code });
+      return query(params);
+    } });
+    const session = engine!.createSession({ binding: binding() });
+    submit(session.id, "first", simple);
+    await commits.reached("first", "completed");
+    submit(session.id, "missing", simple);
+    const run = await commits.reached("missing", "failed");
+    expect(run.error).toMatchObject({ code: "claude_unavailable", details: { cause: "Claude Code executable unavailable" } });
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: sid });
+    expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
+    expect(persisted("missing")).toEqual(run);
+  });
+
+  it("keeps an unknown synchronous query failure uncertain", async () => {
+    start(none(), { wrap: () => () => { throw new Error("Unexpected query failure"); } });
+    const session = engine!.createSession({ binding: binding() });
+    submit(session.id, "unknown", transcript("simple"));
+    const run = await commits.reached("unknown", "interrupted");
+    expect(run.error?.code).toBe("provider_uncertain");
+    expect(engine!.session(session.id).uncertain).toEqual({ requestID: "unknown", native: run.native });
   });
 });
 

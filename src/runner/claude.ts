@@ -126,10 +126,17 @@ class Turn {
     let endInput!: () => void;
     const inputEnded = new Promise<void>(resolve => { endInput = resolve; });
     const message = this.message();
-    const handle = this.query({
-      prompt: (async function* () { yield message; await inputEnded; })(),
-      options: this.options()
-    });
+    let handle: ClaudeQueryHandle;
+    try {
+      handle = this.query({
+        prompt: (async function* () { yield message; await inputEnded; })(),
+        options: this.options()
+      });
+    } catch (error) {
+      endInput();
+      if (isLaunchError(error)) return this.unstarted(error);
+      throw error;
+    }
     const iterator = handle[Symbol.asyncIterator]();
     let expire!: () => void;
     const expired = new Promise<"expired">(resolve => { expire = () => resolve("expired"); });

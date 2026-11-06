@@ -206,7 +206,9 @@ export function isConversationNotFound(result: SDKResultMessage, conversationID:
 /** Enso: whether the SDK failed to start Claude Code at all (missing or unexecutable binary). */
 export function isLaunchError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
-  return code === "ENOENT" || code === "EACCES";
+  if (code === "ENOENT" || code === "EACCES") return true;
+  // SDK 0.3.318 throws this plain Error from query(), before spawning, when its optional platform package is absent.
+  return error instanceof Error && /^Native CLI binary for [\w-]+ not found\. Reinstall @anthropic-ai\/claude-agent-sdk without --omit=optional, or set options\.pathToClaudeCodeExecutable\.$/.test(error.message);
 }
 
 /**
