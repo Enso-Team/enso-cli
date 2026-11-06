@@ -124,8 +124,10 @@ class Turn {
   private outcomeSettled = false;
   /** This turn has ended: requests still queued have nothing left to ask in. */
   private finished = false;
-  /** Serializes requests: the runner keeps one pending request per run. */
-  private callbacks = Promise.resolve();
+  private releaseCallbacks!: () => void;
+  /** Serializes requests, starting only once the turn is durable. The transport can dispatch an approval before the
+   * turn/start continuation runs, even when Codex sent the turn/start response first. */
+  private callbacks = new Promise<void>(resolve => { this.releaseCallbacks = resolve; });
   private readonly pendingIDs = new Set<string>();
   /** Notifications about this thread, by turn: a completion can arrive before turn/start's answer is read. */
   private readonly completions = new Map<string, Completion>();
@@ -171,6 +173,8 @@ class Turn {
       signal.removeEventListener("abort", stop);
       clearTimeout(this.timer);
       this.finished = true;
+      // Release queued requests on every exit too, so they can be refused without publishing a pending request.
+      this.releaseCallbacks();
       // The process and everything it started are gone before the outcome is reported.
       await connection.close();
     }
@@ -224,6 +228,7 @@ class Turn {
     if (this.interruptRequested) this.sendInterrupt(connection);
     const early = this.completions.get(turnID);
     if (early) return this.completed(early);
+    this.releaseCallbacks();
 
     const settled = await this.settled;
     // A completion is evidence even when it arrived after another ending was noted.

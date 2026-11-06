@@ -308,6 +308,41 @@ describe("approvals and user input", () => {
     expect(persisted("turn").pending).toBeUndefined();
   });
 
+  it("records the turn before publishing an approval that arrives before turn/start resumes", async () => {
+    const recorded = transcript("tool_call_read_only_on_request");
+    let release!: () => void, arrived!: () => void;
+    const delivering = new Promise<void>(resolve => { release = resolve; });
+    const approval = new Promise<void>(resolve => { arrived = resolve; });
+    start(recorded, { wrap: connect => async options => {
+      const connection = await connect(options);
+      return { ...connection,
+        request: async (method, params) => {
+          const response = await connection.request(method, params);
+          if (method === "turn/start") await delivering;
+          return response;
+        },
+        onRequest: (method, handler) => connection.onRequest(method, (params, withdrawn) => {
+          if (method === "item/commandExecution/requestApproval") arrived();
+          return handler(params, withdrawn);
+        })
+      } satisfies CodexConnection;
+    } });
+    const session = engine!.createSession({ binding: binding() });
+    submit(session.id, "turn", recorded);
+    try {
+      await approval;
+      // Flush the queued callback while the provider is still waiting for turn/start's response.
+      await new Promise(setImmediate);
+      expect(persisted("turn")).toMatchObject({ status: "running", native: { turnID: null } });
+      expect(persisted("turn").pending).toBeUndefined();
+    } finally { release(); }
+    const waiting = await commits.reached("turn", "waiting_permission");
+    expect(waiting.native).toMatchObject({ threadID: threadID(recorded), turnID: turnOf(recorded) });
+    engine!.answer("turn", { pendingID: `turn:${commandItem}`, value: "allow" });
+    await commits.reached("turn", "completed");
+    expect(statuses("turn")).toEqual(["accepted", "running", "running", "running", "running", `waiting_permission:turn:${commandItem}`, "running", "completed"]);
+  });
+
   it.each([["allow_session", "acceptForSession"], ["deny", "decline"]])("returns %s to Codex as %s", async (value, decision) => {
     const recorded = transcript("tool_call_read_only_on_request");
     start(derive(recorded, value, entries => entries.map(entry => entry.type === "expect_outbound" && entry.label === "item/commandExecution/requestApproval" ? outbound(entry.label, { id: 0, result: { decision } }) : entry)));
