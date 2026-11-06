@@ -4,13 +4,20 @@
 
 `src/runner/claude-sdk.ts` adapts Claude Agent SDK handling (permission results,
 AskUserQuestion input, terminal-result classification, result attribution and
-conversation identity) from Enso's fork of T3 Code. The test transcripts in
-`test/runner/fixtures/agent-host/` are copied from the same revision. Each file
-names its original paths.
+conversation identity) from Enso's fork of T3 Code. The provider replay harness in
+`test/runner/replay/` adapts the fork's replay transcript format, replay gates and
+Claude replay query runner, and the test transcripts in
+`test/runner/fixtures/agent-host/` are adapted from recordings at the same revision.
+Each file names its original paths.
 
 - Source: https://github.com/Enso-Team/agent-host (branch `enso`)
 - Revision: `322f6544dfad0a3c8a0c8cbecf2c7f7874b14268`
-- Original file: `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`
+- Original files: `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`,
+  `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts`,
+  `packages/provider-testing/src/replayTranscript.ts`,
+  `packages/provider-testing/src/replayGate.ts`,
+  `packages/contracts/src/orchestrationV2.ts` (replay entry schema), and
+  `apps/server/src/orchestration-v2/testkit/fixtures/*/claude_transcript.ndjson`
 
 ```
 MIT License
