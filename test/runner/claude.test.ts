@@ -51,7 +51,15 @@ function persisted(requestID: string): Run {
   return durableState.runs.find(run => run.request.requestID === requestID)!;
 }
 const statuses = (requestID: string) => commits.transitions(requestID).map(({ status, pending }) => pending ? `${status}:${pending}` : status);
-const exit = (status: "success" | "error" = "success", error?: string): Entry => ({ type: "runtime_exit", status, ...(error ? { error } : {}) });
+const exit = (status: "success" | "error" = "success", error?: string, code?: string): Entry => ({ type: "runtime_exit", status, ...(error ? { error } : {}), ...(code ? { code } : {}) });
+/** `entries` replayed as a query opened with `identity`, whose frames all report conversation `id`. */
+function inConversation(entries: Entry[], identity: { resume: string } | { sessionId: string }, id: string): Entry[] {
+  return entries.map(entry => {
+    if (entry.label === "query.open") return reopen(entry, identity);
+    if (entry.type !== "emit_inbound" || !("session_id" in (entry.frame as object))) return entry;
+    return { ...entry, frame: { ...(entry.frame as object), session_id: id } };
+  });
+}
 const interrupt = (reply?: unknown): Entry => ({ type: "expect_outbound", label: "query.interrupt", frame: { type: "query.interrupt" }, ...(reply ? { reply } : {}) });
 const close: Entry = { type: "expect_outbound", label: "query.close", frame: { type: "query.close" } };
 const cancelledResponse = (toolUseID: string): Entry => ({ type: "expect_outbound", label: `permission.response:${toolUseID}`, frame: { type: "permission.response", result: {
@@ -155,6 +163,14 @@ describe("completion and resume", () => {
   });
 });
 
+/** A resume the CLI refuses because the conversation's transcript is gone: its error result, before anything runs (shaped after the CLI's). */
+function notFound(entries: Entry[], id: string): Entry[] {
+  const recorded = entries[labelled(entries, "result")] as Extract<Entry, { type: "emit_inbound" }>;
+  const { result: _, terminal_reason: __, ...frame } = recorded.frame as Record<string, unknown>;
+  const refusal = { ...frame, subtype: "error_during_execution", is_error: true, num_turns: 0, stop_reason: null, session_id: id, errors: [`No conversation found with session ID: ${id}`] };
+  return [reopen(entries[labelled(entries, "query.open")], { resume: id }), entries[labelled(entries, "prompt.offer")], { ...recorded, frame: refusal }, exit(), close];
+}
+
 describe("provider-reported failure", () => {
   it("replays a recorded API error result as a confirmed failure that keeps the conversation (agent-host claude_result_is_error)", async () => {
     const recorded = transcript("claude_result_is_error");
@@ -183,6 +199,40 @@ describe("provider-reported failure", () => {
     submit(session.id, "turn", simple);
     expect((await commits.reached("turn", "failed")).error).toMatchObject({ code });
     expect(persisted("turn").status).toBe("failed");
+  });
+
+  it("fails a turn whose saved conversation is gone, clears it, and starts a new conversation on the next prompt", async () => {
+    const simple = transcript("simple");
+    const sid = nativeSessionID(simple);
+    const sdk = start(variant(simple, "conversation gone", entries => [...entries, ...notFound(entries, sid), ...inConversation(entries, { sessionId: uuid(3) }, uuid(3))]), { newID: ids(sid) });
+    const session = engine!.createSession({ binding: binding() });
+    submit(session.id, "first", simple);
+    await commits.reached("first", "completed");
+    submit(session.id, "gone", simple);
+    const gone = await commits.reached("gone", "failed");
+    expect(gone.error).toMatchObject({ code: "conversation_not_found", message: expect.stringContaining("the next prompt starts a new conversation"), details: { conversationID: sid, promptUUID: uuid(2) } });
+    expect(sdk.queries[1].options).toMatchObject({ resume: sid });
+    expect(persisted("gone")).toEqual(gone);
+    expect(engine!.session(session.id).providerState).toBeUndefined();
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+    submit(session.id, "next", simple);
+    expect((await commits.reached("next", "completed")).native).toMatchObject({ conversationID: uuid(3), resume: false });
+    expect(sdk.queries[2].options.resume).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: uuid(3) });
+  });
+
+  it("fails, without marking the session uncertain, when Claude Code cannot be started", async () => {
+    const simple = transcript("simple");
+    const sid = nativeSessionID(simple);
+    const missing = "Claude Code native binary not found at /missing/claude";
+    start(variant(simple, "missing binary", entries => [...entries.slice(0, labelled(entries, "system")), exit("error", missing, "ENOENT"), close]), { newID: ids(sid) });
+    const session = engine!.createSession({ binding: binding() });
+    submit(session.id, "turn", simple);
+    const run = await commits.reached("turn", "failed");
+    expect(run.error).toMatchObject({ code: "claude_unavailable", details: { conversationID: sid, promptUUID: uuid(1), cause: missing } });
+    expect(persisted("turn")).toEqual(run);
+    expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
+    expect(engine!.session(session.id)).not.toHaveProperty("providerState");
   });
 });
 
@@ -434,6 +484,11 @@ describe("termination without a confirmed result", () => {
     if (cause) expect(run.error?.details).toMatchObject({ cause });
   });
 
+  it("is uncertain when a launch-like error follows a frame", async () => {
+    const simple = transcript("simple");
+    await uncertain(variant(simple, "spawn error after a frame", entries => [...entries.slice(0, labelled(entries, "system") + 1), exit("error", "spawn ENOENT", "ENOENT"), close]), simple, "claude_disconnected");
+  });
+
   it("is uncertain when the CLI acknowledges the interrupt and then exits without a result (agent-host turn_interrupt_mid_tool)", async () => {
     const recorded = transcript("turn_interrupt_mid_tool");
     const done = uncertain(recorded, recorded, "cancel_unconfirmed");
@@ -513,19 +568,43 @@ describe("uncertain sessions", () => {
     expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
-  it("starts a new conversation for fresh, and keeps the session uncertain if that turn fails", async () => {
+  it("starts a new conversation for fresh, and moves the session to it even if that turn fails", async () => {
     const simple = transcript("simple");
     const sid = nativeSessionID(simple);
-    const fresh = simple.entries.map(entry => {
-      if (entry.label === "query.open") return reopen(entry, { sessionId: uuid(2) });
-      if (entry.label === "result" && entry.type === "emit_inbound") return { ...entry, frame: { ...(entry.frame as object), session_id: uuid(2), is_error: true, api_error_status: 529 } };
-      return entry;
-    });
-    const { session } = await lose(lostThen(fresh), ids(sid));
+    const fresh = inConversation(simple.entries, { sessionId: uuid(2) }, uuid(2)).map(entry =>
+      entry.label === "result" && entry.type === "emit_inbound" ? { ...entry, frame: { ...(entry.frame as object), is_error: true, api_error_status: 529 } } : entry);
+    const { session } = await lose(lostThen([...fresh, ...inConversation(simple.entries, { resume: uuid(2) }, uuid(2))]), ids(sid));
     submit(session.id, "next", simple, 0, { recovery: { after: "lost", mode: "fresh" } });
     expect((await commits.reached("next", "failed")).error).toMatchObject({ code: "api_error_529" });
     expect(persisted("next").native).toMatchObject({ conversationID: uuid(2), resume: false });
+    // The failed turn created the new conversation, so recovery is settled: the next prompt continues it.
+    expect(engine!.session(session.id)).toMatchObject({ providerState: { conversationID: uuid(2) } });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+    submit(session.id, "after", simple);
+    expect((await commits.reached("after", "completed")).native).toMatchObject({ conversationID: uuid(2), resume: true });
+  });
+
+  it("keeps the session uncertain when a recovery turn fails without reporting a conversation", async () => {
+    const simple = transcript("simple");
+    const unreported = inConversation(simple.entries, { sessionId: uuid(2) }, "").map(entry =>
+      entry.label === "result" && entry.type === "emit_inbound" ? { ...entry, frame: { ...(entry.frame as object), is_error: true, api_error_status: 529 } } : entry);
+    const { session } = await lose(lostThen(unreported), ids(nativeSessionID(simple)));
+    submit(session.id, "next", simple, 0, { recovery: { after: "lost", mode: "fresh" } });
+    await commits.reached("next", "failed");
     expect(engine!.session(session.id).uncertain).toMatchObject({ requestID: "lost" });
+  });
+
+  it("clears the session when a resume finds the recorded conversation gone, so the next prompt starts a new one", async () => {
+    const simple = transcript("simple");
+    const sid = nativeSessionID(simple);
+    const { session } = await lose(lostThen([...notFound(simple.entries, sid), ...inConversation(simple.entries, { sessionId: uuid(3) }, uuid(3))]), ids(sid));
+    submit(session.id, "next", simple, 0, { recovery: { after: "lost", mode: "resume" } });
+    expect((await commits.reached("next", "failed")).error).toMatchObject({ code: "conversation_not_found" });
+    expect(replay!.queries[1].options).toMatchObject({ resume: sid });
+    expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
+    expect(engine!.session(session.id)).not.toHaveProperty("providerState");
+    submit(session.id, "after", simple);
+    expect((await commits.reached("after", "completed")).native).toMatchObject({ conversationID: uuid(3), resume: false });
   });
 });
 

@@ -11,7 +11,8 @@ then entries in order.
   (key order aside). `<workspace>` stands for the test's working directory. An optional
   `reply` says how the runtime answers.
 - `emit_inbound`: the runtime delivers this frame next.
-- `runtime_exit`: the runtime's stream ends, with `success` or `error` (and its message).
+- `runtime_exit`: the runtime's stream ends, with `success` or `error` (and its message, and
+  for a system error such as a missing binary, its errno `code`).
 
 Playback fails with a `ReplayError` on an outbound frame the transcript does not expect next
 (`unexpected_outbound`), a different frame (`mismatch`), an operation after the last entry

@@ -48,8 +48,8 @@ const entrySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("expect_outbound"), label, frame: z.unknown(), reply: z.unknown().optional() }).strict(),
   /** A frame the provider's runtime delivers next. */
   z.object({ type: z.literal("emit_inbound"), label, frame: z.unknown() }).strict(),
-  /** The runtime's stream ends: cleanly, or failing with `error`. */
-  z.object({ type: z.literal("runtime_exit"), label, status: z.enum(["success", "error"]), error: z.string().optional() }).strict()
+  /** The runtime's stream ends: cleanly, or failing with `error` and, for a system error, its errno `code`. */
+  z.object({ type: z.literal("runtime_exit"), label, status: z.enum(["success", "error"]), error: z.string().optional(), code: z.string().optional() }).strict()
 ]);
 const headerSchema = z.object({
   type: z.literal("transcript_start"),

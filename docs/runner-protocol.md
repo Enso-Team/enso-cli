@@ -367,8 +367,9 @@ any other error while judging or initializing it, such as I/O, is reported as a
 `runner_storage_failure` with its cause.
 
 Once its checks pass, startup recovers terminal records unchanged, dispatches
-only accepted work (none if `serve` received SIGINT or SIGTERM while starting:
-shutdown cancels it instead), and converts all previous running, waiting, or stopping work
+only accepted work for the runner's provider (none if `serve` received SIGINT or
+SIGTERM while starting: shutdown cancels that provider's work instead), and
+converts all previous running, waiting, or stopping work
 to durable `interrupted` records with `error.code: "restart_uncertain"`, marking
 each one's session uncertain, in one transaction. A crash part way through a
 transaction leaves no trace of it. In particular:
@@ -381,6 +382,10 @@ transaction leaves no trace of it. In particular:
 There is no exactly-once claim for external effects. No automatic
 replay/reconciliation of potentially executed work occurs. Retrying its request ID
 returns the interrupted record.
+
+Accepted prompts for another provider stay unchanged, including when this runner
+shuts down. Restart with their matching provider to execute them, or cancel them
+explicitly through the run's `/cancel` endpoint.
 
 ### Uncertain sessions
 
@@ -396,12 +401,17 @@ The client decides, preferably with the user, how to continue:
   it never started a query, and the session's checkpoint is used).
 - `fresh`: start a new provider conversation; the earlier history is not carried.
 
-Only a `completed` turn clears `uncertain`. A recovery prompt that fails, is
-cancelled, or is itself interrupted leaves the session uncertain (an interrupted
-one names itself), so the next prompt must acknowledge it again. A `recovery` on a
-session that is not uncertain is `invalid_input`. `failed` and `cancelled` are
-confirmed and do not make a session uncertain; their outcome may still update
-`providerState` (a confirmed turn can have created or advanced the conversation).
+A `completed` turn clears `uncertain`, and so does a `failed` or `cancelled` one
+whose outcome updates or clears `providerState`: the recovery has then settled
+which conversation continues (for example, a `fresh` turn that created its new
+conversation and then hit an API error). A recovery prompt that fails or is
+cancelled without touching the checkpoint, or is itself interrupted, leaves the
+session uncertain (an interrupted one names itself), so the next prompt must
+acknowledge it again. A `recovery` on a session that is not uncertain is
+`invalid_input`. `failed` and `cancelled` are confirmed and do not make a session
+uncertain; their outcome may still update `providerState` (a confirmed turn can
+have created or advanced the conversation) or clear it (a provider outcome of
+`providerState: null`).
 
 A persistence error fails the process closed: no further state is served or work
 dispatched, active waits are aborted, and the service shuts down with an error
@@ -492,7 +502,11 @@ CLI does). Every turn is a paid agent call.
   starts, the run records `native: {conversationID, resume, promptUUID, model,
   permissionMode}`. A result is attributed to the turn only when the CLI echoes
   that prompt uuid, or (from CLIs that do not echo) when it is not marked as
-  another origin, such as a background task.
+  another origin, such as a background task. If Claude Code no longer has the
+  conversation (its transcript was cleaned up or deleted), the turn is `failed`
+  with `conversation_not_found`, whose message tells the user the history is lost
+  and the next prompt starts a new conversation; the session's `providerState`
+  (and any `uncertain` marker) is cleared, so it continues without recovery.
 - **Configuration.** `--claude-permission-mode` is always passed explicitly
   (default `default`, so tools Claude Code would ask about become runner pending
   requests); `bypassPermissions` and `dontAsk` are not offered. `--claude-model`
@@ -523,7 +537,9 @@ CLI does). Every turn is a paid agent call.
   runner did not request, ...) are `failed`, keeping the conversation when Claude
   reported it. A stream that fails (`claude_disconnected`) or ends without that
   result (`claude_ended_without_result`) is `interrupted`, never failed or
-  cancelled.
+  cancelled. The exception is Claude Code failing to start (a missing or
+  unexecutable binary, before any frame): nothing ran, so the turn is `failed`
+  with `claude_unavailable` (`cancelled` if a stop was already requested).
 - **Cancellation.** Cancelling requests `interrupt()` and waits up to 20 seconds
   for the CLI to acknowledge it and report the turn's end. A pending or queued
   permission is denied with `interrupt`. An aborted or `error_during_execution`

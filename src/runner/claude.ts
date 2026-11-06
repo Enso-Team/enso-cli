@@ -3,7 +3,7 @@ import { statSync } from "node:fs";
 import type { CanUseTool, Options, PermissionResult, SDKMessage, SDKResultMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { EnsoCliError } from "../errors.js";
 import { cliVersion } from "../version.js";
-import { conversationOptions, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
+import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
 import type { Answer, Json, Pending, Prompt, Session } from "./protocol.js";
 import type { Execution, ProviderOutcome, RunnerProvider } from "./provider.js";
 
@@ -56,7 +56,8 @@ export function claudeLoadError(error: unknown): EnsoCliError {
  * Runs one runner prompt as one Claude Agent SDK query in the session's stored working directory. Permission and
  * AskUserQuestion callbacks become runner pending requests, one at a time. Outcomes come only from provider evidence:
  * the result frame answering this prompt, or a cancellation the CLI confirmed. A stream that ends or fails without that
- * evidence, or a stop that is not confirmed in time, is interrupted (uncertain).
+ * evidence, or a stop that is not confirmed in time, is interrupted (uncertain). Claude Code failing to start, before any
+ * frame, is evidence that nothing ran.
  */
 export class ClaudeProvider implements RunnerProvider {
   readonly name = "claude" as const;
@@ -114,6 +115,7 @@ class Turn {
   private sawConversation = false;
   /** This turn's result has arrived: later callbacks have no request left to ask in. */
   private finished = false;
+  private sawFrame = false;
   private stderr = "";
   /** Serializes callbacks: the runner keeps one pending request per run. */
   private callbacks = Promise.resolve();
@@ -145,9 +147,13 @@ class Turn {
       for (;;) {
         let step: IteratorResult<SDKMessage> | "expired";
         try { step = await Promise.race([iterator.next(), expired]); }
-        catch (error) { return this.uncertain("claude_disconnected", "The Claude stream failed before reporting this turn's result", error); }
+        catch (error) {
+          if (!this.sawFrame && isLaunchError(error)) return this.unstarted(error);
+          return this.uncertain("claude_disconnected", "The Claude stream failed before reporting this turn's result", error);
+        }
         if (step === "expired") return this.uncertain("cancel_unconfirmed", "Claude did not confirm the stop in time; it may still be running or have finished");
         if (step.done) return this.uncertain("claude_ended_without_result", "The Claude stream ended before reporting this turn's result");
+        this.sawFrame = true;
         const frame = step.value;
         if (messageSessionID(frame) === this.input.conversationID) this.sawConversation = true;
         if (frame.type !== "result" || isResultForOtherTurn(frame, this.input.promptUUID)) continue;
@@ -167,6 +173,14 @@ class Turn {
   }
 
   private outcome(result: SDKResultMessage): ProviderOutcome {
+    // Nothing ran, and resuming can never succeed: clear the checkpoint so the next prompt starts a new conversation.
+    if (this.input.resume && isConversationNotFound(result, this.input.conversationID)) {
+      return { status: "failed", providerState: null, error: {
+        code: "conversation_not_found",
+        message: "Claude's saved conversation for this session no longer exists, so its history is lost; the next prompt starts a new conversation",
+        details: { conversationID: this.input.conversationID, promptUUID: this.input.promptUUID }
+      } };
+    }
     const decided = resultOutcome(result, this.interruptRequested);
     const conversationID = result.session_id || this.input.conversationID;
     const providerState = { conversationID };
@@ -184,6 +198,16 @@ class Turn {
     const checkpoint = this.sawConversation ? { providerState } : {};
     if (decided.status === "cancelled") return { status: "cancelled", ...checkpoint };
     return { status: "failed", error: { ...decided.error, details: { conversationID, promptUUID: this.input.promptUUID } }, ...checkpoint };
+  }
+
+  /** Claude Code never started, so nothing ran: a requested stop is confirmed, and otherwise the turn failed. */
+  private unstarted(cause: unknown): ProviderOutcome {
+    if (this.interruptRequested) return { status: "cancelled" };
+    return { status: "failed", error: { code: "claude_unavailable", message: "Claude Code could not be started; nothing ran", details: plain({
+      conversationID: this.input.conversationID, promptUUID: this.input.promptUUID,
+      ...(cause instanceof Error ? { cause: cause.message } : {}),
+      ...(this.stderr ? { stderr: this.stderr } : {})
+    }) as Record<string, Json> } };
   }
 
   private uncertain(code: string, message: string, cause?: unknown): ProviderOutcome {

@@ -190,7 +190,7 @@ export function claudeReplay(transcripts: Transcript | Transcript[]) {
         const taken = await replay.take(stop.signal);
         if (!taken || state.closed) return;
         if (taken.type === "runtime_exit") {
-          if (taken.status === "error") throw new Error(taken.error ?? "Claude Code exited with an error");
+          if (taken.status === "error") throw Object.assign(new Error(taken.error ?? "Claude Code exited with an error"), taken.code ? { code: taken.code } : {});
           return;
         }
         const frame = record(taken.frame);
