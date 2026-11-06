@@ -227,6 +227,31 @@ describe("existing stores", () => {
     ownerReleased();
   });
 
+  it.each(["SQLITE_READONLY_CANTINIT", "SQLITE_PROTOCOL", "SQLITE_PERM", "SQLITE_NOMEM"])("reports %s while judging a store as a failure, not a refusal", async code => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "application_id") throw Object.assign(new Error("not a judgment"), { code });
+      return pragma.call(this, source, options);
+    });
+    const error = await startRunner({ directory }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ body: { code: "runner_storage_failure", details: { cause: { code } } } });
+    expect((error as Error).message).not.toMatch(/refusing/);
+    ownerReleased();
+  });
+
+  it("reports a lock held inside SQLite as locked, not as a refused store", async () => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "quick_check") throw Object.assign(new Error("database table is locked"), { code: "SQLITE_LOCKED" });
+      return pragma.call(this, source, options);
+    });
+    await expect(startRunner({ directory })).rejects.toMatchObject({ body: { code: "runner_locked" } });
+  });
+
   it("does not claim to refuse a store it created when initializing it fails", async () => {
     const pragma = Database.prototype.pragma;
     vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {

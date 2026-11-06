@@ -190,19 +190,27 @@ function refused(error: unknown): unknown {
   }
   return error;
 }
+/** SQLite codes that are a verdict on the file's contents. Every other code (permissions, a read-only volume, memory,
+ * locks, I/O, WAL recovery) says nothing about the store, so it is reported as a failure rather than refused. */
+const judgment = (code: string) => code === "SQLITE_ERROR" || code === "SQLITE_NOTADB" || code === "SQLITE_MISMATCH" ||
+  code === "SQLITE_FORMAT" || code === "SQLITE_RANGE" || code === "SQLITE_TOOBIG" || code.startsWith("SQLITE_CORRUPT") ||
+  code.startsWith("SQLITE_CONSTRAINT");
 /** Keeps the SQLite or filesystem cause, and reports a lock or I/O failure as such rather than as a refused store. */
 function failure(error: unknown, message: string): EnsoCliError {
   if (error instanceof EnsoCliError) return error;
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code !== "string") return invalid(message);
   const cause = { cause: { code, message: (error as Error).message } };
-  if (code === "SQLITE_BUSY" || code.startsWith("SQLITE_BUSY_")) return new EnsoCliError("runner_locked", "Runner database is locked by another process", cause);
-  if (code === "SQLITE_FULL" || code.startsWith("SQLITE_IOERR")) {
-    return new EnsoCliError("runner_storage_failure", "Runner database could not be read or written", cause);
-  }
+  if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) return new EnsoCliError("runner_locked", "Runner database is locked by another process", cause);
   // Missing, or not readable by this user: nothing was judged, so nothing is refused.
   if (code.startsWith("SQLITE_CANTOPEN")) return new EnsoCliError("runner_storage_failure", "Runner database could not be opened", cause);
-  return invalid(message, cause);
+  if (judgment(code)) return invalid(message, cause);
+  return storageFailure(error);
+}
+/** A file system or SQLite failure that is not a verdict on the store. */
+function storageFailure(error: unknown, message = "Runner database could not be read or written"): EnsoCliError {
+  const { code, message: cause } = error as NodeJS.ErrnoException;
+  return new EnsoCliError("runner_storage_failure", message, { cause: { code, message: cause } });
 }
 /**
  * Statements compiled once per connection and reused. Keyed by connection because startup judges the file through a
@@ -306,7 +314,9 @@ export class RunnerStorage {
 
   private open(): void {
     this.created = false;
-    const names = readdirSync(this.directory);
+    let names: string[];
+    try { names = readdirSync(this.directory); }
+    catch (error) { throw storageFailure(error, "Runner directory could not be read"); }
     const found = names.filter(legacy);
     if (found.length) {
       throw invalid("Found a pre-SQLite runner store, which this runner does not migrate. Keep it with a runner build that reads it, or move it out of this directory to start empty", { legacyFiles: found.sort() });
@@ -326,7 +336,7 @@ export class RunnerStorage {
       this.created = true;
       this.syncDirectory();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw storageFailure(error, "Runner database could not be created");
       // Judge an existing file read-only: closing a read-write connection folds its WAL into it, even one being refused.
       const reader = this.db = openDatabase(Sqlite, path, { readonly: true, fileMustExist: true });
       try {
