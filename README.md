@@ -111,18 +111,24 @@ version rules as execution. Apply phases retain their existing partial-success
 reporting; rollback is a canvas snapshot operation, not a transaction covering
 notes, files and sync writes.
 
-## Local prompt runner (fake provider)
+## Local prompt runner
 
-Run `enso runner serve --provider fake` in its own terminal. The independent local
-service persists canvas-bound sessions, captured prompt context, lifecycle events,
-and results in a private SQLite database outside the vault. It needs the optional
-`better-sqlite3` native module; with npm 12, install the CLI with
-`npm install -g @enso-app/cli --allow-scripts=better-sqlite3`. `enso runner call` accesses its authenticated Unix
-socket; `enso runner shutdown` cancels active work and stops it. No Claude or
-native prompt UI integration is included yet.
+Run `enso runner serve --provider fake` (deterministic test provider) or
+`enso runner serve --provider claude` (Claude Agent SDK, using your Claude Code
+sign-in) in its own terminal. The independent local service persists canvas-bound
+sessions, captured prompt context, lifecycle events, and results in a private
+SQLite database outside the vault. It needs the optional `better-sqlite3` native
+module, and the Claude provider the optional `@anthropic-ai/claude-agent-sdk`
+package; with npm 12, install the CLI with
+`npm install -g @enso-app/cli --allow-scripts=better-sqlite3`. `enso runner call`
+accesses its authenticated Unix socket; `enso runner shutdown` cancels active work
+and stops it. Claude runs in the session's codebase directory; permission and
+question prompts become pending requests to answer through the runner. No native
+prompt UI integration is included yet, and Claude cannot use the Enso bridge.
 
-See [Runner protocol v1](docs/runner-protocol.md) for a runnable example, private
-connection discovery, the native-client contract, and restart/uncertainty rules.
+See [Runner protocol v2](docs/runner-protocol.md) for a runnable example, private
+connection discovery, the native-client contract, the Claude provider, and
+restart/uncertainty rules.
 
 ## For agents
 

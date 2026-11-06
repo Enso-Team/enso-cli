@@ -1,10 +1,17 @@
-# Local runner protocol v1
+# Local runner protocol v2
 
-`enso runner serve --provider fake` runs a foreground service independent of the
-Enso app. It needs Node 20+ and is intended for macOS. It does not launch Enso,
-navigate, perform bridge operations, import project configuration, or attach to a
-terminal. Only the deterministic fake provider is implemented. Keep the service
-running in its own terminal or arrange supervision separately.
+`enso runner serve --provider <fake|claude>` runs a foreground service independent
+of the Enso app. It needs Node 20+ and is intended for macOS. It does not launch
+Enso, navigate, perform bridge operations, import project configuration, or attach
+to a terminal. Two providers exist: `fake`, a deterministic test provider, and
+`claude`, which runs each prompt through the Claude Agent SDK (see Claude provider).
+One runner serves one provider; restart it to switch. Keep the service running in
+its own terminal or arrange supervision separately.
+
+Protocol 2 is incompatible with protocol 1: it adds Claude sessions, provider
+execution identifiers recorded on runs, session uncertainty with explicit recovery,
+and structured input requests. Its default store lives in a new directory, and a
+protocol 1 store is refused rather than migrated.
 
 The runner stores state in SQLite through the `better-sqlite3` native module, an
 optional dependency loaded only by runner commands. npm 12 skips dependency install
@@ -20,6 +27,9 @@ From a checkout, replace `enso` with `npm run dev --`:
 npm ci
 npm run build
 node dist/index.js runner serve --provider fake
+# or, with Claude Code signed in (or ANTHROPIC_API_KEY set):
+node dist/index.js runner serve --provider claude [--claude-model <model>] \
+  [--claude-permission-mode default|acceptEdits|plan|auto] [--claude-executable <path>]
 ```
 
 In another terminal (use an existing absolute codebase directory):
@@ -59,7 +69,8 @@ runner preserves the captured text; it never rereads notes to replace it.
 ## Discovery, authentication and compatibility
 
 Default private directory:
-`~/Library/Application Support/Enso CLI/runner/v1/`.
+`~/Library/Application Support/Enso CLI/runner/v2/` (protocol 1 used `runner/v1/`;
+neither runner opens the other's store).
 `ENSO_CLI_CONFIG_DIR` changes the parent CLI directory. Every runner command also
 accepts `--directory /absolute/private/path` to select a separate runner store.
 Use a runner-owned directory outside the vault and codebase. macOS Unix socket
@@ -68,7 +79,7 @@ paths must fit in 103 bytes; choose a shorter directory if needed.
 A live runner atomically publishes `connection.json`:
 
 ```json
-{"protocolVersion":1,"socketPath":"/absolute/private/path/control.sock","token":"<secret>","pid":12345}
+{"protocolVersion":2,"socketPath":"/absolute/private/path/control.sock","token":"<secret>","pid":12345}
 ```
 
 Native clients must read this file locally and connect with HTTP/1.1 over that
@@ -84,7 +95,7 @@ Every request, including reads and shutdown, requires:
 
 ```http
 Authorization: Bearer <connection.json token>
-Enso-Runner-Version: 1
+Enso-Runner-Version: 2
 Content-Type: application/json
 ```
 
@@ -93,8 +104,8 @@ limit; a larger body is read and discarded, then rejected with HTTP 413
 `payload_too_large`. Browser Origin headers are rejected; CORS is not enabled.
 Missing/wrong authentication returns HTTP 401 `unauthorized` before checking
 version. Missing or incompatible version returns HTTP 426
-`incompatible_runner_version` with `details.supportedVersions: [1]`. Responses
-include `Enso-Runner-Version: 1` and `Cache-Control: no-store`. This protocol
+`incompatible_runner_version` with `details.supportedVersions: [2]`. Responses
+include `Enso-Runner-Version: 2` and `Cache-Control: no-store`. This protocol
 version is independent of bridge contract 3 and the CLI package version.
 Unsupported or unrecognized stores fail startup without migration or overwriting
 data (see Persistence).
@@ -118,7 +129,7 @@ be percent-encoded when they contain reserved URL characters.
 
 | Method and path | Body | Successful data |
 | --- | --- | --- |
-| POST `/v1/sessions` | `{binding}` | Created session (HTTP 201) |
+| POST `/v1/sessions` | `{binding, provider?}` | Created session (HTTP 201) |
 | GET `/v1/sessions/:sessionID` | — | Persisted session |
 | POST `/v1/prompts` | Prompt below | Existing or newly accepted run (HTTP 200) |
 | GET `/v1/runs/:requestID` | — | Full run, including persisted terminal result/error |
@@ -128,8 +139,13 @@ be percent-encoded when they contain reserved URL characters.
 | POST `/v1/runs/:requestID/respond` | `{pendingID, value}` | Run after accepting response |
 | POST `/v1/shutdown` | — | `{stopped:true}` after active providers confirm outcomes |
 
-A session contains `id` (runner-generated UUID), `binding`, `provider: "fake"`,
-`createdAt` (ISO timestamp), and optional opaque `providerState` (JSON).
+A session contains `id` (runner-generated UUID), `binding`, `provider` (`"fake"` or
+`"claude"`: the runner's provider when the session was created), `createdAt` (ISO
+timestamp), optional opaque `providerState` (JSON, the provider's conversation
+checkpoint), and optional `uncertain` (see Uncertain sessions). Route paths keep
+their `/v1/` prefix; the protocol version is the header. Creating a session with
+`provider` naming another provider than the runner's fails with HTTP 409
+`provider_mismatch`; so does a prompt for a session of another provider.
 `binding` is immutable and contains:
 
 - `bridgeUrl`: exact loopback HTTP origin, normalized with URL.origin; no
@@ -151,7 +167,8 @@ Prompt shape:
   "context": {
     "selectedNodes": [{"nodeID":"node identity","noteID":"optional note identity","content":"captured note content"}]
   },
-  "fake": {"scenario":"success","delayMs":20}
+  "fake": {"scenario":"success","delayMs":20},
+  "recovery": {"after":"<uncertain requestID>","mode":"resume"}
 }
 ```
 
@@ -160,6 +177,10 @@ pending IDs allow up to 256 characters.
 `context` is required; an empty selection is `{selectedNodes:[]}`. Node identity
 is required for each item; note identity is optional for nodes without a Note.
 The payload is captured data, not instructions to look up the current selection.
+
+`fake` is accepted only for fake sessions (`invalid_input` otherwise), and the runner
+stores its default for them, so omitting it and sending the default are equivalent
+submissions. `recovery` is required exactly while the session is uncertain.
 
 The fake options default to `{scenario:"success",delayMs:20}`. Scenarios are
 `success`, `failure`, `permission`, `input`, and `interrupted`; delayMs is an
@@ -180,7 +201,11 @@ slot in a session: losers receive HTTP 409 `session_busy`. There is no queue or
 live steering. Different sessions can run concurrently.
 
 Run shape: `{request, status, createdAt, updatedAt, pending?, result?, error?,
-providerState?}`. Timestamps are informational; sequence numbers define ordering.
+providerState?, native?}`. `native` holds the provider's execution identifiers
+(for Claude: conversation, prompt uuid, whether it resumed, model, permission
+mode). The provider commits them before it starts anything that could use them,
+and every later update of the run keeps them, so an interrupted run always names
+what may have run. Timestamps are informational; sequence numbers define ordering.
 Provider errors have `{code,message,details?}` with optional structured JSON details. Status meanings:
 
 | Status | Meaning |
@@ -210,9 +235,18 @@ Pending request shape:
 {"id":"turn-1:wait","kind":"permission","message":"Allow this fake operation?","choices":["allow","deny"]}
 ```
 
-For input requests, `kind` is `input` and choices are omitted. Responses use
-`{pendingID,value}` with a string value. A stale/already-resolved pending ID
-returns HTTP 409 `pending_not_found`; invalid choices return `invalid_input`.
+For input requests, `kind` is `input` and choices are omitted. A pending request
+may also carry `details` (JSON, such as the tool name, its input and the
+provider's reason) and, for input, structured `questions`:
+`[{id, header, question, options:[{label, description}], multiSelect}]`.
+Responses use `{pendingID, value}`. `value` is a string, one of `choices` when
+there are choices; for structured questions it is an object answering every
+question id with a string or a list of strings (a single question may also be
+answered with a string). Options are suggestions, not limits. A stale or
+already-resolved pending ID returns HTTP 409 `pending_not_found`; an invalid value
+returns `invalid_input`. A provider can withdraw a request it no longer needs: the
+run returns to `running` (or stays `stopping`) durably, and an answer to it then
+returns `pending_not_found`.
 Pending is removed durably before the response is delivered to the provider.
 A crash at that boundary becomes interrupted rather than re-asking/replaying the
 answer. Responses themselves are not idempotent submissions: after an ambiguous
@@ -229,9 +263,9 @@ session checkpoint) commits all of its events or none of them. Events are deltas
 | `type` | Other fields | Apply to the local copy |
 | --- | --- | --- |
 | `session_created` | `session` | Add the session |
-| `session_updated` | `sessionID`, `providerState?` | Replace the session's `providerState`; absent removes it |
+| `session_updated` | `sessionID`, `providerState?`, `uncertain?` | Replace the session's `providerState` and `uncertain`; an absent field is removed |
 | `run_accepted` | `run` (full run, status `accepted`) | Add the run |
-| `run_updated` | `requestID`, `status`, `updatedAt`, `pending?`, `result?`, `error?`, `providerState?` | Replace the run's `status`, `updatedAt`, `pending`, `result`, `error` and `providerState` with the event's; an absent field is removed |
+| `run_updated` | `requestID`, `status`, `updatedAt`, `pending?`, `result?`, `error?`, `providerState?`, `native?` | Replace the run's `status`, `updatedAt`, `pending`, `result`, `error`, `providerState` and `native` with the event's; an absent field is removed |
 | `runs_deleted` | `requestIDs` | Remove those runs (retention deleted them, finished); ignore IDs you do not hold |
 
 Only `run_accepted` carries the request and its captured context; `request` and
@@ -265,7 +299,7 @@ snapshot if the store was replaced. There is no subscription socket to keep aliv
 
 Storage is runner-owned and never writes notes, Canvas records, CRDT data, or
 vault metadata. It is one SQLite database, `runner.sqlite`, identified by
-`PRAGMA application_id` (`0x456E736F`, "Enso") and schema version 1
+`PRAGMA application_id` (`0x456E736F`, "Enso") and schema version 2
 (`PRAGMA user_version`):
 
 - `events`: every event above, keyed by `sequence`, with the session or run it
@@ -327,8 +361,8 @@ instead.
 
 Once its checks pass, startup recovers terminal records unchanged, dispatches
 only accepted work, and converts all previous running, waiting, or stopping work
-to durable `interrupted` records with `error.code: "restart_uncertain"` in one
-transaction. A crash part way through a
+to durable `interrupted` records with `error.code: "restart_uncertain"`, marking
+each one's session uncertain, in one transaction. A crash part way through a
 transaction leaves no trace of it. In particular:
 
 - Crash after acceptance, before the dispatch marker: safe to dispatch once.
@@ -337,9 +371,29 @@ transaction leaves no trace of it. In particular:
 - Result transaction durable, but client never received it: recover that result.
 
 There is no exactly-once claim for external effects. No automatic
-replay/reconciliation of potentially executed work occurs. Retrying its request ID returns the interrupted record. A new
-explicit prompt can be submitted, but a future real provider must reconcile its
-external conversation/effects before continuing an uncertain session.
+replay/reconciliation of potentially executed work occurs. Retrying its request ID
+returns the interrupted record.
+
+### Uncertain sessions
+
+Every transition to `interrupted` (a restart, a provider that could not confirm an
+outcome, an unconfirmed stop) also sets the session's `uncertain` to
+`{requestID, native?}`: the uncertain run and the identifiers it recorded. While it
+is set, a prompt without `recovery`, or whose `recovery.after` names another run,
+fails with HTTP 409 `session_uncertain` and `details: {requestID, modes:["resume","fresh"]}`.
+The client decides, preferably with the user, how to continue:
+
+- `resume`: continue the provider conversation the uncertain run used, with
+  whatever it did. For Claude, the conversation it recorded (if it recorded none,
+  it never started a query, and the session's checkpoint is used).
+- `fresh`: start a new provider conversation; the earlier history is not carried.
+
+Only a `completed` turn clears `uncertain`. A recovery prompt that fails, is
+cancelled, or is itself interrupted leaves the session uncertain (an interrupted
+one names itself), so the next prompt must acknowledge it again. A `recovery` on a
+session that is not uncertain is `invalid_input`. `failed` and `cancelled` are
+confirmed and do not make a session uncertain; their outcome may still update
+`providerState` (a confirmed turn can have created or advanced the conversation).
 
 A persistence error fails the process closed: no further state is served or work
 dispatched, active waits are aborted, and the service shuts down with an error
@@ -359,8 +413,8 @@ Existing stores are handled explicitly, never discarded:
   them back beside their store, or delete them to start empty. A
   `runner.sqlite-journal` beside an empty file is left by a crash while
   initializing it; SQLite discards it and the file is initialized.
-- `state.json`, `log.jsonl` or their `.tmp` files from the earlier JSONL store
-  (unreleased storage version 2): startup fails with `invalid_runner_storage`,
+- `state.json`, `log.jsonl` or their `.tmp` files from the earlier, unreleased JSONL
+  store: startup fails with `invalid_runner_storage`,
   listing them in `details.legacyFiles`. They are not migrated, modified, or
   shadowed by a new database. Keep them with the runner build that wrote them,
   or move them out of the directory to start empty.
@@ -408,42 +462,89 @@ The database may be inspected read-only (for example with `sqlite3 -readonly`)
 while the runner is live, which can leave `-wal`/`-shm` files after it stops.
 Never write to it by hand. No daemon/supervisor installation is included.
 
-## Handoff to PRs 4 and 5
+## Claude provider
 
-PR 4 should implement the small execution boundary in `src/runner/provider.ts`:
-immutable session binding and captured prompt, abort signal, an awaitable
-permission/input callback, explicit confirmed/uncertain outcomes, and an opaque
-JSON conversation checkpoint committed atomically with a completed turn. A
-provider may have at most one wait pending per run; a concurrent second wait is
-rejected without affecting the first, which stays persisted and answerable. The
-runner alone owns lifecycle persistence and cancellation intent. A bridge
-operation succeeding is never evidence that a provider turn completed. Never
-reinterpret a provider exception as a confirmed cancellation or successful turn.
-Future provider-specific external execution IDs and reconciliation must be
-persisted before relying on them; there is no Claude dependency or authentication
-in this PR and the current protocol only selects `fake`.
+`--provider claude` runs each prompt as one Claude Agent SDK query
+(`@anthropic-ai/claude-agent-sdk`, an optional dependency loaded only by this
+command; without it, startup fails with `runner_provider_unavailable` before any
+runner file is touched). The SDK starts Claude Code with the user's own
+authentication and settings (user and project settings, CLAUDE.md, skills, as the
+CLI does). Every turn is a paid agent call.
 
-Use the stored target with PR 2's immutable binding on **every** future bridge
-operation. Use the exact stored bridge origin; never rediscover a different
-instance, fall back to active canvas, navigate to satisfy validation, or replay
-bridge mutations. PR 2 already preserves target validation errors without retry.
-Provider setup must validate that the stored working directory remains available;
-the runner deliberately does not resolve a replacement after restart.
+- **Directory and context.** The query runs with `cwd` set to the session's stored
+  working directory. If that directory no longer exists the run fails with
+  `working_directory_unavailable` without starting anything; no other directory
+  is substituted. The prompt is the captured `text` plus the captured
+  `selectedNodes` (node and note identities and content), sent as submitted; the
+  canvas is never reread.
+- **Conversations.** A session's `providerState` is `{conversationID}`. A turn
+  continues it with the SDK's `resume`; a session without one starts a new
+  conversation under a runner-allocated UUID (`sessionId`). Before the query
+  starts, the run records `native: {conversationID, resume, promptUUID, model,
+  permissionMode}`. A result is attributed to the turn only when the CLI echoes
+  that prompt uuid, or (from CLIs that do not echo) when it is not marked as
+  another origin, such as a background task.
+- **Configuration.** `--claude-permission-mode` is always passed explicitly
+  (default `default`, so tools Claude Code would ask about become runner pending
+  requests); `bypassPermissions` and `dontAsk` are not offered. `--claude-model`
+  and `--claude-executable` select the model and a Claude Code executable. These
+  are runner settings, not session settings: a restart with other settings applies
+  them to resumed conversations too.
+- **Permissions and input.** Each permission callback becomes a `permission`
+  request with ID `<requestID>:<toolUseID>`, choices `allow`, `allow_session`
+  (grants Claude's suggested rule, or the tool, for the rest of that turn: each turn is a new Claude Code process) and
+  `deny`, and `details: {toolName, toolUseID, input, reason?, blockedPath?, agentID?}`
+  (input over 32 KiB is replaced by a preview). `allow_session` is omitted when
+  Claude Code forbids a standing grant. `AskUserQuestion` becomes an `input`
+  request with structured `questions`; the answers are returned to Claude keyed by
+  question text, lists joined with `, `. A denial is returned to Claude as a
+  denied tool call and the turn continues; the result lists denials in
+  `permissionDenials`.
+- **Concurrent callbacks.** Claude can ask about several parallel tool calls at
+  once. The provider queues them in arrival order and shows one at a time: only
+  the pending request is persisted, and the next one becomes pending once it is
+  answered. A request Claude withdraws (its tool call was cancelled) is removed
+  durably if it was pending, and silently denied if it was still queued; a late
+  answer to it returns `pending_not_found`.
+- **Outcomes.** Only the turn's result frame confirms an outcome. A success
+  result is `completed` with `result: {text, conversationID, promptUUID, numTurns,
+  durationMs, totalCostUSD, stopReason, terminalReason, permissionDenials}`. Error
+  results (API errors such as `api_error_429`, `error_max_turns`, an abort the
+  runner did not request, ...) are `failed`, keeping the conversation when Claude
+  reported it. A stream that fails (`claude_disconnected`) or ends without that
+  result (`claude_ended_without_result`) is `interrupted`, never failed or
+  cancelled.
+- **Cancellation.** Cancelling requests `interrupt()` and waits up to 20 seconds
+  for the CLI to acknowledge it and report the turn's end. A pending or queued
+  permission is denied with `interrupt`. An aborted or `error_during_execution`
+  result after the request confirms `cancelled`; a success result that arrives
+  first is `completed`. No confirmation in time, a refused interrupt, or a stream
+  that ends without a result is `interrupted` with `cancel_unconfirmed` and
+  `details.interrupt` (`pending`, `acknowledged` or `failed`). The query is closed
+  in every case, which ends the CLI process and any background shell it started.
+- **Bridge.** No Enso bridge operation is exposed to Claude. The bridge
+  identifies an app only by origin and pairing token; it advertises no stable
+  instance identity, so a runner cannot tell the paired app from another process
+  reusing the origin after a restart. Until it can, the runner sets
+  `ENSO_RUNNER_BRIDGE=disabled` for Claude's process tree, and the `enso` CLI
+  refuses every bridge request under it with `bridge_unavailable` (including
+  linking). This does not stop a same-user process from contacting the bridge by
+  other means; the system prompt also tells Claude the bridge is unavailable.
 
-Dependency gap in PRs 1/2 as visible in this repository: bridge identity is an
-origin and private pairing token, with no advertised stable bridge-instance UUID
-or generation. This PR persists the exact origin, which matches PR 2's instance
-pinning. It cannot distinguish a replacement app process reusing that origin.
-A real provider must pin/validate pairing identity or consume a coordinated
-bridge instance identifier before executing after a restart. The fake never
-calls the bridge, so it cannot accidentally cross that boundary. The app bridge
-implementation itself is not in this repository and was not modified.
+## Remaining prerequisites
 
-PR 5 should consume the private discovery/auth/version contract, create a session
-with explicit UUIDs and a separately chosen codebase directory, capture selected
-node content before submitting, generate and retain request IDs before sending,
-and recover via snapshot plus cursor polling. A disconnected UI is not a stopped
-turn. Display interrupted outcomes as uncertain and retain their error details;
-do not generate a fresh request ID as an automatic retry. Render pending
-requests from the run and stop by requesting cancellation then observing terminal
-confirmation.
+- Bridge operations for agents need a bridge instance identity (or a pairing
+  identity the runner can pin per session) from the app, checked on every request
+  together with the session's immutable `canvasTarget`. Only then should the
+  runner expose bridge tools, and the `ENSO_RUNNER_BRIDGE` guard be relaxed for
+  them. The app bridge is not in this repository.
+- The native client should create sessions with explicit UUIDs and a separately
+  chosen codebase directory, capture selected node content before submitting,
+  generate and retain request IDs before sending, and recover via snapshot plus
+  cursor polling. A disconnected UI is not a stopped turn. It should render
+  pending requests (including `details` and `questions`) from the run, stop by
+  requesting cancellation and observing terminal confirmation, show interrupted
+  outcomes as uncertain with their error details, and ask the user to choose
+  `resume` or `fresh` for an uncertain session rather than choosing silently.
+- Recovery does not inspect Claude's transcript: `resume` continues whatever the
+  conversation holds, including a partial turn.

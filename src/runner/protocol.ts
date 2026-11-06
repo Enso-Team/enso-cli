@@ -3,12 +3,29 @@ import { isLoopbackBridgeUrl } from "../client.js";
 import { EnsoCliError } from "../errors.js";
 import { parseTarget } from "../targeting.js";
 
-export const runnerVersion = 1;
+/** Version 2 added Claude sessions, durable native execution identifiers, session uncertainty and structured input. */
+export const runnerVersion = 2;
 export const runnerVersionHeader = "Enso-Runner-Version";
 const id = z.string().min(1).max(128);
 const pendingID = z.string().min(1).max(256);
 /** Runner-issued session IDs are lowercase; accept any case from clients. */
 const sessionID = z.string().uuid().transform(value => value.toLowerCase());
+// JSON data is deliberately opaque at the runner/provider boundary.
+// Checked by hand: a recursive z.union builds an error for every failed branch at every node, and made each read of a
+// stored run ~150µs. Only values JSON.stringify writes as-is pass, so a committed value reloads unchanged.
+function isJson(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) if (!(index in value) || !isJson(value[index])) return false;
+    return true;
+  }
+  if (typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJson);
+}
+const json = z.custom<Json>(isJson, "Expected a JSON value");
+export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 /** Reports a bad target as an issue so safeParse stays non-throwing; `parse()` restores its error code. */
 const target = z.unknown().transform((value, ctx) => {
   try { return parseTarget(value); } catch (error) {
@@ -26,19 +43,27 @@ export const bindingSchema = z.object({
   canvasTarget: target,
   workingDirectory: z.string().min(1)
 }).strict();
-export const sessionInputSchema = z.object({ binding: bindingSchema }).strict();
+export const providerNames = ["fake", "claude"] as const;
+export const providerNameSchema = z.enum(providerNames);
+/** `provider` is optional and must name the runner's provider: a client can assert which one will run the session. */
+export const sessionInputSchema = z.object({ binding: bindingSchema, provider: providerNameSchema.optional() }).strict();
 export const contextSchema = z.object({
   selectedNodes: z.array(z.object({ nodeID: id, noteID: id.optional(), content: z.string() }).strict())
 }).strict();
+export const fakeOptionsSchema = z.object({
+  scenario: z.enum(["success", "failure", "permission", "input", "interrupted"]),
+  delayMs: z.number().int().min(0).max(60_000).default(20)
+}).strict();
+export const defaultFakeOptions = { scenario: "success", delayMs: 20 } as const;
 export const promptSchema = z.object({
   requestID: id,
   sessionID,
   text: z.string().min(1),
   context: contextSchema,
-  fake: z.object({
-    scenario: z.enum(["success", "failure", "permission", "input", "interrupted"]),
-    delayMs: z.number().int().min(0).max(60_000).default(20)
-  }).strict().default({ scenario: "success", delayMs: 20 })
+  /** Test controls, accepted only for fake sessions; the runner fills the default for them before storing. */
+  fake: fakeOptionsSchema.optional(),
+  /** Required exactly when the session is uncertain: names its uncertain run and how to continue. */
+  recovery: z.object({ after: id, mode: z.enum(["resume", "fresh"]) }).strict().optional()
 }).strict();
 /**
  * New request IDs must stay addressable as a /v1/runs/{id} path segment: URL parsers drop "." and ".." (even
@@ -49,51 +74,49 @@ export const submitSchema = promptSchema.extend({
   requestID: id.refine(value => value !== "." && value !== ".." && !/\p{Cs}/u.test(value),
     "requestID must not be \".\" or \"..\" and must be well-formed Unicode")
 });
-export const pendingSchema = z.object({
-  id: pendingID, kind: z.enum(["permission", "input"]), message: z.string(), choices: z.array(z.string()).optional()
+const questionSchema = z.object({
+  id: z.string().min(1), header: z.string(), question: z.string(),
+  options: z.array(z.object({ label: z.string(), description: z.string() }).strict()), multiSelect: z.boolean()
 }).strict();
-export const answerSchema = z.object({ pendingID, value: z.string() }).strict();
+/** `questions`: an input request with structured questions, answered by an object keyed by question id. */
+export const pendingSchema = z.object({
+  id: pendingID, kind: z.enum(["permission", "input"]), message: z.string(), choices: z.array(z.string()).optional(),
+  questions: z.array(questionSchema).min(1).optional(), details: z.record(json).optional()
+}).strict();
+export const answerSchema = z.object({
+  pendingID, value: z.union([z.string(), z.record(z.union([z.string(), z.array(z.string())]))])
+}).strict();
 /** The storage schema's CHECK, index and triggers are built from these lists. */
 export const activeStatuses = ["accepted", "running", "waiting_permission", "waiting_input", "stopping"] as const;
 export const terminalStatuses = ["completed", "failed", "cancelled", "interrupted"] as const;
 export const runStatusSchema = z.enum([...activeStatuses, ...terminalStatuses]);
-// JSON data is deliberately opaque at the runner/provider boundary.
-// Checked by hand: a recursive z.union builds an error for every failed branch at every node, and made each read of a
-// stored run ~150µs. Only values JSON.stringify writes as-is pass, so a committed value reloads unchanged.
-function isJson(value: unknown): boolean {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index++) if (!(index in value) || !isJson(value[index])) return false;
-    return true;
-  }
-  if (typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJson);
-}
-const json = z.custom<Json>(isJson, "Expected a JSON value");
-export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 export const errorSchema = z.object({ code: z.string(), message: z.string(), details: z.record(json).optional() }).strict();
 // Provider output is validated before commit so a durable write can never produce state that fails to reload.
+// providerState is the session's conversation checkpoint: any confirmed outcome may carry it (a failed or cancelled
+// turn can still have created or advanced the provider's conversation). An interrupted outcome never does.
 export const outcomeSchema = z.union([
   z.object({ status: z.literal("completed"), result: json, providerState: json.optional() }).strict(),
-  z.object({ status: z.enum(["failed", "interrupted"]), error: errorSchema }).strict(),
-  z.object({ status: z.literal("cancelled") }).strict()
+  z.object({ status: z.literal("failed"), error: errorSchema, providerState: json.optional() }).strict(),
+  z.object({ status: z.literal("cancelled"), providerState: json.optional() }).strict(),
+  z.object({ status: z.literal("interrupted"), error: errorSchema }).strict()
 ]);
+/** Set while the session's latest uncertain run is unreconciled: the run and the native identifiers it recorded. */
+export const uncertainSchema = z.object({ requestID: id, native: json.optional() }).strict();
 export const sessionSchema = z.object({
-  id: sessionID, binding: bindingSchema, provider: z.literal("fake"), createdAt: z.string(),
-  providerState: json.optional()
+  id: sessionID, binding: bindingSchema, provider: providerNameSchema, createdAt: z.string(),
+  providerState: json.optional(), uncertain: uncertainSchema.optional()
 }).strict();
+/** `native`: provider execution identifiers, committed before the provider relies on them and kept to the end. */
 export const runSchema = z.object({
   request: promptSchema, status: runStatusSchema, createdAt: z.string(), updatedAt: z.string(),
   pending: pendingSchema.optional(), result: json.optional(), error: errorSchema.optional(),
-  providerState: json.optional()
+  providerState: json.optional(), native: json.optional()
 }).strict();
 const sequence = z.number().int().positive();
 // Deltas: run_accepted is the only event carrying a request; updates replace every mutable field (absent = cleared).
 export const eventSchema = z.discriminatedUnion("type", [
   z.object({ sequence, type: z.literal("session_created"), session: sessionSchema }).strict(),
-  z.object({ sequence, type: z.literal("session_updated"), sessionID, providerState: json.optional() }).strict(),
+  z.object({ sequence, type: z.literal("session_updated"), sessionID, providerState: json.optional(), uncertain: uncertainSchema.optional() }).strict(),
   z.object({ sequence, type: z.literal("run_accepted"), run: runSchema }).strict(),
   runSchema.omit({ request: true, createdAt: true }).extend({ sequence, type: z.literal("run_updated"), requestID: id }),
   // Retention removed these finished runs and their events.
@@ -104,6 +127,8 @@ export type Session = z.infer<typeof sessionSchema>;
 export type Prompt = z.infer<typeof promptSchema>;
 export type Pending = z.infer<typeof pendingSchema>;
 export type Answer = z.infer<typeof answerSchema>;
+export type ProviderName = z.infer<typeof providerNameSchema>;
+export type FakeOptions = z.infer<typeof fakeOptionsSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunnerEvent = z.infer<typeof eventSchema>;
 export type Change = RunnerEvent extends infer E ? E extends RunnerEvent ? Omit<E, "sequence"> : never : never;

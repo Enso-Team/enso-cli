@@ -100,6 +100,8 @@ describe("real process crash recovery", () => {
     expect(replica.runs.find(run => run.request.requestID === "crash")).toEqual(recovered);
     // The completion transaction is atomic: the result and session checkpoint survive together or not at all.
     expect(replica.sessions.find(s => s.id === p.sessionID)!.providerState).toEqual(wanted === "completed" ? { turn: 1 } : undefined);
+    // Uncertain work leaves its session uncertain: the next prompt must choose how to continue.
+    expect(replica.sessions.find(s => s.id === p.sessionID)!.uncertain).toEqual(wanted === "interrupted" ? { requestID: "crash" } : undefined);
     if (wanted === "interrupted") expect(recovered.error.code).toBe("restart_uncertain");
     else expect(recovered.result).toMatchObject({ context: p.context, text: "Fake response: Persist me" });
   }, 15_000);

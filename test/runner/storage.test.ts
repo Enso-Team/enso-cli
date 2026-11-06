@@ -92,7 +92,7 @@ describe("transactions", () => {
     expect(commit).toHaveBeenCalledTimes(1);
     expect(engine!.events(cursor).events).toEqual([expect.objectContaining({
       sequence: cursor + 1, type: "run_updated", requestID: "waiting", status: "interrupted", error: expect.objectContaining({ code: "restart_uncertain" })
-    })]);
+    }), expect.objectContaining({ sequence: cursor + 2, type: "session_updated", uncertain: { requestID: "waiting" } })]);
     expect(durable(directory)).toEqual(engine!.snapshot());
   });
 
@@ -251,13 +251,13 @@ describe("existing stores", () => {
     expect(() => RunnerStorage.check(directory)).toThrow(storageError(/not an Enso runner database$/));
   });
 
-  it("refuses an unsupported schema version without migrating it", async () => {
+  it.each([1, 3])("refuses schema version %i without migrating it", async version => {
     open();
     engine!.createSession({ binding: binding() });
     abandon();
-    external(db => db.pragma("user_version = 2"));
+    external(db => db.pragma(`user_version = ${version}`));
     const before = readFileSync(path("runner.sqlite"));
-    await expect(startRunner({ directory })).rejects.toEqual(storageError(/Unsupported runner storage version 2/));
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(new RegExp(`Unsupported runner storage version ${version}`)));
     expect(readFileSync(path("runner.sqlite"))).toEqual(before);
   });
 
@@ -282,7 +282,7 @@ describe("existing stores", () => {
   // A crash leaves committed transactions in runner.sqlite-wal. Refusal must not fold them into the main file.
   it.each([
     ["another application's database", null, /not an Enso runner database/],
-    ["a newer runner store", "PRAGMA user_version = 2", /Unsupported runner storage version 2/],
+    ["a newer runner store", "PRAGMA user_version = 3", /Unsupported runner storage version 3/],
     ["a damaged runner store", "DROP TRIGGER events_no_update; UPDATE events SET event_json = json_set(event_json, '$.session.binding', json('{}')) WHERE sequence = 1", /event/]
   ])("refuses %s with a live WAL, leaving the database and WAL unchanged", async (_name, damage, message) => {
     const source = mkdtempSync(join(tmpdir(), "enso-source-"));

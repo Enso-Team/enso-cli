@@ -3,7 +3,7 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import { EnsoCliError } from "../errors.js";
-import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Pending, type Run, type RunnerEvent, type Session } from "./protocol.js";
+import { answerSchema, canonical, defaultFakeOptions, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Json, type Pending, type Prompt, type Run, type RunnerEvent, type Session } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
 import type { RunnerStorage } from "./storage.js";
 
@@ -33,15 +33,17 @@ export class RunnerEngine {
     private readonly provider: RunnerProvider,
     private readonly options: { autoDispatch?: boolean; onFatal?: () => void; reclaimStep?: number } = {}
   ) {
-    // Anything past its dispatch marker may have executed: record it as uncertain, never dispatch it again.
-    this.commit(this.read(() => storage.unfinished()).filter(run => run.status !== "accepted").map(run => this.update(run.request.requestID, "interrupted", {
-      error: { code: "restart_uncertain", message: "Runner stopped after dispatch was recorded; execution may have begun or completed. No automatic replay." }
+    // Anything past its dispatch marker may have executed: record it as uncertain, never dispatch it again, and mark
+    // its session uncertain so the next prompt has to choose how to continue.
+    this.commit(this.read(() => storage.unfinished()).filter(run => run.status !== "accepted").flatMap(run => this.uncertain(run, {
+      code: "restart_uncertain", message: "Runner stopped after dispatch was recorded; execution may have begun or completed. No automatic replay."
     })));
   }
 
   createSession(input: unknown): Session {
     this.assertAccepting();
-    const { binding } = parse(sessionInputSchema, input);
+    const { binding, provider } = parse(sessionInputSchema, input);
+    if (provider !== undefined && provider !== this.provider.name) throw this.mismatch(provider);
     if (!isAbsolute(binding.workingDirectory)) throw new EnsoCliError("invalid_input", "workingDirectory must be absolute");
     try {
       binding.workingDirectory = realpathSync(binding.workingDirectory);
@@ -54,18 +56,29 @@ export class RunnerEngine {
 
   submit(input: unknown): Run {
     this.assertHealthy();
-    const request = parse(submitSchema, input);
-    const existing = this.read(() => this.storage.run(request.requestID));
+    const parsed = parse(submitSchema, input);
+    const existing = this.read(() => this.storage.run(parsed.requestID));
+    // A run's session is retained, so a stored run always finds the session that normalizes its payload.
+    const session = this.read(() => this.storage.session(parsed.sessionID));
+    const request = session ? normalized(parsed, session) : parsed;
     // Idempotency precedes busy/stopping checks, including after a service restart.
     if (existing) {
       if (canonical(existing.request) !== canonical(request)) throw new EnsoCliError("request_conflict", "requestID already belongs to a different payload");
       return existing;
     }
     this.assertAccepting();
-    this.session(request.sessionID);
+    if (!session) throw new EnsoCliError("session_not_found", "Session not found");
+    if (session.provider !== this.provider.name) throw this.mismatch(session.provider);
     if (this.read(() => this.storage.busy(request.sessionID))) {
       throw new EnsoCliError("session_busy", "Only one active prompt is allowed per session");
     }
+    // An uncertain session never continues by default: the client names the uncertain run and a recovery mode.
+    if (session.uncertain && request.recovery?.after !== session.uncertain.requestID) {
+      throw new EnsoCliError("session_uncertain", "The session's last run ended uncertain; resubmit with recovery naming it and a mode (resume or fresh)", {
+        requestID: session.uncertain.requestID, modes: ["resume", "fresh"]
+      });
+    }
+    if (!session.uncertain && request.recovery) throw new EnsoCliError("invalid_input", "recovery applies only while the session is uncertain");
     const now = new Date().toISOString();
     const run: Run = { request, status: "accepted", createdAt: now, updatedAt: now };
     this.commit([{ type: "run_accepted", run }]);
@@ -118,7 +131,7 @@ export class RunnerEngine {
       !["waiting_permission", "waiting_input"].includes(run.status)) {
       throw new EnsoCliError("pending_not_found", "No matching pending request; inspect the current run");
     }
-    if (run.pending.choices && !run.pending.choices.includes(response.value)) throw new EnsoCliError("invalid_input", "Response must match a pending choice");
+    validateAnswer(run.pending, response.value);
     // The answer is not replayed on restart: crossing this boundary is uncertain execution.
     this.commit([this.update(id, "running")]);
     const resolve = active.answer;
@@ -189,6 +202,7 @@ export class RunnerEngine {
     let run: Run | undefined;
     try { run = this.read(() => this.storage.run(id)); } catch { return; }
     if (run?.status !== "accepted") return;
+    const sessionID = run.request.sessionID;
     // Write-ahead dispatch marker: a crash from here onward must never redispatch.
     try { this.commit([this.update(id, "running")]); }
     catch { return; } // commit has already failed the service closed.
@@ -199,41 +213,89 @@ export class RunnerEngine {
       try {
         // An outcome that fails validation is unconfirmed and falls through to interrupted.
         const outcome = outcomeSchema.parse(await this.provider.execute({
-          session: this.session(run.request.sessionID), prompt: run.request, signal: controller.signal,
-          wait: pending => this.wait(id, pendingSchema.parse(pending), controller.signal)
+          session: this.session(sessionID), prompt: run.request, signal: controller.signal,
+          record: native => this.record(id, native),
+          wait: (pending, withdrawn) => this.wait(id, pendingSchema.parse(pending), controller.signal, withdrawn)
         }));
         if (!this.healthy) return;
+        if (outcome.status === "interrupted") return this.commit(this.uncertain(this.run(id), outcome.error));
         const { status, ...fields } = outcome;
-        // The result and the session's conversation checkpoint commit together or not at all.
-        this.commit([this.update(id, status, fields), ...(outcome.status === "completed" && outcome.providerState !== undefined
-          ? [{ type: "session_updated" as const, sessionID: run.request.sessionID, providerState: outcome.providerState }] : [])]);
+        const session = this.session(sessionID);
+        // A completed turn reconciles an uncertain session; a failed or cancelled one leaves the marker for the next
+        // prompt. The result and the session's conversation checkpoint commit together or not at all.
+        const providerState = outcome.providerState ?? session.providerState;
+        const uncertain = status === "completed" ? undefined : session.uncertain;
+        const changed = outcome.providerState !== undefined || uncertain !== session.uncertain;
+        this.commit([this.update(id, status, fields), ...(changed ? [this.sessionUpdate(sessionID, providerState, uncertain)] : [])]);
       } catch {
-        if (this.healthy) this.commit([this.update(id, "interrupted", {
-          error: { code: "provider_uncertain", message: "Provider ended without confirming an outcome; no automatic replay" }
-        })]);
+        if (this.healthy) this.commit(this.uncertain(this.run(id), {
+          code: "provider_uncertain", message: "Provider ended without confirming an outcome; no automatic replay"
+        }));
       } finally { this.active.delete(id); }
     })().catch(() => { /* A failed durable write already poisoned the service. */ });
   }
 
-  private wait(id: string, pending: Pending, signal: AbortSignal): Promise<Answer> {
+  /**
+   * Persists `pending` and resolves with its answer. Rejects when the run is cancelled, and when the provider withdraws
+   * the request (`withdrawn` aborts): a withdrawn request is removed durably, so no answer can reach a later one.
+   */
+  private wait(id: string, pending: Pending, signal: AbortSignal, withdrawn?: AbortSignal): Promise<Answer> {
     signal.throwIfAborted();
+    withdrawn?.throwIfAborted();
     return new Promise((resolve, reject) => {
       const active = this.active.get(id)!;
       // One pending per run: refuse a concurrent wait so the first stays persisted and answerable.
       if (active.answer) return reject(new Error("Provider contract violation: wait() called while another wait is pending"));
-      const aborted = () => { delete active.answer; reject(new Error("Cancelled")); };
-      active.answer = answer => { signal.removeEventListener("abort", aborted); resolve(answer); };
+      const settle = () => {
+        signal.removeEventListener("abort", aborted);
+        withdrawn?.removeEventListener("abort", withdraw);
+        if (active.answer === answer) delete active.answer;
+      };
+      const aborted = () => { settle(); reject(new Error("Cancelled")); };
+      const withdraw = () => {
+        if (active.answer !== answer) return;
+        settle();
+        try {
+          const run = this.run(id);
+          if (run.pending?.id === pending.id && !terminal(run.status)) this.commit([this.update(id, run.status === "stopping" ? "stopping" : "running")]);
+          reject(new Error("Withdrawn"));
+        } catch (error) { reject(error); }
+      };
+      const answer = (value: Answer) => { settle(); resolve(value); };
+      active.answer = answer;
       signal.addEventListener("abort", aborted, { once: true });
+      withdrawn?.addEventListener("abort", withdraw, { once: true });
       try { this.commit([this.update(id, pending.kind === "permission" ? "waiting_permission" : "waiting_input", { pending })]); }
-      catch (error) { signal.removeEventListener("abort", aborted); delete active.answer; reject(error); }
+      catch (error) { settle(); reject(error); }
     });
+  }
+
+  /** Commits the provider's native identifiers, keeping the run's status and pending request. */
+  private record(id: string, native: Json): void {
+    const run = this.run(id);
+    if (terminal(run.status)) throw new Error("Provider contract violation: record() after the run finished");
+    this.commit([this.update(id, run.status, { ...(run.pending ? { pending: run.pending } : {}), native })]);
+  }
+  /** The run becomes interrupted and its session uncertain, carrying the native identifiers the run recorded. */
+  private uncertain(run: Run, error: NonNullable<Run["error"]>): Change[] {
+    const session = this.read(() => this.storage.session(run.request.sessionID))!;
+    const uncertain = { requestID: run.request.requestID, ...(run.native !== undefined ? { native: run.native } : {}) };
+    return [this.update(run.request.requestID, "interrupted", { error }), this.sessionUpdate(session.id, session.providerState, uncertain)];
+  }
+  private sessionUpdate(sessionID: string, providerState: Json | undefined, uncertain: Session["uncertain"]): Change {
+    return { type: "session_updated", sessionID, ...(providerState !== undefined ? { providerState } : {}), ...(uncertain ? { uncertain } : {}) };
+  }
+  private mismatch(provider: string): EnsoCliError {
+    return new EnsoCliError("provider_mismatch", `This runner serves the ${this.provider.name} provider`, { provider, runnerProvider: this.provider.name });
   }
 
   private cancelling(run: Run): Change[] {
     return terminal(run.status) || run.status === "stopping" ? [] : [this.update(run.request.requestID, run.status === "accepted" ? "cancelled" : "stopping")];
   }
+  /** Every update replaces the run's mutable fields; the recorded native identifiers carry forward unless replaced. */
   private update(requestID: string, status: Run["status"], fields: Fields = {}): Change {
-    return { type: "run_updated", requestID, status, updatedAt: new Date().toISOString(), ...fields };
+    const native = "native" in fields ? fields.native : this.read(() => this.storage.run(requestID))?.native;
+    return { type: "run_updated", requestID, status, updatedAt: new Date().toISOString(), ...fields, ...(native !== undefined ? { native } : {}) };
   }
   /** One durable transaction. If it fails (rolled back, or a commit whose outcome is unknown), the service fails
    * closed: nothing further is served or dispatched, and a restart shows which state is durable. */
@@ -265,4 +327,24 @@ export class RunnerEngine {
     this.assertHealthy();
     if (!this.accepting) throw new EnsoCliError("runner_stopping", "Runner is shutting down");
   }
+}
+
+/** Fake sessions store the default test controls; other providers refuse them. */
+function normalized(request: Prompt, session: Session): Prompt {
+  if (session.provider === "fake") return { ...request, fake: request.fake ?? { ...defaultFakeOptions } };
+  if (request.fake) throw new EnsoCliError("invalid_input", "fake options apply only to fake sessions");
+  return request;
+}
+
+/** Choices take one of them; structured questions take an object answering each question id; free input a string. */
+function validateAnswer(pending: Pending, value: Answer["value"]): void {
+  if (pending.questions) {
+    const ids = pending.questions.map(question => question.id).sort();
+    if (typeof value === "string" ? ids.length !== 1 : canonical(Object.keys(value).sort()) !== canonical(ids)) {
+      throw new EnsoCliError("invalid_input", "Response must answer every pending question by id", { questions: ids });
+    }
+    return;
+  }
+  if (typeof value !== "string") throw new EnsoCliError("invalid_input", "Response must be a string");
+  if (pending.choices && !pending.choices.includes(value)) throw new EnsoCliError("invalid_input", "Response must match a pending choice");
 }

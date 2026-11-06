@@ -108,3 +108,59 @@ describe("outcomes", () => {
     expect(engine.session(s.id).providerState).toEqual({ cursor: "c-1" });
   });
 });
+
+describe("native identifiers and session uncertainty", () => {
+  it("keeps recorded native identifiers through waits, stopping and the confirmed outcome", async () => {
+    engine = new RunnerEngine(storage, stub(async ({ record, wait, signal }) => {
+      record({ conversation: "c-1" });
+      await wait(pending("ask")).catch(() => {});
+      signal.throwIfAborted();
+      return { status: "completed", result: null };
+    }));
+    const s = engine.createSession({ binding: binding() });
+    engine.submit(prompt(s.id, "turn"));
+    expect((await status("turn", "waiting_input")).native).toEqual({ conversation: "c-1" });
+    expect(engine.cancel("turn")).toMatchObject({ status: "stopping", native: { conversation: "c-1" } });
+    // The provider threw after the stop: unconfirmed, so interrupted, and the session carries what was recorded.
+    const run = await status("turn", "interrupted");
+    expect(run.native).toEqual({ conversation: "c-1" });
+    expect(engine.session(s.id).uncertain).toEqual({ requestID: "turn", native: { conversation: "c-1" } });
+    expect(durable(directory)).toEqual(engine.snapshot());
+  });
+
+  it("checkpoints confirmed failures and cancellations, and only a completed turn clears uncertainty", async () => {
+    const outcomes: ProviderOutcome[] = [
+      { status: "interrupted", error: { code: "x", message: "unknown" } },
+      { status: "failed", error: { code: "f", message: "failed" }, providerState: { c: 2 } },
+      { status: "cancelled", providerState: { c: 3 } },
+      { status: "completed", result: null }
+    ];
+    engine = new RunnerEngine(storage, stub(async () => outcomes.shift()!));
+    const s = engine.createSession({ binding: binding() });
+    engine.submit(prompt(s.id, "a"));
+    await status("a", "interrupted");
+    const recovery = { after: "a", mode: "resume" };
+    engine.submit({ ...prompt(s.id, "b"), recovery });
+    await status("b", "failed");
+    expect(engine.session(s.id)).toMatchObject({ providerState: { c: 2 }, uncertain: { requestID: "a" } });
+    engine.submit({ ...prompt(s.id, "c"), recovery });
+    await status("c", "cancelled");
+    expect(engine.session(s.id)).toMatchObject({ providerState: { c: 3 }, uncertain: { requestID: "a" } });
+    engine.submit({ ...prompt(s.id, "d"), recovery });
+    await status("d", "completed");
+    expect(engine.session(s.id).providerState).toEqual({ c: 3 });
+    expect(engine.session(s.id).uncertain).toBeUndefined();
+    expect(() => engine!.submit({ ...prompt(s.id, "e"), recovery })).toThrow("recovery applies only while the session is uncertain");
+    expect(durable(directory)).toEqual(engine.snapshot());
+  });
+
+  it("fills fake defaults before comparing resubmissions", async () => {
+    engine = new RunnerEngine(storage, new FakeProvider(), { autoDispatch: false });
+    const s = engine.createSession({ binding: binding() });
+    const bare = { requestID: "bare", sessionID: s.id, text: "Explain", context: { selectedNodes: [] } };
+    const accepted = engine.submit(bare);
+    expect(accepted.request.fake).toEqual({ scenario: "success", delayMs: 20 });
+    expect(engine.submit({ ...bare, fake: { scenario: "success" } })).toEqual(accepted);
+    expect(() => engine!.submit({ ...bare, fake: { scenario: "failure" } })).toThrow("different payload");
+  });
+});

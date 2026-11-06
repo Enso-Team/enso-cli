@@ -7,12 +7,14 @@ import { configDir } from "../config.js";
 import { EnsoCliError } from "../errors.js";
 import { activeStatuses, canonical, eventSchema, terminal, terminalStatuses, type Change, type Run, type RunnerEvent, type Session } from "./protocol.js";
 
-export function runnerDirectory(): string { return join(configDir(), "runner", "v1"); }
+/** Protocol 2 stores live beside, never inside, the protocol 1 directory: neither runner opens the other's store. */
+export function runnerDirectory(): string { return join(configDir(), "runner", "v2"); }
 
 export const databaseName = "runner.sqlite";
 /** `PRAGMA application_id` ("Enso") marks the file as a runner store; `user_version` is its schema version. */
 const applicationID = 0x456e736f;
-const schemaVersion = 1;
+/** 2: protocol 2 events (session uncertainty, run native identifiers, structured pending input, Claude sessions). */
+const schemaVersion = 2;
 /** Files of the pre-SQLite store. Their presence refuses startup: they are neither migrated nor modified. */
 const legacy = (name: string) => name === "state.json" || name === "log.jsonl" || /^\.(state\.json|log\.jsonl)\..+\.tmp$/.test(name);
 /**
@@ -154,8 +156,12 @@ export type StoreCheck = { cursor: number; expiredThrough: number; events: numbe
 
 /** The deltas of docs/runner-protocol.md: an update replaces every mutable field, and an absent one is cleared. */
 function updatedSession(session: Session, event: Event<"session_updated">): Session {
-  const { providerState: _, ...rest } = session;
-  return event.providerState === undefined ? rest : { ...rest, providerState: event.providerState };
+  const { providerState: _, uncertain: __, ...rest } = session;
+  return {
+    ...rest,
+    ...(event.providerState === undefined ? {} : { providerState: event.providerState }),
+    ...(event.uncertain === undefined ? {} : { uncertain: event.uncertain })
+  };
 }
 /** The session or run an event belongs to; the schema checks it against the event itself. */
 function subject(event: RunnerEvent): string | null {

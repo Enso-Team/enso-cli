@@ -206,6 +206,7 @@ export class BridgeClient {
   }
 
   private async send(requestUrl: URL, method: string, headers: Record<string, string>, body?: string): Promise<EnsoEnvelope> {
+    assertBridgeAllowed();
     let response: Response;
     try {
       response = await fetch(requestUrl, { method, headers, body });
@@ -237,6 +238,17 @@ export class BridgeClient {
 
     return parsed.data as EnsoEnvelope;
   }
+}
+
+/**
+ * The local runner sets ENSO_RUNNER_BRIDGE=disabled for the agents it runs. The bridge cannot yet prove which app
+ * instance or pairing answers at an origin, so no bridge request is made on a runner session's behalf.
+ */
+export function assertBridgeAllowed(): void {
+  if (process.env.ENSO_RUNNER_BRIDGE !== "disabled") return;
+  throw new EnsoCliError("bridge_unavailable", "The Enso app bridge is not available to agents run by the local runner", {
+    hint: "The runner captured the canvas selection with the prompt; work from that context instead of reading or changing the canvas"
+  });
 }
 
 function assertLoopbackBridge(url: URL): void {

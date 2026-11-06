@@ -16,8 +16,12 @@ export function applyEvents(replica: Replica, events: RunnerEvent[]): Replica {
     else if (event.type === "run_accepted") next.runs.push(event.run);
     else if (event.type === "session_updated") {
       const index = next.sessions.findIndex(session => session.id === event.sessionID);
-      const { providerState: _, ...session } = next.sessions[index];
-      next.sessions[index] = event.providerState === undefined ? session : { ...session, providerState: event.providerState };
+      const { providerState: _, uncertain: __, ...session } = next.sessions[index];
+      next.sessions[index] = {
+        ...session,
+        ...(event.providerState === undefined ? {} : { providerState: event.providerState }),
+        ...(event.uncertain === undefined ? {} : { uncertain: event.uncertain })
+      };
     } else if (event.type === "runs_deleted") {
       next.runs = next.runs.filter(run => !event.requestIDs.includes(run.request.requestID));
     } else {

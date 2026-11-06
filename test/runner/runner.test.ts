@@ -177,7 +177,8 @@ describe("local runner protocol", () => {
     expect(await raw({ Authorization: "Bearer wrong", "Enso-Runner-Version": "1" })).toMatchObject({ status: 401 });
     const auth = { Authorization: `Bearer ${connection.token}` };
     expect(await raw(auth)).toMatchObject({ status: 426 });
-    expect(await raw({ ...auth, "Enso-Runner-Version": "2" })).toMatchObject({ status: 426 });
+    expect(await raw({ ...auth, "Enso-Runner-Version": "1" })).toMatchObject({ status: 426 });
+    expect(await raw({ ...auth, "Enso-Runner-Version": "3" })).toMatchObject({ status: 426 });
     expect(await raw({ ...auth, "Enso-Runner-Version": "1", Origin: "http://hostile.example" })).toMatchObject({ status: 401 });
     await session();
     for (const name of ["runner.sqlite", "runner.sqlite-wal", "runner.sqlite-shm"]) {
