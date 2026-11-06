@@ -375,20 +375,23 @@ Existing stores are handled explicitly, never discarded:
 By default the store retains every session, run and event, including captured
 context and results, without bounds. `enso runner serve --retain-days N` deletes
 finished runs (`completed`, `failed`, `cancelled`, `interrupted`) whose last update
-is more than N days old, at startup and then hourly. Each deletion is one
+is more than N days old, in a pass that starts once the runner is ready and then
+hourly; startup does not wait for it, and stopping ends it. Each deletion is one
 transaction, of at most 500 runs, that appends a `runs_deleted` event naming them,
 advances the expired cursor to their last event, and deletes the run rows and all
 their events. The same transaction deletes each session's `session_updated`
 checkpoints at or below the expired cursor except its latest: each replaces every
 mutable field, so only an expired cursor could need the older ones. `runs_deleted`
-events are kept. Hourly passes serve requests between transactions. Each pass then
-releases free pages (`auto_vacuum = INCREMENTAL`) in steps of 2048 pages (8 MiB
-at SQLite's default 4 KiB page), serving requests between them. In WAL mode the
+events are kept. Passes serve requests between transactions. Once at least 256
+pages (1 MiB at SQLite's default 4 KiB page) are free, a pass then releases them
+all (`auto_vacuum = INCREMENTAL`) in steps of 2048 pages (8 MiB), serving
+requests between them; less is left for later writes to reuse. In WAL mode the
 file shrinks at the next checkpoint, which an open `runner check` read
 transaction can hold back. A pass goes by the pages actually
-free, not by what it deleted, so space left by a pass that shutdown stopped, or
-whose reclaim failed (reported as a process warning), is returned by the next;
-meanwhile later writes reuse it. Sessions, and runs that are still active, are
+free, not by what it deleted, so space left by a pass that shutdown stopped is
+returned by the next; meanwhile later writes reuse it. A failure while releasing
+pages stops the runner like any failed durable write (`runner_storage_failure`);
+the deletions it follows are already committed. Sessions, and runs that are still active, are
 never deleted.
 After deletion, the run's `requestID` is unknown (`run_not_found`) and free for a
 new submission. Pagination of snapshots needs a later design.

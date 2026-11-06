@@ -479,26 +479,20 @@ export class RunnerStorage {
   }
 
   /**
-   * Returns up to `pages` pages freed by retention to the file system, and how many free pages remain. Best effort:
-   * the deletion has already committed, and a failure only leaves free pages for later writes to reuse, so it must
-   * not fail the runner. It is still reported, since an I/O or corruption error here is the first sign of a fault
-   * the next commit will fail closed on, and counts as nothing left so the caller stops.
+   * Releases up to `pages` free pages to the file system if at least `minimum` are free, and returns how many it
+   * released. Throws what SQLite throws: the caller fails closed, as on any other durable write.
    */
-  reclaim(pages: number): number {
+  reclaim(pages: number, minimum = 1): number {
     if (!this.locked) throw new Error("Storage is not owned");
-    if (!Number.isSafeInteger(pages) || pages <= 0) throw new Error("Reclaim needs a positive page count");
+    if (![pages, minimum].every(count => Number.isSafeInteger(count) && count > 0)) throw new Error("Reclaim needs positive page counts");
     const db = this.database();
     const free = () => db.pragma("freelist_count", { simple: true }) as number;
-    try {
-      // Most passes free nothing: skip the write transaction.
-      if (free() === 0) return 0;
-      db.pragma(`incremental_vacuum(${pages})`);
-      return free();
-    } catch (error) {
-      const code = (error as { code?: unknown } | null)?.code;
-      process.emitWarning(`Runner could not return freed pages to the file system: ${(error as Error)?.message ?? String(error)}`, { code: typeof code === "string" ? code : "runner_reclaim_failed" });
-      return 0;
-    }
+    const before = free();
+    // Most passes free little or nothing: skip the write transaction and its full fsync.
+    if (before < minimum) return 0;
+    db.pragma(`incremental_vacuum(${pages})`);
+    // Measured around this step alone, so pages that commits free between steps neither end a pass nor count here.
+    return before - free();
   }
 
   private apply(db: Database, event: RunnerEvent): void {

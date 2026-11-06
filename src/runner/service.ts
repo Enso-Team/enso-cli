@@ -142,9 +142,6 @@ export async function startRunner(options: { directory?: string; provider?: Runn
         }
       }
     });
-    const retain = options.retainDays;
-    const expire = retain === undefined ? undefined : () => engine.deleteFinishedBefore(new Date(Date.now() - retain * 24 * 60 * 60 * 1000));
-    await expire?.();
     // Ownership is established before removing stale runtime files.
     rmSync(socketPath, { force: true });
     rmSync(join(storage.directory, "connection.json"), { force: true });
@@ -155,14 +152,22 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     chmodSync(socketPath, 0o600);
     storage.write("connection.json", { protocolVersion: runnerVersion, socketPath, token, pid: process.pid });
     initialized = true;
-    // A failed deletion has already failed the engine closed, which stops the service; stopping refuses the rest.
-    // A pass still working through a backlog an hour later is left to finish rather than joined by a second.
-    let expiring = false;
-    if (expire) (retention = setInterval(() => {
-      if (expiring) return;
-      expiring = true;
-      void expire().catch(() => { /* see above */ }).finally(() => { expiring = false; });
-    }, retentionIntervalMs)).unref();
+    // Passes run once the service is up, so a backlog never holds back `ready` and stop() or a signal ends a pass at
+    // its next step. The first starts now: its first batch is deleted before startRunner returns, the rest is served
+    // between. A failed deletion or reclaim has already failed the engine closed, which stops the service; stopping
+    // refuses the rest. A pass still working through a backlog an hour later is left to finish rather than joined.
+    const retain = options.retainDays;
+    if (retain !== undefined) {
+      let expiring = false;
+      const expire = () => {
+        if (expiring) return;
+        expiring = true;
+        void engine.deleteFinishedBefore(new Date(Date.now() - retain * 24 * 60 * 60 * 1000))
+          .catch(() => { /* see above */ }).finally(() => { expiring = false; });
+      };
+      expire();
+      (retention = setInterval(expire, retentionIntervalMs)).unref();
+    }
     if (options.autoDispatch !== false) engine.dispatchAccepted();
     return { directory: storage.directory, socketPath, engine, closed, stop };
   } catch (error) {

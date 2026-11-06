@@ -17,6 +17,9 @@ const retentionBatch = 500;
  * step is a write transaction with a full fsync, so a step stays short while a large backlog takes several steps with
  * requests served between them. */
 const reclaimStep = 2048;
+/** Free pages (1 MiB at 4 KiB pages) below which a pass releases nothing: ordinary churn frees a few pages between
+ * passes, and later writes reuse them for less than a write transaction and a full fsync would cost. */
+const reclaimMinimum = 256;
 
 /** Durable state lives only in storage. Every decision and its commit run without yielding, and storage calls are
  * synchronous, so an idempotency or active-slot check cannot interleave with another request's commit. */
@@ -129,9 +132,10 @@ export class RunnerEngine {
    * between batches so requests are served meanwhile, and stops once the runner stops accepting. Each batch is still
    * chosen and committed without yielding, and a finished run never changes, so interleaving is safe.
    *
-   * Then returns free pages to the file system in bounded steps, also yielding between them. It goes by the pages
-   * actually free rather than by what this pass deleted, so a pass cut short by shutdown, or whose reclaim failed,
-   * is finished by the next one.
+   * Then, once at least `reclaimMinimum` pages are free, returns them all to the file system in bounded steps, also
+   * yielding between them. It goes by the pages actually free rather than by what this pass deleted, so a pass cut
+   * short by shutdown is finished by the next one. A failure there fails the runner closed, like any durable write:
+   * an I/O or corruption error is a fault the next commit would meet anyway.
    */
   async deleteFinishedBefore(cutoff: Date): Promise<number> {
     this.assertAccepting();
@@ -146,11 +150,14 @@ export class RunnerEngine {
       if (requestIDs.length < retentionBatch) break;
     }
     const step = this.options.reclaimStep ?? reclaimStep;
-    for (let free = Infinity; this.accepting;) {
-      const left = this.storage.reclaim(step);
-      // Stops on a failure (reported as 0) and on a step that frees nothing, which cannot otherwise end.
-      if (left === 0 || left >= free) break;
-      free = left;
+    // Stops below the minimum and on a step that released nothing, which could otherwise repeat forever. Each step
+    // measures only itself, so pages that commits free between steps are drained too.
+    for (let minimum = reclaimMinimum; this.accepting; minimum = 1) {
+      this.assertHealthy();
+      let released: number;
+      try { released = this.storage.reclaim(step, minimum); }
+      catch { throw this.fail("Returning freed space failed; runner stopped. Restart and inspect durable state"); }
+      if (!released) break;
       await yieldTurn();
     }
     return deleted;

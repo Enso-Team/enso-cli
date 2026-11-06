@@ -482,13 +482,36 @@ describe("retention", () => {
     expect(external(db => db.pragma("freelist_count", { simple: true }))).toBe(0);
   });
 
+  it("keeps releasing when commits free more pages between its steps", async () => {
+    open({ autoDispatch: false, reclaimStep: 32 });
+    external(db => db.exec("CREATE TABLE scratch (body BLOB); INSERT INTO scratch VALUES (randomblob(1048576))"));
+    const s = engine!.createSession({ binding: binding() });
+    for (const id of ["a", "b", "c"]) { engine!.submit(prompt(s.id, id, "success", "x".repeat(600 * 1024))); engine!.cancel(id); }
+    const pass = engine!.deleteFinishedBefore(new Date(Date.now() + 1000));
+    // The first step ran before the pass yielded; a commit now frees far more than a step releases.
+    external(db => db.exec("DROP TABLE scratch"));
+    expect(await pass).toBe(3);
+    expect(external(db => db.pragma("freelist_count", { simple: true }))).toBe(0);
+  });
+
+  it("leaves a few free pages for later writes instead of releasing them", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "done", "success", "x".repeat(64 * 1024)));
+    engine!.cancel("done");
+    const spy = vi.spyOn(Database.prototype, "pragma");
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(1);
+    expect(spy.mock.calls.filter(([source]) => source.startsWith("incremental_vacuum"))).toEqual([]);
+    expect(external(db => db.pragma("freelist_count", { simple: true }))).toBeGreaterThan(0);
+  });
+
   it("leaves the rest of the free space to the next pass when shutdown stops one", async () => {
     open({ autoDispatch: false, reclaimStep: 32 });
     const s = engine!.createSession({ binding: binding() });
-    for (const id of ["a", "b"]) { engine!.submit(prompt(s.id, id, "success", "x".repeat(600 * 1024))); engine!.cancel(id); }
+    for (const id of ["a", "b", "c"]) { engine!.submit(prompt(s.id, id, "success", "x".repeat(600 * 1024))); engine!.cancel(id); }
     const pass = engine!.deleteFinishedBefore(new Date(Date.now() + 1000));
     await engine!.shutdown();
-    expect(await pass).toBe(2);
+    expect(await pass).toBe(3);
     const free = () => external(db => db.pragma("freelist_count", { simple: true }) as number);
     expect(free()).toBeGreaterThan(0);
     open({ autoDispatch: false });
@@ -497,29 +520,39 @@ describe("retention", () => {
     expect(free()).toBe(0);
   });
 
-  it("keeps serving when returning freed space fails after the deletion committed", async () => {
-    open({ autoDispatch: false });
+  // The vacuum itself, or the count after it: either way SQLite failed beneath a write, so the runner stops.
+  it.each([
+    ["the vacuum", (source: string) => source.startsWith("incremental_vacuum")],
+    ["counting what is left", (() => { let counts = 0; return (source: string) => source === "freelist_count" && ++counts === 2; })()]
+  ])("fails closed when %s fails, keeping the deletion", async (_name, failing) => {
+    let fatal = 0;
+    open({ autoDispatch: false, onFatal: () => fatal++ });
     const s = engine!.createSession({ binding: binding() });
-    engine!.submit(prompt(s.id, "done", "success", "x".repeat(64 * 1024)));
-    engine!.cancel("done");
+    for (const id of ["a", "b", "c"]) { engine!.submit(prompt(s.id, id, "success", "x".repeat(600 * 1024))); engine!.cancel(id); }
     const pragma = Database.prototype.pragma;
     const spy = vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
-      if (source.startsWith("incremental_vacuum")) throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+      if (failing(source)) throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
       return pragma.call(this, source, options);
     });
-    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(1);
-    expect(spy.mock.calls.map(([source]) => source)).toContain("incremental_vacuum(2048)");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("disk I/O error"), { code: "SQLITE_IOERR" });
-    expect(engine!.snapshot().runs).toEqual([]);
-    engine!.submit(prompt(s.id, "next"));
-    expect(engine!.run("next").status).toBe("accepted");
-    // The next pass returns the space this one could not, though it deletes nothing.
+    const failure = expect.objectContaining({ body: expect.objectContaining({ code: "runner_storage_failure" }) });
+    await expect(engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).rejects.toEqual(failure);
+    expect(fatal).toBe(1);
+    expect(() => engine!.submit(prompt(s.id, "next"))).toThrow(failure);
     spy.mockRestore();
+    // After a restart the deletion is durable, and the next pass returns the space though it deletes nothing.
+    open({ autoDispatch: false });
+    expect(engine!.snapshot().runs).toEqual([]);
     const free = () => external(db => db.pragma("freelist_count", { simple: true }) as number);
-    expect(free()).toBeGreaterThan(0);
-    expect(await engine!.deleteFinishedBefore(new Date(Date.now() - 1000))).toBe(0);
+    expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(0);
     expect(free()).toBe(0);
+  });
+
+  it("serve --retain-days is ready, and stops, without waiting for its first pass", async () => {
+    let passes = 0;
+    vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore").mockImplementation(() => { passes++; return new Promise<number>(() => {}); });
+    const service = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    expect(passes).toBe(1);
+    await service.stop();
   });
 
   it("serve --retain-days deletes expired runs at startup", async () => {
