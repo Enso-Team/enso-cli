@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { EnsoEnvelope } from "../errors.js";
 import { agentIdsForDisplayNames, discoverSkillAgents } from "../skill-agents.js";
 

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 
 const targetSchema = z.object({ vaultID: z.string().uuid(), canvasID: z.string().uuid() }).strict();

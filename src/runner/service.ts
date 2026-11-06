@@ -18,6 +18,7 @@ const errorStatus = new Map<string, number>([
   ["unauthorized", 401], ["payload_too_large", 413],
   ["incompatible_runner_version", 426],
   ["session_busy", 409], ["request_conflict", 409], ["pending_not_found", 409], ["runner_stopping", 409],
+  ["session_uncertain", 409], ["provider_mismatch", 409],
   ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404], ["cursor_expired", 410],
   ["runner_storage_failure", 503]
 ]);
@@ -113,7 +114,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
       throw new EnsoCliError("unauthorized", "Runner authentication required");
     }
     if (request.headers[runnerVersionHeader.toLowerCase()] !== String(runnerVersion)) {
-      throw new EnsoCliError("incompatible_runner_version", "This runner requires protocol version 1", { supportedVersions: [runnerVersion] });
+      throw new EnsoCliError("incompatible_runner_version", `This runner requires protocol version ${runnerVersion}`, { supportedVersions: [runnerVersion] });
     }
     const target = request.url ?? "/";
     // Route on the raw path: URL normalization would rewrite dot segments (even percent-encoded) into other routes.

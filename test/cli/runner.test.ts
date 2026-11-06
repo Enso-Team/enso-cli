@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,9 +22,9 @@ function start(args: string[]) {
   delete env.ENSO_VAULT_ID; delete env.ENSO_CANVAS_ID;
   return spawn(process.execPath, ["--import", "tsx", "src/index.ts", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
 }
-async function serve() {
+async function serve(provider: string[] = ["--provider", "fake"]) {
   const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
-  const service = child = start(["runner", "serve", "--provider", "fake", "--directory", path]);
+  const service = child = start(["runner", "serve", ...provider, "--directory", path]);
   const output = { stdout: "", stderr: "", directory: path, exited: once(service, "close") };
   service.stdout!.on("data", chunk => { output.stdout += chunk; });
   service.stderr!.on("data", chunk => { output.stderr += chunk; });
@@ -46,7 +46,7 @@ async function command(args: string[]) {
 it("runs the standalone CLI service without an app and gracefully shuts down", async () => {
   const output = await serve();
   const { directory } = output;
-  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 1 });
+  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 2, provider: "fake" });
   const created = await command(["runner", "call", "POST", "/v1/sessions", "--directory", directory, "--json", JSON.stringify({ binding: {
     bridgeUrl: "http://127.0.0.1:17650", canvasTarget: {
       vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
@@ -171,18 +171,48 @@ it("names the range of --retain-days when a value is outside it", async () => {
   expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", message: "--retain-days must be a whole number of days from 1 to 36500" });
 });
 
-it("rejects unsupported providers with a structured CLI error", async () => {
-  const result = await command(["runner", "serve", "--provider", "claude"]);
-  expect(result.code).toBe(1);
-  expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
-});
+it("rejects unsupported providers and Claude options without the Claude provider", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  for (const args of [["--provider", "openai"], ["--provider", "fake", "--claude-model", "x"], ["--provider", "claude", "--claude-permission-mode", "bypassPermissions"]]) {
+    const result = await command(["runner", "serve", ...args, "--directory", path]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+  }
+  expect(leftovers(path)).toEqual([]);
+}, 15_000);
+
+it("refuses a Claude executable that is missing, not executable, or a directory before touching runner files", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  writeFileSync(join(path, "plain"), "", { mode: 0o644 });
+  mkdirSync(join(path, "folder"));
+  for (const executable of [join(path, "missing"), join(path, "plain"), join(path, "folder")]) {
+    const result = await command(["runner", "serve", "--provider", "claude", "--claude-executable", executable, "--directory", path]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", message: "--claude-executable must be an executable file" });
+  }
+  expect(leftovers(path)).toEqual([]);
+}, 15_000);
+
+it("serves the Claude provider when selected and refuses sessions that assert another provider", async () => {
+  const output = await serve(["--provider", "claude", "--claude-permission-mode", "acceptEdits"]);
+  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 2, provider: "claude" });
+  const binding = { bridgeUrl: "http://127.0.0.1:17650", canvasTarget: {
+    vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
+  }, workingDirectory: output.directory };
+  const refused = await command(["runner", "call", "POST", "/v1/sessions", "--directory", output.directory, "--json", JSON.stringify({ binding, provider: "fake" })]);
+  expect(JSON.parse(refused.stderr).error).toMatchObject({ code: "provider_mismatch", details: { provider: "fake", runnerProvider: "claude" } });
+  const created = await command(["runner", "call", "POST", "/v1/sessions", "--directory", output.directory, "--json", JSON.stringify({ binding, provider: "claude" })]);
+  expect(JSON.parse(created.stdout).data).toMatchObject({ provider: "claude" });
+  expect((await command(["runner", "shutdown", "--directory", output.directory])).code).toBe(0);
+  await output.exited;
+}, 20_000);
 
 it("fails runner calls whose socket reply is not an envelope", async () => {
   const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
   const replies = ['{"error":"x"}', "[]", '{"ok":false,"error":{"code":"route_not_found","message":"missing"}}'];
   const server = createServer((_, response) => { response.end(replies.shift()); });
   await new Promise<void>(resolve => server.listen(join(path, "control.sock"), resolve));
-  writeFileSync(join(path, "connection.json"), JSON.stringify({ socketPath: join(path, "control.sock"), token: "t", protocolVersion: 1, pid: process.pid }));
+  writeFileSync(join(path, "connection.json"), JSON.stringify({ socketPath: join(path, "control.sock"), token: "t", protocolVersion: 2, pid: process.pid }));
   try {
     for (const method of ["GET", "POST"]) {
       const result = await command(["runner", "call", method, "/v1/snapshot", "--directory", path]);

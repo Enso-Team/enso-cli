@@ -108,3 +108,73 @@ describe("outcomes", () => {
     expect(engine.session(s.id).providerState).toEqual({ cursor: "c-1" });
   });
 });
+
+describe("native identifiers and session uncertainty", () => {
+  it("keeps recorded native identifiers through waits, stopping and the confirmed outcome", async () => {
+    engine = new RunnerEngine(storage, stub(async ({ record, wait, signal }) => {
+      record({ conversation: "c-1" });
+      await wait(pending("ask")).catch(() => {});
+      signal.throwIfAborted();
+      return { status: "completed", result: null };
+    }));
+    const s = engine.createSession({ binding: binding() });
+    engine.submit(prompt(s.id, "turn"));
+    expect((await status("turn", "waiting_input")).native).toEqual({ conversation: "c-1" });
+    expect(engine.cancel("turn")).toMatchObject({ status: "stopping", native: { conversation: "c-1" } });
+    // The provider threw after the stop: unconfirmed, so interrupted, and the session carries what was recorded.
+    const run = await status("turn", "interrupted");
+    expect(run.native).toEqual({ conversation: "c-1" });
+    expect(engine.session(s.id).uncertain).toEqual({ requestID: "turn", native: { conversation: "c-1" } });
+    expect(durable(directory)).toEqual(engine.snapshot());
+  });
+
+  it("checkpoints confirmed outcomes; a completed turn, or a confirmed one that sets or clears the checkpoint, clears uncertainty", async () => {
+    const outcomes: ProviderOutcome[] = [
+      { status: "interrupted", error: { code: "x", message: "unknown" } },
+      { status: "failed", error: { code: "f", message: "failed" } },
+      { status: "cancelled", providerState: { c: 3 } },
+      { status: "interrupted", error: { code: "y", message: "unknown" } },
+      { status: "failed", error: { code: "gone", message: "conversation gone" }, providerState: null },
+      { status: "interrupted", error: { code: "z", message: "unknown" } },
+      { status: "completed", result: null }
+    ];
+    engine = new RunnerEngine(storage, stub(async () => outcomes.shift()!));
+    const s = engine.createSession({ binding: binding() });
+    engine.submit(prompt(s.id, "a"));
+    await status("a", "interrupted");
+    // A confirmed failure that leaves the checkpoint alone has not settled recovery.
+    engine.submit({ ...prompt(s.id, "b"), recovery: { after: "a", mode: "fresh" } });
+    await status("b", "failed");
+    expect(engine.session(s.id).uncertain).toEqual({ requestID: "a" });
+    expect(engine.session(s.id).providerState).toBeUndefined();
+    // One that sets it has: the session continues from that checkpoint.
+    engine.submit({ ...prompt(s.id, "c"), recovery: { after: "a", mode: "resume" } });
+    await status("c", "cancelled");
+    expect(engine.session(s.id).providerState).toEqual({ c: 3 });
+    expect(engine.session(s.id).uncertain).toBeUndefined();
+    engine.submit(prompt(s.id, "d"));
+    await status("d", "interrupted");
+    // A null checkpoint clears both the checkpoint and the marker.
+    engine.submit({ ...prompt(s.id, "e"), recovery: { after: "d", mode: "resume" } });
+    await status("e", "failed");
+    expect(engine.session(s.id)).not.toHaveProperty("providerState");
+    expect(engine.session(s.id)).not.toHaveProperty("uncertain");
+    engine.submit(prompt(s.id, "f"));
+    await status("f", "interrupted");
+    engine.submit({ ...prompt(s.id, "g"), recovery: { after: "f", mode: "resume" } });
+    await status("g", "completed");
+    expect(engine.session(s.id).uncertain).toBeUndefined();
+    expect(() => engine!.submit({ ...prompt(s.id, "h"), recovery: { after: "f", mode: "resume" } })).toThrow("recovery applies only while the session is uncertain");
+    expect(durable(directory)).toEqual(engine.snapshot());
+  });
+
+  it("fills fake defaults before comparing resubmissions", async () => {
+    engine = new RunnerEngine(storage, new FakeProvider(), { autoDispatch: false });
+    const s = engine.createSession({ binding: binding() });
+    const bare = { requestID: "bare", sessionID: s.id, text: "Explain", context: { selectedNodes: [] } };
+    const accepted = engine.submit(bare);
+    expect(accepted.request.fake).toEqual({ scenario: "success", delayMs: 20 });
+    expect(engine.submit({ ...bare, fake: { scenario: "success" } })).toEqual(accepted);
+    expect(() => engine!.submit({ ...bare, fake: { scenario: "failure" } })).toThrow("different payload");
+  });
+});

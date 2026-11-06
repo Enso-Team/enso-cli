@@ -3,10 +3,10 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runnerCall } from "../../src/runner/client.js";
 import { startRunner, type RunnerService } from "../../src/runner/service.js";
-import { FakeProvider, type Execution } from "../../src/runner/provider.js";
+import { FakeProvider, type Execution, type RunnerProvider } from "../../src/runner/provider.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
 import { RunnerEngine } from "../../src/runner/engine.js";
 import { applyEvents, durable, empty, type Replica } from "./replica.js";
@@ -100,12 +100,48 @@ describe("real process crash recovery", () => {
     expect(replica.runs.find(run => run.request.requestID === "crash")).toEqual(recovered);
     // The completion transaction is atomic: the result and session checkpoint survive together or not at all.
     expect(replica.sessions.find(s => s.id === p.sessionID)!.providerState).toEqual(wanted === "completed" ? { turn: 1 } : undefined);
+    // Uncertain work leaves its session uncertain: the next prompt must choose how to continue.
+    expect(replica.sessions.find(s => s.id === p.sessionID)!.uncertain).toEqual(wanted === "interrupted" ? { requestID: "crash" } : undefined);
     if (wanted === "interrupted") expect(recovered.error.code).toBe("restart_uncertain");
     else expect(recovered.result).toMatchObject({ context: p.context, text: "Fake response: Persist me" });
   }, 15_000);
 });
 
 describe("storage recovery guards", () => {
+  it.each(["fake", "claude"] as const)("preserves accepted %s work when restarting with the other provider", async name => {
+    const execute = vi.fn<RunnerProvider["execute"]>(async () => ({ status: "completed", result: "done" }));
+    const provider: RunnerProvider = { name, execute };
+    const storage = new RunnerStorage(directory); storage.acquire();
+    const engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+    for (const requestID of ["crash", "cancel-me"]) {
+      const session = engine.createSession({ binding: binding() });
+      engine.submit({ requestID, sessionID: session.id, text: "Persist me", context: { selectedNodes: [] } });
+    }
+    const accepted = engine.snapshot();
+    // Simulate a crash after acceptance, before either prompt was dispatched.
+    storage.release();
+
+    const wrongExecute = vi.fn<RunnerProvider["execute"]>(async () => ({ status: "completed", result: "wrong provider" }));
+    service = await startRunner({ directory, provider: { name: name === "fake" ? "claude" : "fake", execute: wrongExecute } });
+    service.engine.dispatchAccepted();
+    expect(wrongExecute).not.toHaveBeenCalled();
+    expect(service.engine.snapshot()).toEqual(accepted);
+    expect(await call("GET", "/v1/runs/crash")).toEqual({ ok: true, data: accepted.runs[0] });
+    expect(await call("POST", "/v1/runs/cancel-me/cancel")).toMatchObject({ ok: true, data: { status: "cancelled" } });
+    const beforeStop = service.engine.snapshot();
+    await service.stop(); service = undefined;
+    // Gracefully stopping the other provider must also leave the remaining prompt accepted.
+    expect(durable(directory)).toEqual(beforeStop);
+
+    service = await startRunner({ directory, provider });
+    expect(await waitStatus("completed")).toMatchObject({ request: accepted.runs[0].request, result: "done" });
+    service.engine.dispatchAccepted();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].session.provider).toBe(name);
+    expect(service.engine.run("cancel-me").status).toBe("cancelled");
+    expect(wrongExecute).not.toHaveBeenCalled();
+  });
+
   it("recovers pending accepted work with normalized fake defaults", async () => {
     const storage = new RunnerStorage(directory); storage.acquire();
     const engine = new RunnerEngine(storage, new FakeProvider(), { autoDispatch: false });

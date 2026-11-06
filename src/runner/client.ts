@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { request } from "node:http";
 import { basename, dirname, join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { envelopeSchema } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 import { runnerVersion, runnerVersionHeader } from "./protocol.js";
@@ -42,7 +42,7 @@ function discover(directory: string): Connection {
     connection = z.object({ socketPath: z.string(), token: z.string().min(1), protocolVersion: z.number(), pid: z.number().int().positive() }).parse(
       JSON.parse(readFileSync(join(directory, "connection.json"), "utf8"))
     );
-  } catch { throw new EnsoCliError("runner_unavailable", "No runner connection found; start `enso runner serve --provider fake`"); }
+  } catch { throw new EnsoCliError("runner_unavailable", "No runner connection found; start `enso runner serve --provider <fake|claude>`"); }
   if (connection.protocolVersion !== runnerVersion) throw new EnsoCliError("incompatible_runner_version", "Runner discovery uses an incompatible protocol version");
   // Compare canonical directories so equivalent spellings (symlinks, relative paths) of the store agree.
   let expectedSocket = false;
