@@ -102,6 +102,8 @@ class Turn {
   private interruptRequested = false;
   private interrupt: "pending" | "acknowledged" | "failed" | undefined;
   private sawConversation = false;
+  /** This turn's result has arrived: later callbacks have no request left to ask in. */
+  private finished = false;
   private stderr = "";
   /** Serializes callbacks: the runner keeps one pending request per run. */
   private callbacks = Promise.resolve();
@@ -139,6 +141,7 @@ class Turn {
         if (messageSessionID(frame) === this.input.conversationID) this.sawConversation = true;
         if (frame.type !== "result" || isResultForOtherTurn(frame, this.input.promptUUID)) continue;
         const outcome = this.outcome(frame);
+        this.finished = true;
         // Let the CLI finish writing the conversation and exit on end of input before it is closed.
         endInput();
         await Promise.race([drain(iterator), new Promise(resolve => setTimeout(resolve, stopTimeoutMs).unref())]);
@@ -186,7 +189,7 @@ class Turn {
   }
 
   private options(): Options {
-    const canUseTool: CanUseTool = (toolName, toolInput, options) => this.serialized(options.signal, () => this.decide(toolName, toolInput, options));
+    const canUseTool: CanUseTool = (toolName, toolInput, options) => this.serialized(options, () => this.decide(toolName, toolInput, options));
     return {
       cwd: this.input.cwd,
       ...conversationOptions(this.input.conversationID, this.input.resume),
@@ -216,12 +219,12 @@ class Turn {
 
   /**
    * Callbacks can arrive concurrently (parallel tool calls). Each waits its turn here, unpersisted, and becomes the
-   * run's pending request only when the earlier one is settled; a callback withdrawn or cancelled while waiting is
-   * denied without ever being shown.
+   * run's pending request only when the earlier one is settled; a callback withdrawn or cancelled while waiting, or
+   * reaching its turn after this turn's result, is denied without ever being shown.
    */
-  private serialized(withdrawn: AbortSignal, decide: () => Promise<PermissionResult>): Promise<PermissionResult> {
+  private serialized({ signal: withdrawn, toolUseID }: Parameters<CanUseTool>[2], decide: () => Promise<PermissionResult>): Promise<PermissionResult> {
     const turn = this.callbacks.then(async () => {
-      if (withdrawn.aborted || this.input.signal.aborted) return cancelled();
+      if (withdrawn.aborted || this.input.signal.aborted || this.finished) return cancelled(toolUseID);
       return decide();
     });
     this.callbacks = turn.then(() => undefined, () => undefined);
@@ -261,8 +264,8 @@ class Turn {
   }
 }
 
-function cancelled(toolUseID?: string): PermissionResult {
-  return { behavior: "deny", message: "User cancelled tool execution.", interrupt: true, decisionClassification: "user_reject", ...(toolUseID ? { toolUseID } : {}) };
+function cancelled(toolUseID: string): PermissionResult {
+  return { behavior: "deny", message: "User cancelled tool execution.", interrupt: true, decisionClassification: "user_reject", toolUseID };
 }
 /** JSON as JSON.stringify writes it: drops undefined and non-plain values. */
 function plain(value: unknown): Json {
