@@ -12,6 +12,8 @@ export interface CodexChild {
   readonly stdin: Writable;
   readonly stdout: Readable;
   readonly stderr: Readable;
+  /** Whether the process or any member of its process group still exists, even after the leader exits. */
+  isAlive(): boolean;
   /** Signals the process and everything it started. */
   kill(signal: NodeJS.Signals): void;
   on(event: "spawn", listener: () => void): unknown;
@@ -66,7 +68,8 @@ export interface CodexConnection {
   readonly terminated: Promise<CodexTermination>;
   /** The latest standard error output, bounded. */
   stderr(): string;
-  /** Ends the Effect scope, closes stdin, then escalates SIGTERM and SIGKILL until the process has exited. Idempotent. */
+  /** Rejects outstanding RPCs, ends the Effect scope, closes stdin, then escalates SIGTERM and SIGKILL for the process
+   * group, including children of an exited leader. Cleanup is bounded and idempotent. */
   close(): Promise<void>;
 }
 
@@ -76,7 +79,7 @@ export type CodexConnectOptions = {
   cwd: string;
   env: NodeJS.ProcessEnv;
   onDiagnostic?: (diagnostic: CodexDiagnostic) => void;
-  /** How long each cleanup step (stdin EOF, SIGTERM, SIGKILL) waits for the process to exit. */
+  /** How long each cleanup step (stdin EOF, SIGTERM, SIGKILL) waits for the process group to exit. */
   exitGraceMs?: number;
   /** Replaces the real spawn (tests replay a transcript through it). */
   spawn?: CodexSpawn;

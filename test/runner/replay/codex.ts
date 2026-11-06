@@ -130,7 +130,7 @@ export function codexReplay(transcripts: Transcript | Transcript[]) {
     try { replay = route(spawnFrame(command, args, cwd, env)); }
     catch (error) {
       // Not a process the transcript expects: fail the spawn, as an executable that cannot start would.
-      const child = Object.assign(events, { stdin: new PassThrough(), stdout, stderr, kill: () => {} }) as unknown as CodexChild;
+      const child = Object.assign(events, { stdin: new PassThrough(), stdout, stderr, isAlive: () => false, kill: () => {} }) as unknown as CodexChild;
       setImmediate(() => events.emit("error", error));
       return child;
     }
@@ -192,6 +192,7 @@ export function codexReplay(transcripts: Transcript | Transcript[]) {
     const child = Object.assign(events, {
       get pid() { return state.pid; },
       stdin, stdout, stderr,
+      isAlive: () => !state.exited,
       kill: (signal: NodeJS.Signals) => {
         if (state.exited) return;
         state.signals.push(signal);

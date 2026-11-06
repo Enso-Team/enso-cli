@@ -377,7 +377,12 @@ class Turn {
   private stop(): void {
     this.interruptRequested = true;
     // Time for Codex to acknowledge the interrupt and then end the turn.
-    this.timer = setTimeout(() => this.resolve({ kind: "expired" }), 2 * this.input.stopTimeoutMs);
+    this.timer = setTimeout(() => {
+      this.resolve({ kind: "expired" });
+      // drive() can still be awaiting initialize, a thread, or turn/start, before it awaits settled. Closing the
+      // transport rejects those RPCs too; no late answer can advance the prompt. run() awaits the same close in finally.
+      void this.connection?.close().catch(() => { /* observed by run()'s finally */ });
+    }, 2 * this.input.stopTimeoutMs);
     // Before turn/start answers there is no turn to name; drive() interrupts it once there is.
     if (this.turnID !== undefined && this.connection) this.sendInterrupt(this.connection);
   }

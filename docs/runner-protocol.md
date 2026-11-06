@@ -651,15 +651,19 @@ can fail requests or drop notifications (see Outcomes).
   confirmation in time, or a refused interrupt, is `interrupted` with
   `cancel_unconfirmed` and `details.interrupt`; a process that exits meanwhile is
   `cancel_unconfirmed` with `details.reason: "codex_exited"`. A stop before
-  `turn/start` was sent is `cancelled` without sending it.
+  `turn/start` was sent is `cancelled` without sending it. At the stop deadline the
+  transport is closed, releasing unanswered initialization, thread-opening and
+  `turn/start` requests as well as a wait for the turn's end. An unanswered
+  `turn/start` remains uncertain because the prompt may have reached Codex.
 - **Process lifetime.** The app-server is its own process group, so a terminal's
   Ctrl-C reaches the runner, which stops the turn, rather than Codex. After every
   turn, before its outcome is committed, the runner lets its last writes finish,
   closes stdin (Codex exits on end of input), and after 2 seconds each sends SIGTERM,
   then SIGKILL, to the app-server's process group (and so to anything Codex started
-  without leaving that group). Commands Codex runs in a session of their own are
-  Codex's to end when it exits. If the runner itself is killed, Codex sees its stdin
-  close.
+  without leaving that group). Cleanup checks the group even after the app-server
+  exits, so remaining children still receive those signals. Commands Codex runs in
+  a session of their own are Codex's to end when it exits. If the runner itself is
+  killed, Codex sees its stdin close.
 - **Bridge.** As for Claude: `ENSO_RUNNER_BRIDGE=disabled` is set for the process and,
   through Codex's shell environment policy, for the commands it runs, and the
   instructions tell Codex the bridge is unavailable.

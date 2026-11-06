@@ -433,6 +433,52 @@ describe("approvals and user input", () => {
 });
 
 describe("cancellation", () => {
+  it.each(["initialize", "thread/start", "thread/resume", "turn/start"].flatMap(method =>
+    ["cancel", "shutdown"].map(action => [method, action] as const)
+  ))("finishes %s with no RPC answer during %s", async (method, action) => {
+    const recorded = transcript(method === "thread/resume" ? "provider_thread_resume" : "simple");
+    const stalled = derive(recorded, `unanswered ${method}`, entries => {
+      const at = find(entries, method, "expect_outbound");
+      return [...entries.slice(0, at + 1), closeEntry, exitEntry()];
+    });
+    let reached!: () => void;
+    const requested = new Promise<void>(resolve => { reached = resolve; });
+    let connection: CodexConnection | undefined;
+    const codex = start(stalled, { wrap: connect => async options => {
+      const connected = connection = await connect(options);
+      return { ...connected, request: (name, params) => {
+        if (name === method) reached();
+        return connected.request(name, params);
+      } };
+    } });
+    const session = engine!.createSession({ binding: binding() });
+    if (method === "thread/resume") {
+      submit(session.id, "first", recorded);
+      await commits.reached("first", "completed");
+    }
+    submit(session.id, "turn", recorded, method === "thread/resume" ? 1 : 0);
+    await requested;
+    const shutdown = action === "shutdown" ? engine!.shutdown() : undefined;
+    if (action === "cancel") engine!.cancel("turn");
+    try {
+      const expected = method === "turn/start" ? "interrupted" : "cancelled";
+      // The peer never answers: only the stop deadline can release the RPC. A bounded assertion also lets finally
+      // close the transport if this regresses, rather than leaving the test's own shutdown stuck.
+      await vi.waitFor(() => expect(engine!.run("turn").status).toBe(expected), { timeout: 2000 });
+      await shutdown;
+      const run = persisted("turn");
+      expect(codex.processes.at(-1)).toMatchObject({ exited: true, signals: [] });
+      if (expected === "interrupted") {
+        expect(run.error).toMatchObject({ code: "cancel_unconfirmed" });
+        expect(run.native).toEqual(nativeOf({ threadID: threadID(recorded) }));
+        expect(engine!.session(session.id).uncertain).toEqual({ requestID: "turn", native: run.native });
+      } else {
+        expect(run.error).toBeUndefined();
+        expect(engine!.session(session.id).uncertain).toBeUndefined();
+      }
+    } finally { await connection?.close(); await shutdown; }
+  });
+
   it.each(["turn_interrupt", "turn_interrupt_mid_tool"])("confirms cancellation from the interrupted turn Codex reports after the interrupt (agent-host %s)", async name => {
     const recorded = transcript(name);
     const thread = threadID(recorded);

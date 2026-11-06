@@ -5,8 +5,10 @@
 //   `<workspace>` as its working directory. Closing stdin plays `stdin.close`; a runtime_exit ends the process.
 // - crash: answers the first request, writes an error to stderr and exits with code 3.
 // - garbage: answers the first request with a line that is not JSON, then waits for stdin to close.
-// - stubborn: ignores stdin's end and SIGTERM, starts `sleep` in its own process group, and writes both pids to
+// - stubborn: ignores stdin's end and SIGTERM, starts `sleep` in the server's process group, and writes both pids to
 //   ENSO_MOCK_PIDS.
+// - orphan-eof: exits on stdin's end, leaving `sleep` in the server's process group.
+// - orphan-term: ignores stdin's end and exits on SIGTERM, leaving a child that ignores SIGTERM in that group.
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -15,10 +17,15 @@ const mode = process.env.ENSO_MOCK_MODE ?? "transcript";
 const send = frame => process.stdout.write(`${typeof frame === "string" ? frame : JSON.stringify(frame)}\n`);
 const lines = createInterface({ input: process.stdin });
 
-if (mode === "stubborn") {
-  process.on("SIGTERM", () => {});
-  const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
-  writeFileSync(process.env.ENSO_MOCK_PIDS, JSON.stringify({ server: process.pid, child: sleeper.pid }));
+if (["stubborn", "orphan-eof", "orphan-term"].includes(mode)) {
+  if (mode === "stubborn") process.on("SIGTERM", () => {});
+  const sleeper = mode === "orphan-term"
+    ? spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000);"], { stdio: ["ignore", "pipe", "ignore"] })
+    : spawn("sleep", ["60"], { stdio: "ignore" });
+  const ready = () => writeFileSync(process.env.ENSO_MOCK_PIDS, JSON.stringify({ server: process.pid, child: sleeper.pid }));
+  // Publish only once the child's SIGTERM handler is installed.
+  if (mode === "orphan-term") sleeper.stdout.once("data", ready); else ready();
+  if (mode === "orphan-eof") lines.on("close", () => process.exit(0));
   lines.on("line", line => { const { id } = JSON.parse(line); if (id !== undefined) send({ id, result: { userAgent: "mock/0", codexHome: "/tmp", platformFamily: "unix", platformOs: "macos" } }); });
   setInterval(() => {}, 1000);
 } else if (mode === "crash" || mode === "garbage") {

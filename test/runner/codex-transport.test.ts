@@ -75,6 +75,26 @@ it("signals the whole process group, escalating to SIGKILL, when the app-server 
   expect(diagnostics).toEqual([]);
 });
 
+it.each(["orphan-eof", "orphan-term"])("cleans up remaining group members after the server exits (%s)", async mode => {
+  const pids = join(directory, "pids.json");
+  const codex = await connect({ ENSO_MOCK_MODE: mode, ENSO_MOCK_PIDS: pids }, 200);
+  await initialize(codex);
+  await expect.poll(() => existsSync(pids)).toBe(true);
+  const { server, child } = JSON.parse(readFileSync(pids, "utf8")) as { server: number; child: number };
+  expect([alive(server), alive(child)]).toEqual([true, true]);
+  // Verify that the child really shares the server's group, rather than relying on the fixture's spawn defaults.
+  expect(Number(execFileSync("ps", ["-o", "pgid=", "-p", String(child)], { encoding: "utf8" }).trim())).toBe(server);
+  try {
+    await codex.close();
+    expect(await gone(server)).toBe(true);
+    expect(await gone(child)).toBe(true);
+    expect(diagnostics).toEqual([]);
+  } finally {
+    // Also clean up on regression, when close() incorrectly returned with the orphan still running.
+    try { process.kill(-server, "SIGKILL"); } catch { /* already gone */ }
+  }
+});
+
 it("reports the exit status and error output of an app-server that dies, failing the request in flight", async () => {
   const codex = await connect({ ENSO_MOCK_MODE: "crash" });
   const failure = await initialize(codex).catch(error => error as CodexRequestError);

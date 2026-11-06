@@ -29,6 +29,11 @@ export const spawnCodex: CodexSpawn = (command, args, { cwd, env }) => {
   return {
     get pid() { return child.pid; },
     stdin: child.stdin, stdout: child.stdout, stderr: child.stderr,
+    isAlive: () => {
+      if (child.pid === undefined) return false;
+      try { process.kill(-child.pid, 0); return true; }
+      catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+    },
     kill: signal => {
       try { if (child.pid !== undefined) return void process.kill(-child.pid, signal); }
       catch { /* the group is gone, or was never formed: signal the process itself */ }
@@ -156,11 +161,19 @@ export const connectCodex: CodexConnect = async options => {
       // Interrupts the reader, the writer and any request handler still waiting on the runner.
       await Effect.runPromise(Scope.close(scope, Exit.void));
       child.stdin.end();
+      const gone = () => exit !== undefined && !child.isAlive();
+      const awaitGroupExit = async () => {
+        const deadline = Date.now() + grace;
+        if (!exit) await Promise.race([exited, wait(grace)]);
+        // A leader's exit says nothing about its children. Keep checking the group for the rest of this grace period.
+        while (!gone() && Date.now() < deadline) await wait(Math.min(25, deadline - Date.now()));
+        return gone();
+      };
       for (const signal of [undefined, "SIGTERM", "SIGKILL"] as const) {
         if (signal) child.kill(signal);
-        if (exit || await Promise.race([exited.then(() => true), wait(grace).then(() => false)])) break;
+        if (await awaitGroupExit()) break;
       }
-      if (!exit) diagnose({ level: "Error", message: "Codex did not exit after SIGKILL", annotations: { pid: child.pid ?? null } });
+      if (!gone()) diagnose({ level: "Error", message: "Codex's process group did not exit after SIGKILL", annotations: { pid: child.pid ?? null } });
       child.stdout.destroy();
       child.stderr.destroy();
     })()
