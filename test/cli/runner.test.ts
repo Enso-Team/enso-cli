@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, writeFileSync
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { durable } from "../runner/replica.js";
 
@@ -17,14 +18,14 @@ afterEach(async () => {
   child = undefined; directory = undefined;
   vi.doUnmock("../../src/runner/service.js"); vi.restoreAllMocks(); vi.resetModules();
 });
-function start(args: string[]) {
-  const env: NodeJS.ProcessEnv = { ...process.env, ENSO_CLI_NO_UPDATE_CHECK: "1" };
+function start(args: string[], extra: NodeJS.ProcessEnv = {}) {
+  const env: NodeJS.ProcessEnv = { ...process.env, ENSO_CLI_NO_UPDATE_CHECK: "1", ...extra };
   delete env.ENSO_VAULT_ID; delete env.ENSO_CANVAS_ID;
   return spawn(process.execPath, ["--import", "tsx", "src/index.ts", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
 }
-async function serve(provider: string[] = ["--provider", "fake"]) {
-  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
-  const service = child = start(["runner", "serve", ...provider, "--directory", path]);
+async function serve(provider: string[] = ["--provider", "fake"], env: NodeJS.ProcessEnv = {}) {
+  const path = directory ??= mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  const service = child = start(["runner", "serve", ...provider, "--directory", path], env);
   const output = { stdout: "", stderr: "", directory: path, exited: once(service, "close") };
   service.stdout!.on("data", chunk => { output.stdout += chunk; });
   service.stderr!.on("data", chunk => { output.stderr += chunk; });
@@ -35,8 +36,8 @@ async function serve(provider: string[] = ["--provider", "fake"]) {
   return output;
 }
 function leftovers(path: string) { return ["acquiring", "owner", "connection.json", "control.sock", "runner.sqlite-wal", "runner.sqlite-shm"].filter(name => existsSync(join(path, name))); }
-async function command(args: string[]) {
-  const process = start(args);
+async function command(args: string[], env: NodeJS.ProcessEnv = {}) {
+  const process = start(args, env);
   let stdout = "", stderr = "";
   process.stdout!.on("data", chunk => { stdout += chunk; });
   process.stderr!.on("data", chunk => { stderr += chunk; });
@@ -192,6 +193,58 @@ it("refuses a Claude executable that is missing, not executable, or a directory 
   }
   expect(leftovers(path)).toEqual([]);
 }, 15_000);
+
+it("rejects Codex options without the Codex provider, and Codex settings it does not offer", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  for (const args of [["--provider", "fake", "--codex-model", "x"], ["--provider", "claude", "--codex-sandbox", "read-only"],
+    ["--provider", "codex", "--codex-sandbox", "none"], ["--provider", "codex", "--codex-approval-policy", "on-failure"],
+    ["--provider", "codex", "--codex-executable", join(path, "missing")]]) {
+    const result = await command(["runner", "serve", ...args, "--directory", path]);
+    expect(result.code, args.join(" ")).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+  }
+  expect(leftovers(path)).toEqual([]);
+}, 20_000);
+
+it("refuses to serve Codex without a Codex CLI on PATH, before touching runner files", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  const result = await command(["runner", "serve", "--provider", "codex", "--directory", path], { PATH: join(path, "empty") });
+  expect(result.code).toBe(1);
+  expect(JSON.parse(result.stderr).error).toMatchObject({ code: "runner_provider_unavailable", message: expect.stringContaining("--codex-executable") });
+  expect(leftovers(path)).toEqual([]);
+  expect(existsSync(join(path, "runner.sqlite"))).toBe(false);
+});
+
+it("serves the Codex provider end to end through a real app-server process", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  const codebase = join(path, "codebase");
+  mkdirSync(codebase);
+  const executable = join(path, "codex");
+  const mock = fileURLToPath(new URL("../runner/fixtures/codex-app-server-mock.mjs", import.meta.url));
+  writeFileSync(executable, `#!/bin/sh\nexec "${process.execPath}" "${mock}" "$@"\n`, { mode: 0o755 });
+  const transcript = fileURLToPath(new URL("../runner/fixtures/agent-host/codex/simple.ndjson", import.meta.url));
+  const output = await serve(["--provider", "codex", "--codex-executable", executable, "--codex-sandbox", "read-only"], { ENSO_MOCK_TRANSCRIPT: transcript });
+  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 2, provider: "codex" });
+  const call = async (method: string, route: string, body?: unknown) => {
+    const result = await command(["runner", "call", method, route, "--directory", path, ...(body === undefined ? [] : ["--json", JSON.stringify(body)])]);
+    expect(result.code, result.stderr).toBe(0);
+    return JSON.parse(result.stdout).data;
+  };
+  const session = await call("POST", "/v1/sessions", { provider: "codex", binding: { bridgeUrl: "http://127.0.0.1:17650", canvasTarget: {
+    vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
+  }, workingDirectory: codebase } });
+  await call("POST", "/v1/prompts", { requestID: "codex-turn", sessionID: session.id, text: "Respond with the following text: fixture simple ok", context: { selectedNodes: [] } });
+  let run = await call("GET", "/v1/runs/codex-turn");
+  for (let attempt = 0; attempt < 100 && !["completed", "failed", "cancelled", "interrupted"].includes(run.status); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    run = await call("GET", "/v1/runs/codex-turn");
+  }
+  expect(run).toMatchObject({ status: "completed", result: { text: "fixture simple ok", threadID: "01a0d5eb-f0c0-7481-a417-5e8871805cbc" },
+    native: { threadID: "01a0d5eb-f0c0-7481-a417-5e8871805cbc", resume: false, approvalPolicy: "on-request", sandbox: "read-only" } });
+  expect((await call("GET", `/v1/sessions/${session.id}`)).providerState).toEqual({ threadID: "01a0d5eb-f0c0-7481-a417-5e8871805cbc" });
+  expect((await command(["runner", "shutdown", "--directory", path])).code).toBe(0);
+  await output.exited;
+}, 30_000);
 
 it("serves the Claude provider when selected and refuses sessions that assert another provider", async () => {
   const output = await serve(["--provider", "claude", "--claude-permission-mode", "acceptEdits"]);

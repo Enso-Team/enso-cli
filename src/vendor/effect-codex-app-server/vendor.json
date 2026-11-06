@@ -1,0 +1,57 @@
+{
+  "repository": "https://github.com/Enso-Team/agent-host",
+  "branch": "enso",
+  "revision": "322f6544dfad0a3c8a0c8cbecf2c7f7874b14268",
+  "package": "packages/effect-codex-app-server",
+  "license": {
+    "file": "LICENSE",
+    "source": "LICENSE",
+    "blob": "55ee675bb1de9e580b69f3dd68684df2a4dffba7"
+  },
+  "files": {
+    "src/client.ts": {
+      "source": "packages/effect-codex-app-server/src/client.ts",
+      "blob": "28f677e03ee0adc470ce4856effd6ec9563715f4"
+    },
+    "src/protocol.ts": {
+      "source": "packages/effect-codex-app-server/src/protocol.ts",
+      "blob": "fdf0863af0a1698e5b0ba010c04b906d46ab6b04"
+    },
+    "src/errors.ts": {
+      "source": "packages/effect-codex-app-server/src/errors.ts",
+      "blob": "9f16adcd66c875a1ab2a92fdb75b0bc5d282dee5"
+    },
+    "src/schema.ts": {
+      "source": "packages/effect-codex-app-server/src/schema.ts",
+      "blob": "e9acee3bb9e91e10b260e0b8ad4daa3dd118f11f"
+    },
+    "src/rpc.ts": {
+      "source": "packages/effect-codex-app-server/src/rpc.ts",
+      "blob": "21dca8a7ead45a6227b95011b3859f2aa10f04a8"
+    },
+    "src/_internal/shared.ts": {
+      "source": "packages/effect-codex-app-server/src/_internal/shared.ts",
+      "blob": "334dc4a43bd347e0c012a61eebce6a4770f70a75"
+    },
+    "src/_internal/stdio.ts": {
+      "source": "packages/effect-codex-app-server/src/_internal/stdio.ts",
+      "blob": "a25ac0e6124b3d918db8a60531a4a5fae7d4663b"
+    },
+    "src/_generated/meta.gen.ts": {
+      "source": "packages/effect-codex-app-server/src/_generated/meta.gen.ts",
+      "blob": "339bc326ac8578d0593a48330d7a621fa3f49c0a"
+    },
+    "src/_generated/namespaces.gen.ts": {
+      "source": "packages/effect-codex-app-server/src/_generated/namespaces.gen.ts",
+      "blob": "c707e6aac0faab069df942e1af415644b2812825"
+    },
+    "src/_generated/schema.gen.ts": {
+      "source": "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
+      "blob": "50fa95918b43057612ef7c62c753a5529b1b9718"
+    }
+  },
+  "patches": [],
+  "runtime": {
+    "effect": "4.1.2"
+  }
+}

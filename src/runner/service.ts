@@ -20,7 +20,7 @@ const errorStatus = new Map<string, number>([
   ["session_busy", 409], ["request_conflict", 409], ["pending_not_found", 409], ["runner_stopping", 409],
   ["session_uncertain", 409], ["provider_mismatch", 409],
   ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404], ["cursor_expired", 410],
-  ["runner_storage_failure", 503]
+  ["runner_storage_failure", 503], ["runner_cleanup_failure", 503]
 ]);
 
 /** How often a runner with retention looks for finished runs to delete. */
@@ -149,9 +149,9 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   try {
     engine = new RunnerEngine(storage, options.provider ?? new FakeProvider(), {
       autoDispatch: options.autoDispatch,
-      onFatal: () => {
+      onFatal: error => {
         if (initialized) {
-          fatalError = new EnsoCliError("runner_storage_failure", "Runner stopped after a durable write failed; restart and inspect state");
+          fatalError ??= error;
           setImmediate(() => { void stop(); });
         }
       }

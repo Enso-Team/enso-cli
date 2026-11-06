@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { EnsoCliError } from "../errors.js";
 import { defaultFakeOptions, type Answer, type Json, type Pending, type Prompt, type ProviderName, type Run, type Session } from "./protocol.js";
 
 export type ProviderOutcome =
@@ -6,6 +7,12 @@ export type ProviderOutcome =
   | { status: "failed"; error: NonNullable<Run["error"]>; providerState?: Json }
   | { status: "cancelled"; providerState?: Json }
   | { status: "interrupted"; error: NonNullable<Run["error"]> };
+/** Cleanup could not prove execution stopped. Fail the runner closed and retain ownership until `exited` resolves. */
+export class ProviderCleanupError extends EnsoCliError {
+  constructor(message: string, readonly exited: Promise<void>, details: Record<string, unknown> = {}) {
+    super("runner_cleanup_failure", message, details);
+  }
+}
 export type Execution = {
   /** The session as stored, including its working directory, conversation checkpoint and any `uncertain` marker. */
   session: Readonly<Session>;
@@ -23,8 +30,10 @@ export type Execution = {
   wait: (pending: Pending, withdrawn?: AbortSignal) => Promise<Answer>;
 };
 /**
- * Return only after the provider confirms an outcome; uncertain effects use interrupted. Any confirmed outcome may
- * carry providerState, the opaque conversation checkpoint committed with it to the session; null clears it. A confirmed
+ * Return only after execution processes have exited and the provider confirms an outcome; uncertain effects use
+ * interrupted. If cleanup cannot confirm exit, throw ProviderCleanupError instead of releasing the active slot.
+ * Any confirmed outcome may carry providerState, the opaque conversation checkpoint committed with it to the
+ * session; null clears it. A confirmed
  * outcome that carries it also reconciles an uncertain session.
  * At most one wait() may be pending per run; a concurrent second wait() rejects and leaves the first answerable. A
  * provider whose native runtime asks concurrently serializes those requests itself (see ClaudeProvider).

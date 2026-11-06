@@ -1,10 +1,11 @@
 # Local runner protocol v2
 
-`enso runner serve --provider <fake|claude>` runs a foreground service independent
-of the Enso app. It needs Node 20+ and is intended for macOS. It does not launch
-Enso, navigate, perform bridge operations, import project configuration, or attach
-to a terminal. Two providers exist: `fake`, a deterministic test provider, and
-`claude`, which runs each prompt through the Claude Agent SDK (see Claude provider).
+`enso runner serve --provider <fake|claude|codex>` runs a foreground service
+independent of the Enso app. It needs Node 20+ and is intended for macOS. It does not
+launch Enso, navigate, perform bridge operations, import project configuration, or
+attach to a terminal. Three providers exist: `fake`, a deterministic test provider;
+`claude`, which runs each prompt through the Claude Agent SDK (see Claude provider);
+and `codex`, which runs each prompt as a Codex app-server turn (see Codex provider).
 One runner serves one provider; restart it to switch. Keep the service running in
 its own terminal or arrange supervision separately.
 
@@ -12,6 +13,14 @@ Protocol 2 is incompatible with protocol 1: it adds Claude sessions, provider
 execution identifiers recorded on runs, session uncertainty with explicit recovery,
 and structured input requests. Its default store lives in a new directory, and a
 protocol 1 store is refused rather than migrated.
+
+Codex sessions are an addition within protocol 2 and store schema 2: a session's
+`provider` can now be `"codex"`, and nothing else in the protocol or the store changed,
+so existing stores and clients keep working. A client that validates `provider`
+against `fake` and `claude` must accept `codex` to read a Codex runner's sessions. A
+store that holds a Codex session is refused by runner builds from before this
+addition (`invalid_runner_storage`, as a damaged event): they never modify it, and a
+build with Codex support reads it again.
 
 The runner stores state in SQLite through the `better-sqlite3` native module, an
 optional dependency loaded only by runner commands. npm 12 skips dependency install
@@ -30,6 +39,10 @@ node dist/index.js runner serve --provider fake
 # or, with Claude Code signed in (or ANTHROPIC_API_KEY set):
 node dist/index.js runner serve --provider claude [--claude-model <model>] \
   [--claude-permission-mode default|acceptEdits|plan|auto] [--claude-executable <path>]
+# or, with the Codex CLI installed and signed in:
+node dist/index.js runner serve --provider codex [--codex-model <model>] \
+  [--codex-approval-policy untrusted|on-request|never] \
+  [--codex-sandbox read-only|workspace-write|danger-full-access] [--codex-executable <path>]
 ```
 
 In another terminal (use an existing absolute codebase directory):
@@ -139,8 +152,8 @@ be percent-encoded when they contain reserved URL characters.
 | POST `/v1/runs/:requestID/respond` | `{pendingID, value}` | Run after accepting response |
 | POST `/v1/shutdown` | — | `{stopped:true}` after active providers confirm outcomes |
 
-A session contains `id` (runner-generated UUID), `binding`, `provider` (`"fake"` or
-`"claude"`: the runner's provider when the session was created), `createdAt` (ISO
+A session contains `id` (runner-generated UUID), `binding`, `provider` (`"fake"`,
+`"claude"` or `"codex"`: the runner's provider when the session was created), `createdAt` (ISO
 timestamp), optional opaque `providerState` (JSON, the provider's conversation
 checkpoint), and optional `uncertain` (see Uncertain sessions). Route paths keep
 their `/v1/` prefix; the protocol version is the header. Creating a session with
@@ -203,7 +216,8 @@ live steering. Different sessions can run concurrently.
 Run shape: `{request, status, createdAt, updatedAt, pending?, result?, error?,
 providerState?, native?}`. `native` holds the provider's execution identifiers
 (for Claude: conversation, prompt uuid, whether it resumed, model, permission
-mode). The provider commits them before it starts anything that could use them,
+mode; for Codex: thread, turn, whether it resumed, model, approval policy, sandbox).
+The provider commits them before it starts anything that could use them,
 and every later update of the run keeps them, so an interrupted run always names
 what may have run. Timestamps are informational; sequence numbers define ordering.
 Provider errors have `{code,message,details?}` with optional structured JSON details. Status meanings:
@@ -394,11 +408,19 @@ outcome, an unconfirmed stop) also sets the session's `uncertain` to
 `{requestID, native?}`: the uncertain run and the identifiers it recorded. While it
 is set, a prompt without `recovery`, or whose `recovery.after` names another run,
 fails with HTTP 409 `session_uncertain` and `details: {requestID, modes:["resume","fresh"]}`.
+
+If a `resume` recovery is interrupted before recording native identifiers, its
+marker inherits the previous marker's identifiers so another resume still targets
+the same conversation. The interrupted run's own `native` stays absent. Newly
+recorded identifiers take precedence; a `fresh` recovery never inherits them.
+
 The client decides, preferably with the user, how to continue:
 
 - `resume`: continue the provider conversation the uncertain run used, with
   whatever it did. For Claude, the conversation it recorded (if it recorded none,
-  it never started a query, and the session's checkpoint is used).
+  it never started a query, and the session's checkpoint is used). For Codex, the
+  thread it recorded (if it recorded none, it never sent its prompt, and the
+  session's checkpoint is used, or a new thread when there is none).
 - `fresh`: start a new provider conversation; the earlier history is not carried.
 
 A `completed` turn clears `uncertain`, and so does a `failed` or `cancelled` one
@@ -546,8 +568,18 @@ CLI does). Every turn is a paid agent call.
   result after the request confirms `cancelled`; a success result that arrives
   first is `completed`. No confirmation in time, a refused interrupt, or a stream
   that ends without a result is `interrupted` with `cancel_unconfirmed` and
-  `details.interrupt` (`pending`, `acknowledged` or `failed`). The query is closed
-  in every case, which ends the CLI process and any background shell it started.
+  `details.interrupt` (`pending`, `acknowledged` or `failed`).
+- **Process lifetime.** Each query's CLI runs in its own process group. After the
+  query is closed, the runner waits for that group to exit before committing the
+  outcome or releasing the session for another prompt. It allows 2 seconds after
+  stdin EOF, then sends SIGTERM and, after another 2 seconds, SIGKILL, allowing a
+  final 2 seconds for exit. Remaining group members are checked even after the CLI
+  exits. Processes that start their own session are outside this group. If exit
+  still cannot be confirmed, the service rejects further work with
+  `runner_cleanup_failure` (HTTP 503) and retains storage ownership until the group
+  is gone. No terminal outcome or checkpoint is committed; the next runner marks
+  the dispatched run uncertain through normal restart recovery. Shutdown waits
+  for cleanup too; forcing the runner to exit bypasses that wait.
 - **Bridge.** No Enso bridge operation is exposed to Claude. The bridge
   identifies an app only by origin and pairing token; it advertises no stable
   instance identity, so a runner cannot tell the paired app from another process
@@ -556,6 +588,105 @@ CLI does). Every turn is a paid agent call.
   refuses every bridge request under it with `bridge_unavailable` (including
   linking). This does not stop a same-user process from contacting the bridge by
   other means; the system prompt also tells Claude the bridge is unavailable.
+
+## Codex provider
+
+`--provider codex` runs each prompt as one turn of a `codex app-server` process of its
+own, started for that prompt in the session's stored working directory and ended after
+it. The executable is `codex` on `PATH`, or `--codex-executable` (resolved against the
+directory `serve` runs in); it is resolved to an absolute path, and the app-server
+transport is loaded, before any runner file is touched, so a missing one fails startup
+with `runner_provider_unavailable` or `invalid_input`. Codex runs with the user's own
+authentication and configuration (`~/.codex`, `AGENTS.md`). Every turn is a paid agent
+call.
+
+The JSON-RPC client is agent-host's `effect-codex-app-server`, vendored unmodified in
+`src/vendor/effect-codex-app-server/` (see its `VENDOR.md`), and the Effect runtime it
+needs is bundled into a chunk that only this provider loads. Its generated schema is
+Codex 0.156.1's; frames are decoded against it, so a Codex whose protocol has drifted
+can fail requests or drop notifications (see Outcomes).
+
+- **Directory and context.** The process, the thread and the turn are given the
+  session's working directory; if it no longer exists the run fails with
+  `working_directory_unavailable` without starting Codex, and if Codex reports
+  another directory for the thread the run fails with `working_directory_mismatch`
+  before the prompt is sent. The turn's input is the captured selection (framed and
+  escaped exactly as for Claude) followed by the captured `text`; the canvas is never
+  reread.
+- **Threads and identifiers.** A session's `providerState` is `{threadID}`. A prompt
+  continues it with `thread/resume`, or starts one with `thread/start`. The run records
+  `native: {threadID, resume, turnID, model, approvalPolicy, sandbox}` three times, each
+  before the step that relies on it: before the process starts (`threadID` is the
+  thread to resume, or null), once Codex names the thread and before `turn/start`
+  sends the prompt, and once Codex names the turn and before the runner interrupts or
+  attributes anything by it.
+- **Configuration.** `--codex-approval-policy` (default `on-request`) and
+  `--codex-sandbox` (default `workspace-write`) are sent with every thread and turn,
+  with `approvalsReviewer: user`, so Codex's own configuration cannot route approvals
+  around the runner; `--codex-model` selects the model (default: Codex's). Granular
+  approval policies are not offered. These are runner settings, applied to resumed
+  threads too. The runner's instructions are sent as the thread's developer
+  instructions.
+- **Approvals and input.** Command, file change and permission approvals become
+  `permission` requests with ID `<requestID>:<itemID>` (a repeated item adds `:2`, ...),
+  choices `allow`, `allow_session` and `deny`, and `details` naming the `method`,
+  `threadID`, `turnID` and `itemID` plus the command, its working directory and
+  parsed actions, the changes Codex announced for the item, or the permissions
+  requested. `allow_session` is Codex's `acceptForSession`, which lasts for the
+  app-server process: this turn. `deny` is `decline`; the turn continues.
+  `requestUserInput` becomes an `input` request with structured `questions` (keyed by
+  Codex's question ids; `details.secret` and `details.other` list the questions Codex
+  marks secret or open-ended), answered with each question's answers. Requests from a
+  subagent's thread are asked the same way. MCP elicitations are declined without
+  asking, and other server requests are answered `Method not found`.
+- **Concurrent requests.** As for Claude, requests are queued in arrival order and
+  shown one at a time. A request Codex settles itself (`serverRequest/resolved`) is
+  removed durably if it was pending and dropped if it was still queued; a late
+  answer returns `pending_not_found`.
+- **Outcomes.** Only `turn/completed` for the run's turn on its thread confirms an
+  outcome; subagents' turns do not. `completed` gives `result: {text, threadID,
+  turnID, durationMs, tokenUsage}`, where `text` is the turn's final answer (or its
+  last agent message). `failed` gives Codex's error, with a code derived from its error
+  info (`codex_usage_limit_exceeded`, ...) or `codex_turn_failed`. A turn Codex reports
+  interrupted without a runner cancellation is `failed` (`codex_turn_interrupted`).
+  Before `turn/start` is sent, Codex has not seen the prompt, so every failure is
+  confirmed: `codex_unavailable` (the process could not start), `codex_exited`,
+  `codex_rejected`, `codex_resume_failed` (for example a thread Codex no longer has),
+  `codex_turn_rejected`. After it, a process that exits (`codex_exited`), output that
+  is not JSON-RPC (`codex_malformed_message`), a `turn/completed` that fails to decode
+  (`codex_malformed_message`, with `details.diagnostics`), or a connection failure
+  (`codex_disconnected`) is `interrupted`, never failed or cancelled; `details` carry
+  the exit status and the end of Codex's standard error. Other notifications that
+  fail to decode are dropped. Nothing is retried: a failed or uncertain turn is never
+  resubmitted, and a thread that cannot be resumed is not replaced by a new one.
+- **Cancellation.** Cancelling sends `turn/interrupt` for the recorded turn (once
+  `turn/start` has answered, if the stop came first) and waits up to 20 seconds for
+  Codex to acknowledge it and report the turn's end. A pending or queued approval is
+  answered `cancel` (input: no answers). A turn reported `interrupted` after the
+  request is `cancelled`; one reported `completed` first is `completed`. No
+  confirmation in time, or a refused interrupt, is `interrupted` with
+  `cancel_unconfirmed` and `details.interrupt`; a process that exits meanwhile is
+  `cancel_unconfirmed` with `details.reason: "codex_exited"`. A stop before
+  `turn/start` was sent is `cancelled` without sending it. At the stop deadline the
+  transport is closed, releasing unanswered initialization, thread-opening and
+  `turn/start` requests as well as a wait for the turn's end. An unanswered
+  `turn/start` remains uncertain because the prompt may have reached Codex.
+- **Process lifetime.** The app-server is its own process group, so a terminal's
+  Ctrl-C reaches the runner, which stops the turn, rather than Codex. After every
+  turn, before its outcome is committed, the runner lets its last writes finish,
+  closes stdin (Codex exits on end of input), and after 2 seconds each sends SIGTERM,
+  then SIGKILL, to the app-server's process group (and so to anything Codex started
+  without leaving that group). Cleanup checks the group even after the app-server
+  exits, so remaining children still receive those signals. Commands Codex runs in
+  a session of their own are Codex's to end when it exits. If group exit still cannot
+  be confirmed after SIGKILL, the service rejects further work with
+  `runner_cleanup_failure` and retains storage ownership until the group is gone.
+  No terminal outcome or checkpoint is committed, and shutdown waits for that
+  cleanup. The next runner marks the dispatched run uncertain through normal restart
+  recovery. If the runner itself is killed, Codex sees its stdin close.
+- **Bridge.** As for Claude: `ENSO_RUNNER_BRIDGE=disabled` is set for the process and,
+  through Codex's shell environment policy, for the commands it runs, and the
+  instructions tell Codex the bridge is unavailable.
 
 ## Remaining prerequisites
 
@@ -572,5 +703,8 @@ CLI does). Every turn is a paid agent call.
   requesting cancellation and observing terminal confirmation, show interrupted
   outcomes as uncertain with their error details, and ask the user to choose
   `resume` or `fresh` for an uncertain session rather than choosing silently.
-- Recovery does not inspect Claude's transcript: `resume` continues whatever the
-  conversation holds, including a partial turn.
+- Recovery does not inspect Claude's transcript or Codex's thread: `resume` continues
+  whatever the conversation holds, including a partial turn.
+- A Codex thread that can no longer be resumed fails every later prompt of its
+  session with `codex_resume_failed`; the session is not uncertain, so `fresh` is not
+  offered. Create a new session to continue.

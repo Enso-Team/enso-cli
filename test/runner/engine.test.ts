@@ -110,6 +110,35 @@ describe("outcomes", () => {
 });
 
 describe("native identifiers and session uncertainty", () => {
+  it.each(["resume", "fresh"] as const)("keeps %s recovery separate from the checkpoint and honors replacement identifiers", async mode => {
+    const previous = { conversation: "uncertain" }, replacement = { conversation: "replacement" };
+    const provider = stub(async ({ prompt, record }) => {
+      if (prompt.requestID === "checkpoint") return { status: "completed", result: null, providerState: { conversation: "checkpoint" } };
+      record(previous);
+      return { status: "interrupted", error: { code: "lost", message: "unknown" } };
+    });
+    engine = new RunnerEngine(storage, provider);
+    const session = engine.createSession({ binding: binding() });
+    engine.submit(prompt(session.id, "checkpoint"));
+    await status("checkpoint", "completed");
+    engine.submit(prompt(session.id, "lost"));
+    await status("lost", "interrupted");
+    await engine.shutdown();
+    engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+    for (const [requestID, native] of [["no-identifiers", undefined], ["new-identifiers", replacement], ["null-identifiers", null]] as const) {
+      const after = engine.session(session.id).uncertain!.requestID;
+      engine.submit({ ...prompt(session.id, requestID), recovery: { after, mode } });
+      storage.commit([{ type: "run_updated", requestID, status: "running", updatedAt: new Date().toISOString(), ...(native !== undefined ? { native } : {}) }]);
+      storage.release(); storage.acquire();
+      engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+      const expected = native !== undefined ? native : mode === "resume" ? previous : undefined;
+      expect(engine.session(session.id).uncertain).toEqual({ requestID, ...(expected !== undefined ? { native: expected } : {}) });
+      expect(engine.session(session.id).providerState).toEqual({ conversation: "checkpoint" });
+      expect(engine.run(requestID).native).toEqual(native);
+      expect(durable(directory)).toEqual(engine.snapshot());
+    }
+  });
+
   it("keeps recorded native identifiers through waits, stopping and the confirmed outcome", async () => {
     engine = new RunnerEngine(storage, stub(async ({ record, wait, signal }) => {
       record({ conversation: "c-1" });

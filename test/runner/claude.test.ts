@@ -626,6 +626,35 @@ describe("uncertain sessions", () => {
     expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
+  it("resumes the original conversation after repeated recovery crashes before native identifiers were recorded", async () => {
+    const simple = transcript("simple");
+    const sid = nativeSessionID(simple);
+    const resumed = simple.entries.map(entry => reopen(entry, { resume: sid }));
+    const { session, lost } = await lose(lostThen(resumed), ids(sid));
+    await engine!.shutdown();
+    const provider = new ClaudeProvider(replay!.query, { permissionMode: "default" }, { stopTimeoutMs: 50, newID: ids() });
+    engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+    let after = "lost";
+    for (const requestID of ["recovery-1", "recovery-2"]) {
+      submit(session.id, requestID, simple, 0, { recovery: { after, mode: "resume" } });
+      // Crash after dispatch is durable, before execute() records a conversation. Reopen the store on restart.
+      storage.commit([{ type: "run_updated", requestID, status: "running", updatedAt: new Date().toISOString() }]);
+      storage.release(); storage.acquire();
+      engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+      expect(engine.run(requestID)).toMatchObject({ status: "interrupted", error: { code: "restart_uncertain" } });
+      expect(engine.run(requestID).native).toBeUndefined();
+      expect(engine.session(session.id).uncertain).toEqual({ requestID, native: lost.native });
+      expect(engine.session(session.id).providerState).toBeUndefined();
+      after = requestID;
+    }
+    submit(session.id, "next", simple, 0, { recovery: { after, mode: "resume" } });
+    engine.dispatchAccepted();
+    expect((await commits.reached("next", "completed")).native).toMatchObject({ conversationID: sid, resume: true });
+    expect(engine.session(session.id).providerState).toEqual({ conversationID: sid });
+    expect(engine.session(session.id).uncertain).toBeUndefined();
+    expect(persisted("next").status).toBe("completed");
+  });
+
   it("starts a new conversation for fresh, and moves the session to it even if that turn fails", async () => {
     const simple = transcript("simple");
     const sid = nativeSessionID(simple);

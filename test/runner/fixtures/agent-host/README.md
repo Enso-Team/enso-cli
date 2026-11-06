@@ -26,3 +26,5 @@ expectations were rewritten for Enso: `query.open` pins the options Enso's runne
 
 Enso-authored transcripts for exchanges with no recording (AskUserQuestion, concurrent
 and withdrawn callbacks, late frames) live in `../claude/`.
+
+Codex app-server recordings from the same revision are adapted in `codex/` (see its README).

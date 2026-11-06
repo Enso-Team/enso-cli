@@ -1,8 +1,8 @@
 # Provider replay
 
 Tests drive the real provider adapter against a transcript of its runtime's protocol, at the
-boundary the adapter already injects (`ClaudeQuery` for Claude). Nothing is spawned, and no
-model is called.
+boundary the adapter already injects (`ClaudeQuery` for Claude, `CodexSpawn` for Codex).
+Nothing is spawned, and no model is called.
 
 A transcript is NDJSON: a `transcript_start` header with `format: "enso-provider-replay/1"`,
 then entries in order.
@@ -28,8 +28,14 @@ to wait for the durable commit that puts a run in a given status.
 - `claude.ts`: the Claude Agent SDK boundary (`query.open`, `prompt.offer`,
   `permission.request`/`permission.response`, `permission.withdraw`, `query.interrupt`,
   `query.close`).
-
-A Codex boundary needs only its own counterpart to `claude.ts`, one that plays app-server
-JSON-RPC frames through the same `Replay`. agent-host's Codex recordings
-(`apps/server/src/orchestration-v2/testkit/fixtures/*/codex_transcript.ndjson`) use the same
-entry types; adapting one takes the `format` header field and Enso's expected requests.
+- `codex.ts`: the Codex app-server boundary, at the process (`CodexSpawn`). The provider
+  runs through the real transport and the vendored JSON-RPC client, so their framing and
+  decoding are replayed too. A process starts as the expected `process.spawn` (command,
+  arguments, working directory, bridge environment); then each JSONL line the client writes
+  is an expected frame, and inbound frames are written to its stdout. Closing stdin is the
+  expected `stdin.close`, a signal the expected `process.kill`; `runtime_exit` ends the
+  process (an `error` writes its message to stderr and exits with code 1). A string frame
+  is written as a raw line, for malformed output. Writes after the exit are dropped and
+  listed. `<workspace>` is replaced in both directions; `<cli-version>` and
+  `<runner-instructions>` in expected frames. Recordings adapted from agent-host are in
+  `../fixtures/agent-host/codex/`.

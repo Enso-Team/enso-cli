@@ -4,6 +4,8 @@ import type { CanUseTool, Options, PermissionResult, SDKMessage, SDKResultMessag
 import { EnsoCliError } from "../errors.js";
 import { cliVersion } from "../version.js";
 import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
+import { bounded, plain, runnerBridgeEnv, runnerInstructions, selectionText } from "./agent-context.js";
+import { ClaudeProcessGroup } from "./claude-process.js";
 import type { Answer, Json, Pending, Prompt, Session } from "./protocol.js";
 import type { Execution, ProviderOutcome, RunnerProvider } from "./provider.js";
 
@@ -23,14 +25,7 @@ export type ClaudeState = { conversationID: string };
 /** Recorded on the run before the query starts. */
 export type ClaudeNative = { conversationID: string; resume: boolean; promptUUID: string; model: string | null; permissionMode: ClaudeConfig["permissionMode"] };
 
-/** Child processes inherit this; the `enso` CLI refuses bridge requests while it is set (see src/client.ts). */
-export const runnerBridgeEnv = "ENSO_RUNNER_BRIDGE";
-const instructions = [
-  "You are running for Enso's local runner, on behalf of a user working on an Enso canvas.",
-  "The selected canvas nodes in the prompt were captured when the prompt was submitted; treat them as the selection.",
-  "The Enso app bridge is not available to this session: do not use the `enso` CLI or the app's HTTP bridge to read or change canvases."
-].join(" ");
-const detailsLimit = 32 * 1024;
+export { runnerBridgeEnv };
 const stderrTail = 2048;
 
 export async function loadClaudeQuery(): Promise<ClaudeQuery> {
@@ -64,7 +59,7 @@ export class ClaudeProvider implements RunnerProvider {
   constructor(
     private readonly query: ClaudeQuery,
     private readonly config: ClaudeConfig = { permissionMode: "default" },
-    private readonly options: { stopTimeoutMs?: number; newID?: () => string } = {}
+    private readonly options: { stopTimeoutMs?: number; exitGraceMs?: number; newID?: () => string } = {}
   ) {}
 
   async execute({ session, prompt, signal, record, wait }: Execution): Promise<ProviderOutcome> {
@@ -80,7 +75,8 @@ export class ClaudeProvider implements RunnerProvider {
     const native: ClaudeNative = { conversationID, resume, promptUUID, model: this.config.model ?? null, permissionMode: this.config.permissionMode };
     // Durable before the query can create or advance the conversation under these identifiers.
     record(native);
-    return new Turn(this.query, this.config, { cwd, conversationID, resume, promptUUID, prompt, signal, wait, stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs }).run();
+    return new Turn(this.query, this.config, { cwd, conversationID, resume, promptUUID, prompt, signal, wait,
+      stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs, exitGraceMs: this.options.exitGraceMs }).run();
   }
 
   /**
@@ -106,7 +102,7 @@ function conversationOf(value: Json | undefined): string | undefined {
 
 type TurnInput = {
   cwd: string; conversationID: string; resume: boolean; promptUUID: string; prompt: Readonly<Prompt>;
-  signal: AbortSignal; wait: Execution["wait"]; stopTimeoutMs: number;
+  signal: AbortSignal; wait: Execution["wait"]; stopTimeoutMs: number; exitGraceMs?: number;
 };
 
 class Turn {
@@ -122,6 +118,16 @@ class Turn {
   constructor(private readonly query: ClaudeQuery, private readonly config: ClaudeConfig, private readonly input: TurnInput) {}
 
   async run(): Promise<ProviderOutcome> {
+    const processes = new ClaudeProcessGroup(data => { this.stderr = (this.stderr + data).slice(-stderrTail); }, this.input.exitGraceMs);
+    try { return await this.drive(processes); }
+    finally {
+      this.finished = true;
+      // Even a synchronous query() failure may have spawned a process before throwing.
+      await processes.close();
+    }
+  }
+
+  private async drive(processes: ClaudeProcessGroup): Promise<ProviderOutcome> {
     const { signal, stopTimeoutMs } = this.input;
     let endInput!: () => void;
     const inputEnded = new Promise<void>(resolve => { endInput = resolve; });
@@ -130,7 +136,7 @@ class Turn {
     try {
       handle = this.query({
         prompt: (async function* () { yield message; await inputEnded; })(),
-        options: this.options()
+        options: this.options(processes)
       });
     } catch (error) {
       endInput();
@@ -172,6 +178,7 @@ class Turn {
         return outcome;
       }
     } finally {
+      this.finished = true;
       signal.removeEventListener("abort", stop);
       clearTimeout(timer);
       endInput();
@@ -230,7 +237,7 @@ class Turn {
     } };
   }
 
-  private options(): Options {
+  private options(processes: ClaudeProcessGroup): Options {
     const canUseTool: CanUseTool = (toolName, toolInput, options) => this.serialized(options, () => this.decide(toolName, toolInput, options));
     return {
       cwd: this.input.cwd,
@@ -239,22 +246,18 @@ class Turn {
       ...(this.config.model ? { model: this.config.model } : {}),
       ...(this.config.executable ? { pathToClaudeCodeExecutable: this.config.executable } : {}),
       canUseTool,
-      systemPrompt: { type: "preset", preset: "claude_code", append: instructions },
+      systemPrompt: { type: "preset", preset: "claude_code", append: runnerInstructions },
       env: { ...process.env, [runnerBridgeEnv]: "disabled", CLAUDE_AGENT_SDK_CLIENT_APP: `enso-cli/${cliVersion}` },
-      stderr: data => { this.stderr = (this.stderr + data).slice(-stderrTail); }
+      stderr: data => { this.stderr = (this.stderr + data).slice(-stderrTail); },
+      spawnClaudeCodeProcess: processes.spawn
     };
   }
 
   /** The captured prompt and selection, as submitted except for escaped framing tags; nothing is reread from the canvas. */
   private message(): SDKUserMessage {
     const { text, context } = this.input.prompt;
-    const nodes = context.selectedNodes.map(node => {
-      const attributes = `node_id=${JSON.stringify(node.nodeID)}${node.noteID === undefined ? "" : ` note_id=${JSON.stringify(node.noteID)}`}`;
-      // Content cannot close its node or open another; nothing else in it is escaped.
-      const content = node.content.replace(/<(\/?enso_node)/gi, "&lt;$1");
-      return `<enso_node ${attributes}>\n${content}\n</enso_node>`;
-    });
-    const selection = nodes.length ? [{ type: "text" as const, text: `Selected Enso canvas nodes, captured when this prompt was submitted:\n\n${nodes.join("\n\n")}` }] : [];
+    const captured = selectionText(context);
+    const selection = captured === undefined ? [] : [{ type: "text" as const, text: captured }];
     return {
       type: "user", parent_tool_use_id: null, uuid: this.input.promptUUID as SDKUserMessage["uuid"],
       message: { role: "user", content: [...selection, { type: "text", text }] }
@@ -310,14 +313,6 @@ class Turn {
 
 function cancelled(toolUseID: string): PermissionResult {
   return { behavior: "deny", message: "User cancelled tool execution.", interrupt: true, decisionClassification: "user_reject", toolUseID };
-}
-/** JSON as JSON.stringify writes it: drops undefined and non-plain values. */
-function plain(value: unknown): Json {
-  return JSON.parse(JSON.stringify(value)) as Json;
-}
-function bounded(value: Record<string, unknown>): Json {
-  const text = JSON.stringify(value) ?? "{}";
-  return text.length <= detailsLimit ? JSON.parse(text) as Json : { truncated: true, preview: text.slice(0, 1024) };
 }
 async function drain(iterator: AsyncIterator<SDKMessage>): Promise<void> {
   try { while (!(await iterator.next()).done) { /* the outcome is decided */ } } catch { /* likewise */ }
