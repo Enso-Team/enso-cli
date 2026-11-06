@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { isLoopbackBridgeUrl } from "../client.js";
 import { EnsoCliError } from "../errors.js";
 import { parseTarget } from "../targeting.js";

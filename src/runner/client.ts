@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { request } from "node:http";
 import { basename, dirname, join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { envelopeSchema } from "../client.js";
 import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 import { runnerVersion, runnerVersionHeader } from "./protocol.js";

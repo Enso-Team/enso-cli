@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { isLoopbackBridgeUrl } from "./client.js";
 import { writeConfig, type EnsoConfig } from "./config.js";
 import { assertCompatibleContract } from "./contract.js";

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { EnsoCliError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
 import { nodeAppearanceSchema } from "./node-appearance.js";

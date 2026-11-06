@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { EnsoCliError, isMissingRoute, type EnsoEnvelope } from "./errors.js";
 
 // A Mark is canvas-owned writing: typed text an agent or person places on the Canvas, or

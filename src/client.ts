@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { defaultBridgeUrl, readConfig } from "./config.js";
 import { assertTargetingContract, contractHeader, contractVersion, oldestSupportedContractVersion } from "./contract.js";
 import { discoverAndLink } from "./discovery.js";

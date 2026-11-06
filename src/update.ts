@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Command } from "commander";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { configDir } from "./config.js";
 import { EnsoCliError } from "./errors.js";
 import { cliVersion } from "./version.js";
