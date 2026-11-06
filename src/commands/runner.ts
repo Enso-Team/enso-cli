@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { EnsoCliError, printEnvelope } from "../errors.js";
+import { EnsoCliError, printEnvelope, printsOwnOutput } from "../errors.js";
 import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
 import { maxRetainDays, startRunner, type RunnerService } from "../runner/service.js";
@@ -20,7 +20,7 @@ function parseDays(value: string): number {
 
 export function registerRunner(program: Command): void {
   const runner = withoutUpdateNotice(program.command("runner")).description("Durable local prompt runner (fake provider only)");
-  runner.command("serve")
+  printsOwnOutput(runner.command("serve"))
     .description("Run an independent foreground service; stop with runner shutdown, SIGINT or SIGTERM (a third signal force-exits)")
     .requiredOption("--provider <name>", "execution provider (fake)")
     .option("--directory <path>", "private runner storage directory")

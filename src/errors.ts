@@ -68,6 +68,14 @@ export function isMissingRoute(error: EnsoErrorBody): boolean {
 
 const DUPLICATE_LINK_HINT = "Use link update on the existing link id instead of link create";
 
+const ownOutput = new WeakSet<object>();
+/** Marks a command whose action prints its own output and returns no envelope; any other action must return one. */
+export function printsOwnOutput<T extends object>(command: T): T {
+  ownOutput.add(command);
+  return command;
+}
+export function hasOwnOutput(command: object): boolean { return ownOutput.has(command); }
+
 export function printEnvelope(
   envelope: EnsoEnvelope,
   pretty = false,

@@ -189,5 +189,6 @@ it("exempts runner and update commands from the update notice", async () => {
   const find = (...names: string[]) => names.reduce((command, name) => command.commands.find(child => child.name() === name)!, program);
   expect(wantsUpdateNotice(find("runner", "call"))).toBe(false);
   expect(wantsUpdateNotice(find("update"))).toBe(false);
-  expect(wantsUpdateNotice(find("node", "update"))).toBe(true);
+  // Only the top-level update command is exempt; subcommands named update are ordinary edits.
+  for (const group of ["node", "link", "mark", "primitive", "excerpt"]) expect(wantsUpdateNotice(find(group, "update")), group).toBe(true);
 });
