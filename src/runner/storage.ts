@@ -95,20 +95,24 @@ CREATE TABLE runs (
   session_id TEXT NOT NULL REFERENCES sessions (id),
   sequence INTEGER NOT NULL UNIQUE REFERENCES events (sequence),
   last_sequence INTEGER NOT NULL REFERENCES events (sequence),
-  status TEXT NOT NULL CHECK (status IN (${activeSQL}, ${terminalSQL}))
+  status TEXT NOT NULL CHECK (status IN (${activeSQL}, ${terminalSQL})),
+  -- The latest event's updatedAt, so retention finds expired runs without reading events.
+  updated_at TEXT NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX runs_one_active_per_session ON runs (session_id) WHERE status IN (${activeSQL});
 CREATE INDEX runs_last_sequence ON runs (last_sequence);
+CREATE INDEX runs_finished ON runs (updated_at, sequence) WHERE status IN (${terminalSQL});
 CREATE TRIGGER runs_accepted BEFORE INSERT ON runs
   WHEN NEW.sequence IS NOT ${latestEvent} OR NEW.last_sequence IS NOT NEW.sequence OR NEW.status IS NOT 'accepted'
     OR NOT EXISTS (SELECT 1 FROM events WHERE sequence = NEW.sequence AND type = 'run_accepted' AND subject = NEW.request_id
-      AND json_extract(event_json, '$.run.request.sessionID') IS NEW.session_id AND json_extract(event_json, '$.run.status') IS 'accepted')
+      AND json_extract(event_json, '$.run.request.sessionID') IS NEW.session_id AND json_extract(event_json, '$.run.status') IS 'accepted'
+      AND json_extract(event_json, '$.run.updatedAt') IS NEW.updated_at)
   ${abort("a run row is created only by its run_accepted event")};
 CREATE TRIGGER runs_updated BEFORE UPDATE ON runs
   WHEN NEW.request_id IS NOT OLD.request_id OR NEW.session_id IS NOT OLD.session_id OR NEW.sequence IS NOT OLD.sequence
     OR NEW.last_sequence IS NOT ${latestEvent}
     OR NOT EXISTS (SELECT 1 FROM events WHERE sequence = NEW.last_sequence AND type = 'run_updated' AND subject = NEW.request_id
-      AND json_extract(event_json, '$.status') IS NEW.status)
+      AND json_extract(event_json, '$.status') IS NEW.status AND json_extract(event_json, '$.updatedAt') IS NEW.updated_at)
   ${abort("a run changes only by its latest run_updated event")};
 CREATE TRIGGER runs_terminal_final BEFORE UPDATE ON runs
   WHEN OLD.status IN (${terminalSQL}) OR NEW.status = 'accepted' ${abort("terminal runs are final and accepted is only initial")};
@@ -129,6 +133,7 @@ WHERE f.type IS NOT 'run_accepted' OR f.subject IS NOT r.request_id
   OR json_extract(f.event_json, '$.run.request.sessionID') IS NOT r.session_id
   OR r.last_sequence IS NOT (SELECT MAX(sequence) FROM events WHERE subject = r.request_id AND type IN (${runEventsSQL}))
   OR json_extract(l.event_json, CASE l.type WHEN 'run_accepted' THEN '$.run.status' ELSE '$.status' END) IS NOT r.status
+  OR json_extract(l.event_json, CASE l.type WHEN 'run_accepted' THEN '$.run.updatedAt' ELSE '$.updatedAt' END) IS NOT r.updated_at
 UNION ALL
 SELECT 'event' FROM events e
 WHERE (e.type IN (${sessionEventsSQL}) AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.subject AND s.sequence <= e.sequence))
@@ -512,12 +517,13 @@ export class RunnerStorage {
     } else if (event.type === "session_updated") {
       changed = prepare(db, "UPDATE sessions SET last_sequence = ? WHERE id = ?").run(event.sequence, event.sessionID).changes;
     } else if (event.type === "run_accepted") {
-      const { request, status } = event.run;
+      const { request, status, updatedAt } = event.run;
       if (status !== "accepted") throw new Error("Runs are accepted before anything else");
-      changed = prepare(db, "INSERT INTO runs (request_id, session_id, sequence, last_sequence, status) VALUES (?, ?, ?, ?, ?)")
-        .run(request.requestID, request.sessionID, event.sequence, event.sequence, status).changes;
+      changed = prepare(db, "INSERT INTO runs (request_id, session_id, sequence, last_sequence, status, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(request.requestID, request.sessionID, event.sequence, event.sequence, status, updatedAt).changes;
     } else if (event.type === "run_updated") {
-      changed = prepare(db, "UPDATE runs SET last_sequence = ?, status = ? WHERE request_id = ?").run(event.sequence, event.status, event.requestID).changes;
+      changed = prepare(db, "UPDATE runs SET last_sequence = ?, status = ?, updated_at = ? WHERE request_id = ?")
+        .run(event.sequence, event.status, event.updatedAt, event.requestID).changes;
     } else {
       // Clients holding a cursor below a deleted event can no longer replay to the current state, so expire them.
       const ids = JSON.stringify(event.requestIDs);
@@ -549,10 +555,11 @@ export class RunnerStorage {
   }
   /** Non-terminal runs in acceptance order; at most one per session. */
   unfinished(): Run[] { return this.runs(`WHERE r.status IN (${activeSQL})`); }
-  /** Finished runs whose last update is before `cutoff` (an ISO timestamp), oldest acceptance first. */
+  /** Finished runs whose last update is before `cutoff` (an ISO timestamp), oldest update first. Reads only the
+   * `runs_finished` index, whose condition this query repeats so SQLite can use it. */
   finishedBefore(cutoff: string, limit: number): string[] {
-    return prepare(this.database(), `SELECT r.request_id FROM runs r JOIN events l ON l.sequence = r.last_sequence
-      WHERE r.status IN (${terminalSQL}) AND json_extract(l.event_json, '$.updatedAt') < ? ORDER BY r.sequence LIMIT ?`).pluck().all(cutoff, limit) as string[];
+    return prepare(this.database(), `SELECT request_id FROM runs WHERE status IN (${terminalSQL}) AND updated_at < ?
+      ORDER BY updated_at, sequence LIMIT ?`).pluck().all(cutoff, limit) as string[];
   }
   /** Events at or below this sequence may have been deleted: a cursor below it cannot be replayed. */
   expiredThrough(): number { return prepare(this.database(), "SELECT expired_through FROM retention").pluck().get() as number; }

@@ -170,7 +170,10 @@ describe("transactions", () => {
         [updated("active", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'completed' WHERE request_id = 'active'`],
         [updated("done", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'running' WHERE request_id = 'done'`],
         [updated("active", "accepted"), `UPDATE runs SET last_sequence = ${next}, status = 'accepted' WHERE request_id = 'active'`],
-        ["INSERT INTO runs (request_id, session_id, sequence, last_sequence, status) SELECT 'second', session_id, 2, 2, 'accepted' FROM runs WHERE request_id = 'active'"],
+        // Retention reads updated_at alone, so it must be the latest event's.
+        ["UPDATE runs SET updated_at = 'later' WHERE request_id = 'active'"],
+        [updated("active", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'running', updated_at = 'later' WHERE request_id = 'active'`],
+        ["INSERT INTO runs (request_id, session_id, sequence, last_sequence, status, updated_at) SELECT 'second', session_id, 2, 2, 'accepted', updated_at FROM runs WHERE request_id = 'active'"],
         [`INSERT INTO sessions (id, sequence, last_sequence) VALUES ('${s.id}', 1, 1)`],
         // Events are append-only, gap-free, and name their own subject.
         ["INSERT INTO events (sequence, type, subject, event_json) VALUES (99, 'session_updated', NULL, '{}')"],
@@ -304,6 +307,18 @@ describe("existing stores", () => {
     ownerReleased();
   });
 
+  it("refuses a store whose run row disagrees with its latest event's update time", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "done"));
+    engine!.cancel("done");
+    abandon();
+    // Backdated, a row would be deleted by retention long before its run expired.
+    external(db => db.exec("DROP TRIGGER runs_updated; DROP TRIGGER runs_terminal_final; UPDATE runs SET updated_at = '2000-01-01T00:00:00.000Z'"));
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/rows do not match/));
+    ownerReleased();
+  });
+
   // A crash leaves committed transactions in runner.sqlite-wal. Refusal must not fold them into the main file.
   it.each([
     ["another application's database", null, /not an Enso runner database/],
@@ -408,6 +423,16 @@ describe("events", () => {
 describe("retention", () => {
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const expired = expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) });
+
+  it("finds expired runs through the finished-run index, without reading events", () => {
+    open({ autoDispatch: false });
+    const prepare = vi.spyOn(Database.prototype, "prepare");
+    storage.finishedBefore(new Date().toISOString(), 500);
+    const sql = prepare.mock.calls.map(([source]) => source).find(source => source.includes("updated_at <"))!;
+    prepare.mockRestore();
+    const plan = external(db => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(new Date().toISOString(), 500) as { detail: string }[]);
+    expect(plan.map(step => step.detail)).toEqual([expect.stringMatching(/^SEARCH runs USING INDEX runs_finished \(updated_at<\?\)$/)]);
+  });
 
   it("deletes finished runs older than the cutoff with their events, expiring only cursors that cannot replay", async () => {
     open({ autoDispatch: false });
@@ -642,10 +667,11 @@ describe("check", () => {
     const { cursor } = engine!.snapshot();
     abandon();
     // A finished run reopened by hand: every row still points at its latest event, so startup accepts it.
+    const updatedAt = new Date().toISOString();
     external(db => db.exec(`DROP TRIGGER runs_terminal_final;
       INSERT INTO events (sequence, type, subject, event_json) VALUES (${cursor + 1}, 'run_updated', 'done',
-        json_object('type', 'run_updated', 'requestID', 'done', 'status', 'running', 'updatedAt', '${new Date().toISOString()}'));
-      UPDATE runs SET last_sequence = ${cursor + 1}, status = 'running' WHERE request_id = 'done'`));
+        json_object('type', 'run_updated', 'requestID', 'done', 'status', 'running', 'updatedAt', '${updatedAt}'));
+      UPDATE runs SET last_sequence = ${cursor + 1}, status = 'running', updated_at = '${updatedAt}' WHERE request_id = 'done'`));
     open({ autoDispatch: false });
     abandon();
     expect(RunnerStorage.check(directory).differences).toEqual([{ problem: "update of a finished run", sequence: cursor + 1, requestID: "done" }]);
