@@ -195,6 +195,21 @@ export function resultOutcome(result: SDKResultMessage, interruptRequested: bool
 }
 
 /**
+ * Enso: whether the CLI refused to resume `conversationID` because its transcript no longer exists. The CLI reports
+ * this as an error result before running anything, with its own wording as the only marker.
+ */
+export function isConversationNotFound(result: SDKResultMessage, conversationID: string): boolean {
+  return result.subtype === "error_during_execution" && result.num_turns === 0 &&
+    result.errors.includes(`No conversation found with session ID: ${conversationID}`);
+}
+
+/** Enso: whether the SDK failed to start Claude Code at all (missing or unexecutable binary). */
+export function isLaunchError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "EACCES";
+}
+
+/**
  * Whether a result frame answers another turn than the prompt this query sent. The CLI echoes the client prompt uuid;
  * without an echo, a non-human origin (a background task notification) marks another turn.
  * Enso: one prompt per query, so the fork's echo-mode tracking is replaced by always honoring the origin.

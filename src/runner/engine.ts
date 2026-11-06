@@ -187,7 +187,10 @@ export class RunnerEngine {
     this.shutdownTask = (async () => {
       // A failed cancel commit aborts every provider; still await them before storage is released.
       try {
-        const changes = this.healthy ? this.read(() => this.storage.unfinished()).flatMap(run => this.cancelling(run)) : [];
+        // Accepted work for another provider must survive this runner's shutdown for its matching provider to resume.
+        const changes = this.healthy ? this.read(() => this.storage.unfinished())
+          .filter(run => this.session(run.request.sessionID).provider === this.provider.name)
+          .flatMap(run => this.cancelling(run)) : [];
         if (changes.length) {
           this.commit(changes);
           for (const active of this.active.values()) active.controller.abort();
@@ -203,9 +206,12 @@ export class RunnerEngine {
     try { run = this.read(() => this.storage.run(id)); } catch { return; }
     if (run?.status !== "accepted") return;
     const sessionID = run.request.sessionID;
-    // Write-ahead dispatch marker: a crash from here onward must never redispatch.
-    try { this.commit([this.update(id, "running")]); }
-    catch { return; } // commit has already failed the service closed.
+    try {
+      // Restart recovery bypasses submit(), so check the persisted provider before recording dispatch too.
+      if (this.session(sessionID).provider !== this.provider.name) return;
+      // Write-ahead dispatch marker: a crash from here onward must never redispatch.
+      this.commit([this.update(id, "running")]);
+    } catch { return; } // A failed durable read or write has already failed the service closed.
     const controller = new AbortController();
     const active: Active = { controller, task: Promise.resolve() };
     this.active.set(id, active);
@@ -221,11 +227,13 @@ export class RunnerEngine {
         if (outcome.status === "interrupted") return this.commit(this.uncertain(this.run(id), outcome.error));
         const { status, ...fields } = outcome;
         const session = this.session(sessionID);
-        // A completed turn reconciles an uncertain session; a failed or cancelled one leaves the marker for the next
-        // prompt. The result and the session's conversation checkpoint commit together or not at all.
-        const providerState = outcome.providerState ?? session.providerState;
-        const uncertain = status === "completed" ? undefined : session.uncertain;
-        const changed = outcome.providerState !== undefined || uncertain !== session.uncertain;
+        // A completed turn reconciles an uncertain session, and so does a confirmed one that set the checkpoint: the
+        // recovery then decided which conversation continues. Otherwise the marker stays for the next prompt. A null
+        // checkpoint clears it. The result and the session's checkpoint commit together or not at all.
+        const checkpointed = outcome.providerState !== undefined;
+        const providerState = checkpointed ? outcome.providerState ?? undefined : session.providerState;
+        const uncertain = status === "completed" || checkpointed ? undefined : session.uncertain;
+        const changed = checkpointed || uncertain !== session.uncertain;
         this.commit([this.update(id, status, fields), ...(changed ? [this.sessionUpdate(sessionID, providerState, uncertain)] : [])]);
       } catch {
         if (this.healthy) this.commit(this.uncertain(this.run(id), {

@@ -148,6 +148,12 @@ describe("starting and resuming", () => {
   });
 });
 
+/** The result the CLI reports when asked to resume a conversation whose transcript is gone (captured from the CLI). */
+const notFound = (id: string) => result(id, {
+  subtype: "error_during_execution", is_error: true, num_turns: 0, stop_reason: null, result: undefined, terminal_reason: undefined,
+  errors: [`No conversation found with session ID: ${id}`]
+});
+
 describe("terminal outcomes from provider evidence", () => {
   it("replays a recorded API error result as a confirmed failure that keeps the conversation (agent-host claude_result_is_error)", async () => {
     const recorded = replay(join(fixtures, "claude_result_is_error.ndjson"));
@@ -183,6 +189,47 @@ describe("terminal outcomes from provider evidence", () => {
     const session = engine!.createSession({ binding: binding() });
     engine!.submit(prompt(session.id, "turn"));
     expect((await status("turn", "completed")).result).toMatchObject({ text: "mine" });
+  });
+
+  it("fails a turn whose saved conversation is gone, clears it, and starts a new conversation on the next prompt", async () => {
+    const sdk = open([
+      exchange => { exchange.emit(init(uuid(1))); exchange.emit(result(uuid(1))); exchange.end(); },
+      exchange => { exchange.emit(notFound(uuid(1))); exchange.end(); },
+      exchange => { exchange.emit(result(uuid(4))); exchange.end(); }
+    ]);
+    const session = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(session.id, "first"));
+    await status("first", "completed");
+    engine!.submit(prompt(session.id, "gone"));
+    const gone = await status("gone", "failed");
+    expect(gone.error).toMatchObject({ code: "conversation_not_found", message: expect.stringContaining("the next prompt starts a new conversation"), details: { conversationID: uuid(1) } });
+    expect(sdk.queries[1].options).toMatchObject({ resume: uuid(1) });
+    expect(engine!.session(session.id).providerState).toBeUndefined();
+    expect(store().sessions[0].providerState).toBeUndefined();
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+    engine!.submit(prompt(session.id, "next"));
+    await status("next", "completed");
+    expect(sdk.queries[2].options).toMatchObject({ sessionId: uuid(4) });
+    expect(sdk.queries[2].options.resume).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: uuid(4) });
+  });
+
+  it("fails, without marking the session uncertain, when Claude Code cannot be started", async () => {
+    const launch = Object.assign(new Error("Claude Code native binary not found at /missing/claude"), { code: "ENOENT" });
+    open([exchange => exchange.fail(launch)]);
+    const session = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(session.id, "turn"));
+    const run = await status("turn", "failed");
+    expect(run.error).toMatchObject({ code: "claude_unavailable", details: { conversationID: uuid(1), promptUUID: uuid(2), cause: launch.message } });
+    expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
+    expect(engine!.session(session.id)).not.toHaveProperty("providerState");
+  });
+
+  it("stays uncertain when a launch-like error follows a frame", async () => {
+    open([exchange => { exchange.emit(init(uuid(1))); exchange.fail(Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" })); }]);
+    const session = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(session.id, "turn"));
+    expect((await status("turn", "interrupted")).error).toMatchObject({ code: "claude_disconnected" });
   });
 
   it.each([
@@ -461,13 +508,43 @@ describe("uncertain sessions", () => {
     expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
-  it("starts a new conversation for fresh, and keeps the session uncertain if that turn fails", async () => {
-    const { sdk, session } = await uncertainSession([exchange => { exchange.emit(result(uuid(3), { is_error: true, api_error_status: 529 })); exchange.end(); }]);
+  it("starts a new conversation for fresh, and moves the session to it even if that turn fails", async () => {
+    const { sdk, session } = await uncertainSession([
+      exchange => { exchange.emit(result(uuid(3), { is_error: true, api_error_status: 529 })); exchange.end(); },
+      exchange => { exchange.emit(result(uuid(3))); exchange.end(); }
+    ]);
     engine!.submit(prompt(session.id, "next", { recovery: { after: "lost", mode: "fresh" } }));
     expect((await status("next", "failed")).error).toMatchObject({ code: "api_error_529" });
     expect(sdk.queries[1].options).toMatchObject({ sessionId: uuid(3) });
     expect(sdk.queries[1].options.resume).toBeUndefined();
+    // The failed turn created the new conversation, so recovery is settled: the next prompt continues it.
+    expect(engine!.session(session.id)).toMatchObject({ providerState: { conversationID: uuid(3) } });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+    engine!.submit(prompt(session.id, "after"));
+    await status("after", "completed");
+    expect(sdk.queries[2].options).toMatchObject({ resume: uuid(3) });
+  });
+
+  it("keeps the session uncertain when a recovery turn fails without reporting a conversation", async () => {
+    const { session } = await uncertainSession([exchange => { exchange.emit(result("", { is_error: true, api_error_status: 529 })); exchange.end(); }]);
+    engine!.submit(prompt(session.id, "next", { recovery: { after: "lost", mode: "fresh" } }));
+    await status("next", "failed");
     expect(engine!.session(session.id).uncertain).toMatchObject({ requestID: "lost" });
+  });
+
+  it("clears the session when a resume finds the recorded conversation gone, so the next prompt starts a new one", async () => {
+    const { sdk, session, lost } = await uncertainSession([
+      exchange => { exchange.emit(notFound(uuid(1))); exchange.end(); },
+      exchange => { exchange.emit(result(uuid(4))); exchange.end(); }
+    ]);
+    engine!.submit(prompt(session.id, "next", { recovery: { after: "lost", mode: "resume" } }));
+    expect((await status("next", "failed")).error).toMatchObject({ code: "conversation_not_found" });
+    expect(sdk.queries[1].options).toMatchObject({ resume: (lost.native as any).conversationID });
+    expect(engine!.session(session.id)).not.toHaveProperty("uncertain");
+    expect(engine!.session(session.id)).not.toHaveProperty("providerState");
+    engine!.submit(prompt(session.id, "after"));
+    await status("after", "completed");
+    expect(sdk.queries[2].options).toMatchObject({ sessionId: uuid(4) });
   });
 
   it("carries identifiers recorded before a crash into the restarted session, so recovery resumes them", async () => {

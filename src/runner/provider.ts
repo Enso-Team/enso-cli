@@ -24,7 +24,8 @@ export type Execution = {
 };
 /**
  * Return only after the provider confirms an outcome; uncertain effects use interrupted. Any confirmed outcome may
- * carry providerState, the opaque conversation checkpoint committed with it to the session.
+ * carry providerState, the opaque conversation checkpoint committed with it to the session; null clears it. A confirmed
+ * outcome that carries it also reconciles an uncertain session.
  * At most one wait() may be pending per run; a concurrent second wait() rejects and leaves the first answerable. A
  * provider whose native runtime asks concurrently serializes those requests itself (see ClaudeProvider).
  * Interrupted work is never replayed by calling execute() again: the runner marks its session uncertain, and the next

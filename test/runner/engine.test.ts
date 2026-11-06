@@ -128,29 +128,43 @@ describe("native identifiers and session uncertainty", () => {
     expect(durable(directory)).toEqual(engine.snapshot());
   });
 
-  it("checkpoints confirmed failures and cancellations, and only a completed turn clears uncertainty", async () => {
+  it("checkpoints confirmed outcomes; a completed turn, or a confirmed one that sets or clears the checkpoint, clears uncertainty", async () => {
     const outcomes: ProviderOutcome[] = [
       { status: "interrupted", error: { code: "x", message: "unknown" } },
-      { status: "failed", error: { code: "f", message: "failed" }, providerState: { c: 2 } },
+      { status: "failed", error: { code: "f", message: "failed" } },
       { status: "cancelled", providerState: { c: 3 } },
+      { status: "interrupted", error: { code: "y", message: "unknown" } },
+      { status: "failed", error: { code: "gone", message: "conversation gone" }, providerState: null },
+      { status: "interrupted", error: { code: "z", message: "unknown" } },
       { status: "completed", result: null }
     ];
     engine = new RunnerEngine(storage, stub(async () => outcomes.shift()!));
     const s = engine.createSession({ binding: binding() });
     engine.submit(prompt(s.id, "a"));
     await status("a", "interrupted");
-    const recovery = { after: "a", mode: "resume" };
-    engine.submit({ ...prompt(s.id, "b"), recovery });
+    // A confirmed failure that leaves the checkpoint alone has not settled recovery.
+    engine.submit({ ...prompt(s.id, "b"), recovery: { after: "a", mode: "fresh" } });
     await status("b", "failed");
-    expect(engine.session(s.id)).toMatchObject({ providerState: { c: 2 }, uncertain: { requestID: "a" } });
-    engine.submit({ ...prompt(s.id, "c"), recovery });
+    expect(engine.session(s.id).uncertain).toEqual({ requestID: "a" });
+    expect(engine.session(s.id).providerState).toBeUndefined();
+    // One that sets it has: the session continues from that checkpoint.
+    engine.submit({ ...prompt(s.id, "c"), recovery: { after: "a", mode: "resume" } });
     await status("c", "cancelled");
-    expect(engine.session(s.id)).toMatchObject({ providerState: { c: 3 }, uncertain: { requestID: "a" } });
-    engine.submit({ ...prompt(s.id, "d"), recovery });
-    await status("d", "completed");
     expect(engine.session(s.id).providerState).toEqual({ c: 3 });
     expect(engine.session(s.id).uncertain).toBeUndefined();
-    expect(() => engine!.submit({ ...prompt(s.id, "e"), recovery })).toThrow("recovery applies only while the session is uncertain");
+    engine.submit(prompt(s.id, "d"));
+    await status("d", "interrupted");
+    // A null checkpoint clears both the checkpoint and the marker.
+    engine.submit({ ...prompt(s.id, "e"), recovery: { after: "d", mode: "resume" } });
+    await status("e", "failed");
+    expect(engine.session(s.id)).not.toHaveProperty("providerState");
+    expect(engine.session(s.id)).not.toHaveProperty("uncertain");
+    engine.submit(prompt(s.id, "f"));
+    await status("f", "interrupted");
+    engine.submit({ ...prompt(s.id, "g"), recovery: { after: "f", mode: "resume" } });
+    await status("g", "completed");
+    expect(engine.session(s.id).uncertain).toBeUndefined();
+    expect(() => engine!.submit({ ...prompt(s.id, "h"), recovery: { after: "f", mode: "resume" } })).toThrow("recovery applies only while the session is uncertain");
     expect(durable(directory)).toEqual(engine.snapshot());
   });
 
