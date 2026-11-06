@@ -261,8 +261,53 @@ describe("existing stores", () => {
       if (source === "journal_mode = WAL") throw new Error("no WAL here");
       return pragma.call(this, source, options);
     });
-    await expect(startRunner({ directory })).rejects.toEqual(storageError(/^Runner database could not be initialized$/));
+    const error = await startRunner({ directory }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ body: { code: "runner_storage_failure", details: { cause: { message: "no WAL here" } } } });
+    expect((error as Error).message).not.toMatch(/refusing/);
     ownerReleased();
+  });
+
+  it("reports an error that is not a verdict on an existing store as a failure, keeping its message", async () => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "quick_check") throw new TypeError("a bug, not the store");
+      return pragma.call(this, source, options);
+    });
+    const error = await startRunner({ directory }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ body: { code: "runner_storage_failure", details: { cause: { message: "a bug, not the store" } } } });
+    expect((error as Error).message).not.toMatch(/refusing|Damaged/);
+    ownerReleased();
+  });
+
+  it("reports the refusal, not the cleanup, when the owner record is already gone", async () => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "application_id") {
+        rmSync(path("owner"));
+        throw Object.assign(new Error("file is not a database"), { code: "SQLITE_NOTADB" });
+      }
+      return pragma.call(this, source, options);
+    });
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/refusing to dispatch or overwrite it$/));
+    vi.restoreAllMocks();
+    // Ownership was given up, so the store can be taken again.
+    const service = await startRunner({ directory, autoDispatch: false });
+    await service.stop();
+  });
+
+  it("parses each event once while judging a store at startup", async () => {
+    open();
+    await history();
+    const { cursor } = engine!.snapshot();
+    abandon();
+    const parse = vi.spyOn(eventSchema, "parse");
+    storage = new RunnerStorage(directory);
+    storage.acquire();
+    expect(parse).toHaveBeenCalledTimes(cursor);
   });
 
   it("refuses another application's database before changing its journal mode", async () => {
@@ -618,6 +663,21 @@ describe("retention", () => {
     await service.stop();
   });
 
+  it("does not dispatch accepted runs once its caller has asked it to stop", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "queued"));
+    abandon();
+    const stopping = new AbortController();
+    stopping.abort();
+    const service = await startRunner({ directory, signal: stopping.signal });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(service.engine.run("queued").status).toBe("accepted");
+    await service.stop();
+    open({ autoDispatch: false });
+    expect(engine!.run("queued").status).toBe("cancelled");
+  });
+
   it("does not run a first pass for a service stopped before it starts", async () => {
     const pass = vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore");
     const service = await startRunner({ directory, retainDays: 1, autoDispatch: false });
@@ -687,6 +747,24 @@ describe("check", () => {
     open({ autoDispatch: false });
     abandon();
     expect(RunnerStorage.check(directory).differences).toEqual([{ problem: "update of a finished run", sequence: cursor + 1, requestID: "done" }]);
+  });
+
+  it("reports a file a crash left empty as an empty store, as startup initializes it", async () => {
+    writeFileSync(path("runner.sqlite"), "");
+    expect(RunnerStorage.check(directory)).toEqual({ cursor: 0, expiredThrough: 0, events: 0, sessions: 0, runs: 0, differences: [], empty: true });
+    expect(statSync(path("runner.sqlite")).size).toBe(0);
+    const service = await startRunner({ directory, autoDispatch: false });
+    await service.stop();
+    expect(RunnerStorage.check(directory)).toEqual({ cursor: 0, expiredThrough: 0, events: 0, sessions: 0, runs: 0, differences: [] });
+  });
+
+  it("refuses the files beside a store that startup refuses", () => {
+    open();
+    abandon();
+    writeFileSync(path("state.json"), "{}\n");
+    expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
+      body: expect.objectContaining({ code: "invalid_runner_storage", details: { legacyFiles: ["state.json"] } })
+    }));
   });
 
   it("reports a missing store as not found, without creating it", () => {

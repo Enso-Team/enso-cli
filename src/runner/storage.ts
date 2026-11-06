@@ -155,7 +155,8 @@ type Event<T extends RunnerEvent["type"]> = Extract<RunnerEvent, { type: T }>;
 export type StoredSnapshot = { sessions: Session[]; runs: Run[]; cursor: number };
 /** Something the event history and the rows disagree on, found by `RunnerStorage.check`. */
 export type Difference = { problem: string; sequence?: number; sessionID?: string; requestID?: string };
-export type StoreCheck = { cursor: number; expiredThrough: number; events: number; sessions: number; runs: number; differences: Difference[] };
+/** `empty`: a file created just before a crash, which startup initializes; it holds nothing yet. */
+export type StoreCheck = { cursor: number; expiredThrough: number; events: number; sessions: number; runs: number; differences: Difference[]; empty?: true };
 
 /** The deltas of docs/runner-protocol.md: an update replaces every mutable field, and an absent one is cleared. */
 function updatedSession(session: Session, event: Event<"session_updated">): Session {
@@ -200,11 +201,17 @@ function refused(error: unknown): unknown {
 const judgment = (code: string) => code === "SQLITE_ERROR" || code === "SQLITE_NOTADB" || code === "SQLITE_MISMATCH" ||
   code === "SQLITE_FORMAT" || code === "SQLITE_RANGE" || code === "SQLITE_TOOBIG" || code.startsWith("SQLITE_CORRUPT") ||
   code.startsWith("SQLITE_CONSTRAINT");
+/** A verdict that the store's contents are wrong: a record that fails its schema, or rows that disagree with their
+ * events. Only this, and the SQLite codes in `judgment`, refuse a store; any other error is reported as itself. */
+class Mismatch extends Error {}
 /** Keeps the SQLite or filesystem cause, and reports a lock or I/O failure as such rather than as a refused store. */
 function failure(error: unknown, message: string): EnsoCliError {
   if (error instanceof EnsoCliError) return error;
+  if (error instanceof Mismatch) return invalid(message);
   const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code !== "string") return invalid(message);
+  // Neither SQLite nor the file system, and no verdict (a bug, say): report it as itself, without judging the store
+  // or claiming the check it interrupted failed.
+  if (typeof code !== "string") return new EnsoCliError("runner_storage_failure", "Runner storage failed unexpectedly", { cause: { message: error instanceof Error ? error.message : String(error) } });
   const cause = { cause: { code, message: (error as Error).message } };
   if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) return new EnsoCliError("runner_locked", "Runner database is locked by another process", cause);
   // Missing, or not readable by this user: nothing was judged, so nothing is refused.
@@ -217,17 +224,31 @@ function storageFailure(error: unknown, message = "Runner database could not be 
   const { code, message: cause } = error as NodeJS.ErrnoException;
   return new EnsoCliError("runner_storage_failure", message, { cause: { code, message: cause } });
 }
+/** Runs one of `verify`'s checks: a `Mismatch` it throws is the store failing that check, reported as `message`. */
+function judged<T>(statement: () => T, message: string): T {
+  try { return statement(); }
+  catch (error) { throw failure(error, message); }
+}
 /**
  * Statements compiled once per connection and reused. Keyed by connection because startup judges the file through a
  * read-only connection before opening the writer, and a statement belongs to the connection that prepared it.
+ * `.pluck()` changes the shared statement itself, so it is never called on one: a statement that returns its first
+ * column comes from `scalar`, cached apart from the row-returning statement of the same SQL.
  */
 const statements = new WeakMap<Database, Map<string, BetterSqlite3.Statement>>();
-function prepare(db: Database, sql: string): BetterSqlite3.Statement {
+function cached(db: Database, key: string, make: () => BetterSqlite3.Statement): BetterSqlite3.Statement {
   let cache = statements.get(db);
   if (!cache) statements.set(db, cache = new Map());
-  let statement = cache.get(sql);
-  if (!statement) cache.set(sql, statement = db.prepare(sql));
+  let statement = cache.get(key);
+  if (!statement) cache.set(key, statement = make());
   return statement;
+}
+function prepare(db: Database, sql: string): BetterSqlite3.Statement {
+  return cached(db, `row\0${sql}`, () => db.prepare(sql));
+}
+/** A statement that returns each result's first column rather than its row. */
+function scalar(db: Database, sql: string): BetterSqlite3.Statement {
+  return cached(db, `scalar\0${sql}`, () => db.prepare(sql).pluck());
 }
 function openDatabase(Sqlite: typeof BetterSqlite3, path: string, options: BetterSqlite3.Options): Database {
   try { return new Sqlite(path, options); }
@@ -285,7 +306,11 @@ export class RunnerStorage {
       this.locked = true;
     } finally { rmSync(guard, { recursive: true }); }
     try { this.open(); }
-    catch (error) { this.release(); throw this.created ? error : refused(error); }
+    catch (error) {
+      // Report why startup failed, not a failure to clean up after it.
+      try { this.release(); } catch { /* ownership is already given up; see release */ }
+      throw this.created ? error : refused(error);
+    }
   }
 
   /**
@@ -312,30 +337,46 @@ export class RunnerStorage {
       }
       throw new EnsoCliError("runner_storage_failure", "Runner database could not be opened", { directory: storage.directory, cause: { code, message } });
     }
+    // What startup refuses before opening the file, check reports too.
+    storage.preflight(storage.entries());
     const db = storage.db = openDatabase(sqlite(), path, { readonly: true, fileMustExist: true });
     try {
-      // One pass: verify parses each event once and hands it to the fold, and the rows it read are the ones compared.
-      return db.transaction(() => { const history = storage.history(); return history.compare(storage.verify(history.apply)); })();
+      return db.transaction((): StoreCheck => {
+        // Startup initializes a file a crash left empty, so it is an empty store, not a damaged one.
+        if (storage.identify(db) === "empty") return { cursor: 0, expiredThrough: 0, events: 0, sessions: 0, runs: 0, differences: [], empty: true };
+        // verify parses each event once and hands it to the fold. Reading the rows to compare parses each row's first
+        // and latest events again, inside the same read transaction.
+        const history = storage.history();
+        storage.verify(history.apply);
+        return history.compare({ sessions: judged(() => storage.sessions(), "Damaged runner session"), runs: judged(() => storage.runs(), "Damaged runner run") });
+      })();
     }
     finally { storage.release(); }
   }
 
-  private open(): void {
-    this.created = false;
-    let names: string[];
-    try { names = readdirSync(this.directory); }
+  private entries(): string[] {
+    try { return readdirSync(this.directory); }
     catch (error) { throw storageFailure(error, "Runner directory could not be read"); }
+  }
+
+  /** Refuses the directory's other files that make its database unsafe to open, as startup and `check` both do. */
+  private preflight(names: string[]): void {
     const found = names.filter(legacy);
     if (found.length) {
       throw invalid("Found a pre-SQLite runner store, which this runner does not migrate. Keep it with a runner build that reads it, or move it out of this directory to start empty", { legacyFiles: found.sort() });
     }
-    const path = join(this.directory, databaseName);
     // An empty file is given its first page before WAL mode creates any WAL file, so WAL files beside a missing or
     // empty file are another store's.
     const orphans = names.filter(name => walFiles.includes(name));
-    if (orphans.length && (!names.includes(databaseName) || lstatSync(path).size === 0)) {
+    if (orphans.length && (!names.includes(databaseName) || lstatSync(join(this.directory, databaseName)).size === 0)) {
       throw invalid(`Found SQLite journal files without their ${databaseName}. Move them back beside the store they belong to, or delete them to start empty`, { journalFiles: orphans.sort() });
     }
+  }
+
+  private open(): void {
+    this.created = false;
+    this.preflight(this.entries());
+    const path = join(this.directory, databaseName);
     const Sqlite = sqlite();
     let identity: "empty" | "store" = "empty";
     try {
@@ -355,7 +396,7 @@ export class RunnerStorage {
     const db = this.db = openDatabase(Sqlite, path, { fileMustExist: true, timeout: 1000 });
     try {
       // Ownership excludes other writers, so this is the file just judged.
-      if (this.identify(db) !== identity) throw new Error("Runner database changed during startup");
+      if (this.identify(db) !== identity) throw new EnsoCliError("runner_storage_failure", "Runner database changed during startup");
       // Lets retention return freed pages to the file system. It must precede the first table, and WAL mode, which
       // writes the header; an empty file whose header was written by a crash takes it through VACUUM instead.
       if (identity === "empty") {
@@ -397,7 +438,7 @@ export class RunnerStorage {
     try {
       application = db.pragma("application_id", { simple: true });
       version = db.pragma("user_version", { simple: true });
-      objects = prepare(db, "SELECT COUNT(*) FROM sqlite_schema").pluck().get();
+      objects = scalar(db, "SELECT COUNT(*) FROM sqlite_schema").get();
     } catch (error) { throw failure(error, "Unreadable runner database"); }
     // A file created just before a crash is still empty; anything else must already identify as this store.
     if (application === 0 && version === 0 && objects === 0) return "empty";
@@ -406,32 +447,27 @@ export class RunnerStorage {
     return "store";
   }
 
-  /** Validates the whole store before anything is served or dispatched, and returns its rows as read. `visit` sees each
-   * event, parsed, in sequence order. */
-  private verify(visit?: (event: RunnerEvent) => void): { sessions: Session[]; runs: Run[] } {
+  /** Validates the whole store before anything is served or dispatched. `visit` sees each event, parsed, in sequence
+   * order. `linkage` checks every row against its first and latest events, so the rows need not be rebuilt here. */
+  private verify(visit?: (event: RunnerEvent) => void): void {
     const db = this.database();
-    const check = <T>(statement: () => T, message: string): T => {
-      try { return statement(); }
-      catch (error) { throw failure(error, message); }
-    };
-    check(() => { if (this.identify(db) !== "store") throw new Error(); }, `${databaseName} has no runner schema`);
-    check(() => { if (db.pragma("quick_check", { simple: true }) !== "ok") throw new Error(); }, "Damaged runner database");
-    check(() => {
+    judged(() => { if (this.identify(db) !== "store") throw new Mismatch(); }, `${databaseName} has no runner schema`);
+    judged(() => { if (db.pragma("quick_check", { simple: true }) !== "ok") throw new Mismatch(); }, "Damaged runner database");
+    judged(() => {
       // Retention deletes only at or below the expired cursor, so the history above it has no gaps.
       const expired = this.expiredThrough(), cursor = this.cursor();
-      const above = prepare(db, "SELECT COUNT(*) FROM events WHERE sequence > ?").pluck().get(expired);
-      if (expired > cursor || above !== cursor - expired) throw new Error();
+      const above = scalar(db, "SELECT COUNT(*) FROM events WHERE sequence > ?").get(expired);
+      if (expired > cursor || above !== cursor - expired) throw new Mismatch();
     }, "Runner event sequence gap");
-    check(() => { if ((db.pragma("foreign_key_check") as unknown[]).length) throw new Error(); }, "Runner record references a missing event or session");
-    check(() => {
+    judged(() => { if ((db.pragma("foreign_key_check") as unknown[]).length) throw new Mismatch(); }, "Runner record references a missing event or session");
+    judged(() => {
       for (const row of prepare(db, "SELECT sequence, type, event_json FROM events ORDER BY sequence").iterate()) {
         const event = this.event(row as EventRow);
         visit?.(event);
       }
     }, "Damaged runner event");
     // Names no row, and stops `check` before it can list differences: see the limitation noted on `check`.
-    check(() => { if (prepare(db, linkage).get() !== undefined) throw new Error(); }, "Runner rows do not match their events");
-    return { sessions: check(() => this.sessions(), "Damaged runner session"), runs: check(() => this.runs(), "Damaged runner run") };
+    judged(() => { if (prepare(db, linkage).get() !== undefined) throw new Mismatch(); }, "Runner rows do not match their events");
   }
 
   /** Folds the whole event history, as a client applies it (`apply`, in sequence order), and lists where it disagrees
@@ -493,7 +529,7 @@ export class RunnerStorage {
     const db = this.database();
     if (!this.locked) throw new Error("Storage is not owned");
     db.transaction(() => {
-      let sequence = prepare(db, "SELECT COALESCE(MAX(sequence), 0) FROM events").pluck().get() as number;
+      let sequence = scalar(db, "SELECT COALESCE(MAX(sequence), 0) FROM events").get() as number;
       for (const change of changes) {
         const event = { sequence: ++sequence, ...change } as RunnerEvent;
         prepare(db, "INSERT INTO events (sequence, type, subject, event_json) VALUES (?, ?, ?, ?)").run(event.sequence, change.type, subject(event), JSON.stringify(change));
@@ -537,7 +573,7 @@ export class RunnerStorage {
       // Clients holding a cursor below a deleted event can no longer replay to the current state, so expire them.
       const ids = JSON.stringify(event.requestIDs);
       const owned = `type IN (${runEventsSQL}) AND subject IN (SELECT value FROM json_each(?))`;
-      const through = prepare(db, `SELECT MAX(sequence) FROM events WHERE ${owned}`).pluck().get(ids) as number | null;
+      const through = scalar(db, `SELECT MAX(sequence) FROM events WHERE ${owned}`).get(ids) as number | null;
       if (through === null) throw new Error("Runner runs_deleted names no stored run");
       prepare(db, "UPDATE retention SET expired_through = MAX(expired_through, ?)").run(through);
       expected = event.requestIDs.length;
@@ -567,18 +603,18 @@ export class RunnerStorage {
   /** Finished runs whose last update is before `cutoff` (an ISO timestamp), oldest update first. Reads only the
    * `runs_finished` index, whose condition this query repeats so SQLite can use it. */
   finishedBefore(cutoff: string, limit: number): string[] {
-    return prepare(this.database(), `SELECT request_id FROM runs WHERE status IN (${terminalSQL}) AND updated_at < ?
-      ORDER BY updated_at, sequence LIMIT ?`).pluck().all(cutoff, limit) as string[];
+    return scalar(this.database(), `SELECT request_id FROM runs WHERE status IN (${terminalSQL}) AND updated_at < ?
+      ORDER BY updated_at, sequence LIMIT ?`).all(cutoff, limit) as string[];
   }
   /** Events at or below this sequence may have been deleted: a cursor below it cannot be replayed. */
-  expiredThrough(): number { return prepare(this.database(), "SELECT expired_through FROM retention").pluck().get() as number; }
+  expiredThrough(): number { return scalar(this.database(), "SELECT expired_through FROM retention").get() as number; }
   /** One committed state and the sequence of its last event: the transaction holds one WAL read view across the
    * three reads. */
   snapshot(): StoredSnapshot {
     const db = this.database();
     return db.transaction(() => ({ sessions: this.sessions(), runs: this.runs(), cursor: this.cursor() }))();
   }
-  cursor(): number { return prepare(this.database(), "SELECT COALESCE(MAX(sequence), 0) FROM events").pluck().get() as number; }
+  cursor(): number { return scalar(this.database(), "SELECT COALESCE(MAX(sequence), 0) FROM events").get() as number; }
   /** Events after `after` in order, stopping once `maxBytes` of event data is exceeded (always at least one). */
   events(after: number, maxBytes: number): RunnerEvent[] {
     const events: RunnerEvent[] = [];
@@ -605,24 +641,27 @@ export class RunnerStorage {
   }
   private toSession(row: SessionRow): Session {
     const [created, latest] = this.linked(row);
-    if (created.type !== "session_created" || created.session.id !== row.id) throw new Error("Session does not match its session_created event");
+    if (created.type !== "session_created" || created.session.id !== row.id) throw new Mismatch("Session does not match its session_created event");
     if (!latest) return created.session;
-    if (latest.type !== "session_updated" || latest.sessionID !== row.id) throw new Error("Session does not match its latest event");
+    if (latest.type !== "session_updated" || latest.sessionID !== row.id) throw new Mismatch("Session does not match its latest event");
     return updatedSession(created.session, latest);
   }
   private toRun(row: RunRow): Run {
     const [accepted, latest] = this.linked(row);
     if (accepted.type !== "run_accepted" || accepted.run.request.requestID !== row.request_id || accepted.run.request.sessionID !== row.session_id) {
-      throw new Error("Run does not match its run_accepted event");
+      throw new Mismatch("Run does not match its run_accepted event");
     }
-    if (latest && (latest.type !== "run_updated" || latest.requestID !== row.request_id)) throw new Error("Run does not match its latest event");
+    if (latest && (latest.type !== "run_updated" || latest.requestID !== row.request_id)) throw new Mismatch("Run does not match its latest event");
     const run = latest ? updatedRun(accepted.run, latest) : accepted.run;
-    if (run.status !== row.status) throw new Error("Run status does not match its latest event");
+    if (run.status !== row.status) throw new Mismatch("Run status does not match its latest event");
     return run;
   }
   private event(row: EventRow): RunnerEvent {
-    const event = eventSchema.parse({ ...JSON.parse(row.event_json), sequence: row.sequence });
-    if (event.type !== row.type) throw new Error("Event type mismatch");
+    let event: RunnerEvent;
+    // Unparseable JSON, or a record its schema rejects, is the store failing its check.
+    try { event = eventSchema.parse({ ...JSON.parse(row.event_json), sequence: row.sequence }); }
+    catch (error) { throw new Mismatch(error instanceof Error ? error.message : "Unreadable runner event"); }
+    if (event.type !== row.type) throw new Mismatch("Event type mismatch");
     return event;
   }
   private database(): Database {
@@ -653,8 +692,10 @@ export class RunnerStorage {
     if (this.db?.open) this.db.close();
     this.db = undefined;
     if (!this.locked) return;
-    unlinkSync(join(this.directory, "owner"));
-    this.locked = false;
+    // Ownership is given up even if the record cannot be removed; one already removed is already given up.
+    try { unlinkSync(join(this.directory, "owner")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    finally { this.locked = false; }
   }
 
   private syncDirectory(): void {

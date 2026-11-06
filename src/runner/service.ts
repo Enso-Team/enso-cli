@@ -27,8 +27,12 @@ const retentionIntervalMs = 60 * 60 * 1000;
 
 /** The longest retention `--retain-days` accepts: a century. */
 export const maxRetainDays = 36_500;
-/** `retainDays`: delete finished runs (and their events) this many days after their last update; unset keeps everything. */
-export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number } = {}): Promise<RunnerService> {
+/**
+ * `retainDays`: delete finished runs (and their events) this many days after their last update; unset keeps everything.
+ * `signal`: aborted once the caller means to stop. Startup still completes, so the caller can stop the service it
+ * returns, but runs accepted before startup are not dispatched: shutdown cancels them instead.
+ */
+export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number; signal?: AbortSignal } = {}): Promise<RunnerService> {
   // Checked before ownership: 0 or a negative count would delete every finished run, and NaN would fail every pass.
   const retain = options.retainDays;
   if (retain !== undefined && !(Number.isFinite(retain) && retain > 0 && retain <= maxRetainDays)) {
@@ -38,7 +42,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   storage.acquire();
   const socketPath = join(storage.directory, "control.sock");
   if (Buffer.byteLength(socketPath) > 103) {
-    storage.release();
+    try { storage.release(); } catch { /* report the path, not a failure to clean up after it */ }
     throw new EnsoCliError("runner_path_too_long", "Unix socket path exceeds macOS limits; choose a shorter --directory");
   }
   const token = randomBytes(32).toString("hex");
@@ -177,7 +181,9 @@ export async function startRunner(options: { directory?: string; provider?: Runn
       firstPass = setImmediate(expire);
       (retention = setInterval(expire, retentionIntervalMs)).unref();
     }
-    if (options.autoDispatch !== false) engine.dispatchAccepted();
+    // A stop requested during startup (a signal handled at the listen above) arrives before the caller has a service
+    // to stop: dispatching here would start work it already asked to stop.
+    if (options.autoDispatch !== false && !options.signal?.aborted) engine.dispatchAccepted();
     return { directory: storage.directory, socketPath, engine, closed, stop };
   } catch (error) {
     server.close();

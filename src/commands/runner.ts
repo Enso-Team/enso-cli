@@ -14,7 +14,7 @@ function parseTimeout(value: string): number {
 }
 function parseDays(value: string): number {
   const days = Number(value);
-  if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", "--retain-days must be a positive integer of days");
+  if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", `--retain-days must be a whole number of days from 1 to ${maxRetainDays}`);
   return days;
 }
 
@@ -33,13 +33,19 @@ export function registerRunner(program: Command): void {
       // Handlers precede startup so an early signal stops the service once it exists instead of killing a half-acquired lock.
       let service: RunnerService | undefined;
       let signals = 0;
-      const signal = (name: NodeJS.Signals) => { if (++signals >= 3) process.exit(name === "SIGTERM" ? 143 : 130); void service?.stop(); };
+      // Until startRunner returns there is no service to stop; the abort keeps it from dispatching accepted runs.
+      const stopping = new AbortController();
+      const signal = (name: NodeJS.Signals) => {
+        if (++signals >= 3) process.exit(name === "SIGTERM" ? 143 : 130);
+        stopping.abort();
+        void service?.stop();
+      };
       process.on("SIGINT", signal);
       process.on("SIGTERM", signal);
       try {
         // Sessions carry their own binding; requests and runs must not inherit this invocation's context.
         const { directory, retainDays } = this.opts();
-        service = await withoutRequestContext(() => startRunner({ directory, retainDays }));
+        service = await withoutRequestContext(() => startRunner({ directory, retainDays, signal: stopping.signal }));
         if (signals) void service.stop();
         else printEnvelope({ ok: true, data: { ready: true, protocolVersion: runnerVersion, directory: service.directory } }, Boolean(this.optsWithGlobals().pretty));
         await service.closed;

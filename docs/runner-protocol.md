@@ -319,14 +319,22 @@ client does, and compares the result with what the rows read. It catches history
 the rows hide, such as an update to a finished run. It is read-only and runs in
 one read transaction, so it is safe beside a live runner. It reports
 `{cursor, expiredThrough, events, sessions, runs}`, or fails with
-`invalid_runner_storage` and up to 50 `details.differences`. With no store in the
+`invalid_runner_storage` and up to 50 `details.differences`. It refuses what
+startup refuses beside the database (pre-SQLite files, orphaned `-wal`/`-shm`),
+and reports an empty `runner.sqlite`, which startup initializes, as an empty
+store with `empty: true`. With no store in the
 directory, or a file where the directory should be, it fails with
 `runner_storage_not_found`, and creates nothing; a store it cannot reach (an
 unsearchable directory, a dangling symlink) fails with `runner_storage_failure`
 instead.
 
+Only these checks failing on the store's contents refuse it (`invalid_runner_storage`):
+any other error while judging or initializing it, such as I/O, is reported as a
+`runner_storage_failure` with its cause.
+
 Once its checks pass, startup recovers terminal records unchanged, dispatches
-only accepted work, and converts all previous running, waiting, or stopping work
+only accepted work (none if `serve` received SIGINT or SIGTERM while starting:
+shutdown cancels it instead), and converts all previous running, waiting, or stopping work
 to durable `interrupted` records with `error.code: "restart_uncertain"` in one
 transaction. A crash part way through a
 transaction leaves no trace of it. In particular:

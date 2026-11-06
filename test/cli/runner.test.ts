@@ -88,7 +88,10 @@ it("defers an early signal until startup finishes, then stops without announcing
   const starting = new Promise<void>(resolve => { started = resolve; });
   const closed = new Promise<void>(resolve => { finishStop = resolve; });
   const stop = vi.fn(async () => { finishStop(); });
-  vi.doMock("../../src/runner/service.js", () => ({ startRunner: () => { started(); return new Promise(resolve => { finishStart = resolve; }); } }));
+  let signal: AbortSignal | undefined;
+  vi.doMock("../../src/runner/service.js", () => ({ startRunner: (options: { signal?: AbortSignal }) => {
+    signal = options.signal; started(); return new Promise(resolve => { finishStart = resolve; });
+  } }));
   const { buildProgram } = await import("../../src/index.js");
   const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   const before = { SIGINT: process.listeners("SIGINT"), SIGTERM: process.listeners("SIGTERM") };
@@ -96,7 +99,10 @@ it("defers an early signal until startup finishes, then stops without announcing
   await starting;
   const handler = process.listeners("SIGTERM").find(listener => !before.SIGTERM.includes(listener))!;
   expect(process.listeners("SIGINT").filter(listener => !before.SIGINT.includes(listener))).toEqual([handler]);
+  expect(signal?.aborted).toBe(false);
   handler("SIGTERM"); handler("SIGTERM");
+  // Startup is told at once, so it does not dispatch the runs this signal means to stop.
+  expect(signal?.aborted).toBe(true);
   finishStart({ directory: "/unused", closed, stop });
   await parsed;
   expect(stop).toHaveBeenCalled();
@@ -158,6 +164,12 @@ it("rejects non-positive runner timeouts", async () => {
     expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
   }
 }, 15_000);
+
+it("names the range of --retain-days when a value is outside it", async () => {
+  const result = await command(["runner", "serve", "--provider", "fake", "--retain-days", "40000"]);
+  expect(result.code).toBe(1);
+  expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", message: "--retain-days must be a whole number of days from 1 to 36500" });
+});
 
 it("rejects unsupported providers with a structured CLI error", async () => {
   const result = await command(["runner", "serve", "--provider", "claude"]);
