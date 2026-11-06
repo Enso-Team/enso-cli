@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 
 const targetSchema = z.object({ vaultID: z.string().uuid(), canvasID: z.string().uuid() }).strict();
@@ -130,6 +130,8 @@ export function currentRequestContext(): RequestContext | undefined { return inv
 export function withRequestContext<T>(options: TargetOptions, work: () => T): T {
   return invocation.run(new RequestContext(options), work);
 }
+/** Runs `work` (and everything it schedules) outside any invocation's context. */
+export function withoutRequestContext<T>(work: () => T): T { return invocation.exit(work); }
 
 export type RouteScope = "health" | "pairing" | "discovery" | "vault" | "navigation" | "canvas";
 export function routeScope(path: string, method: string): RouteScope {

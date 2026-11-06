@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export const defaultBridgeUrl = process.env.ENSO_BRIDGE_URL ?? "http://127.0.0.1:17650";
 

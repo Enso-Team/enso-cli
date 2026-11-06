@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export const linkDirectionSchema = z.enum(["directed", "undirected", "bidirectional"]);
 export type LinkDirection = z.infer<typeof linkDirectionSchema>;

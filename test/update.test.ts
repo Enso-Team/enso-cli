@@ -111,6 +111,16 @@ describe("notifications", () => {
 });
 
 describe("installation", () => {
+  function globalInstall(npmVersion: string): void {
+    const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+    execute.mockResolvedValueOnce({ stdout: `${directory}\n` })
+      .mockResolvedValueOnce({ stdout: `${npmVersion}\n` })
+      .mockResolvedValueOnce({ stdout: "" });
+    vi.spyOn(fs, "realpathSync").mockReturnValue(packageDirectory);
+    vi.spyOn(fs, "lstatSync").mockReturnValue({ isSymbolicLink: () => false } as fs.Stats);
+    vi.spyOn(fs, "readFileSync").mockReturnValue(JSON.stringify({ version: nextVersion }));
+  }
+
   it("checks versions independently of the Enso app", async () => {
     expect(await updateCli(true)).toEqual({ installedVersion: cliVersion, latestVersion: nextVersion, updateAvailable: true, updated: false });
     expect(execute).not.toHaveBeenCalled();
@@ -138,14 +148,20 @@ describe("installation", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("installs the exact checked version and verifies its package manifest", async () => {
-    const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
-    execute.mockResolvedValue({ stdout: `${directory}\n` });
-    vi.spyOn(fs, "realpathSync").mockReturnValue(packageDirectory);
-    vi.spyOn(fs, "lstatSync").mockReturnValue({ isSymbolicLink: () => false } as fs.Stats);
-    vi.spyOn(fs, "readFileSync").mockReturnValue(JSON.stringify({ version: nextVersion }));
+  it.each([
+    ["10.9.3", false], ["11.6.0", false], ["12.0.2", true], ["12.0.0-rc.1", true], ["13.0.0", true]
+  ])("installs the exact version on npm %s with SQLite script approval=%s", async (npmVersion, allowScripts) => {
+    globalInstall(npmVersion);
     expect(await updateCli(false)).toMatchObject({ installedVersion: nextVersion, updated: true });
-    expect(execute).toHaveBeenLastCalledWith("npm", ["install", "--global", `@enso-app/cli@${nextVersion}`, "--registry", "https://registry.npmjs.org", "--engine-strict"], expect.objectContaining({ timeout: 120000 }));
+    expect(execute).toHaveBeenNthCalledWith(2, "npm", ["--version"], { timeout: 5000 });
+    expect(execute).toHaveBeenLastCalledWith("npm", ["install", "--global", `@enso-app/cli@${nextVersion}`, "--registry", "https://registry.npmjs.org", "--engine-strict",
+      ...(allowScripts ? ["--allow-scripts=better-sqlite3"] : [])], expect.objectContaining({ timeout: 120000 }));
+  });
+
+  it("does not install if npm returns a malformed version", async () => {
+    globalInstall("not a version");
+    await expect(updateCli(false)).rejects.toMatchObject({ body: { code: "update_failed" } });
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it("reports npm failures with an actionable command", async () => {

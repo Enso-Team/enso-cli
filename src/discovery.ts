@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { z } from "zod";
-import { isLoopbackBridgeUrl } from "./client.js";
+import { z } from "zod/v3";
+import { assertBridgeAllowed, isLoopbackBridgeUrl } from "./client.js";
 import { writeConfig, type EnsoConfig } from "./config.js";
 import { assertCompatibleContract } from "./contract.js";
 import { EnsoCliError } from "./errors.js";
@@ -21,6 +21,7 @@ export async function discoverAndLink(
   candidates: string[] = candidateBridgeUrls(),
   { stay = false }: { stay?: boolean } = {}
 ): Promise<EnsoConfig | null> {
+  assertBridgeAllowed();
   for (const bridgeUrl of candidates) {
     if (!isLoopbackBridgeUrl(bridgeUrl)) continue;
     const config = await tryLink(bridgeUrl, stay);

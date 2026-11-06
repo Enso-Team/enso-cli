@@ -15,11 +15,12 @@ import { registerNode } from "./commands/node.js";
 import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSkill } from "./commands/skill.js";
+import { registerRunner } from "./commands/runner.js";
 import { registerStatus } from "./commands/status.js";
 import { registerUpdate } from "./commands/update.js";
-import { notifyUpdate } from "./update.js";
+import { notifyUpdate, wantsUpdateNotice } from "./update.js";
 import { registerVault } from "./commands/vault.js";
-import { EnsoCliError, errorEnvelope, printEnvelope, type EnsoEnvelope } from "./errors.js";
+import { EnsoCliError, errorEnvelope, hasOwnOutput, printEnvelope, type EnsoEnvelope } from "./errors.js";
 import { withRequestContext, currentRequestContext, type TargetOptions } from "./targeting.js";
 import { cliVersion } from "./version.js";
 
@@ -42,6 +43,7 @@ export function buildProgram(): Command {
     .addHelpText("after", "\nCanvas requests require Enso bridge contract 3. Selection never navigates.\nBinding: supply both --vault-id/--canvas-id or ENSO_VAULT_ID/ENSO_CANVAS_ID.\nA binding rejects selector overrides and navigation; target errors are never replayed.")
     .exitOverride();
 
+  registerRunner(program);
   registerStatus(program);
   registerAuth(program);
   registerVault(program);
@@ -64,7 +66,7 @@ export function buildProgram(): Command {
     if (result) {
       const pretty = Boolean(thisCommand.optsWithGlobals().pretty);
       printEnvelope(result, pretty, result.ok ? process.stdout : process.stderr);
-      if (result.ok && actionCommand.name() !== "update") await notifyUpdate();
+      if (result.ok && wantsUpdateNotice(actionCommand)) await notifyUpdate();
     }
   });
 
@@ -97,10 +99,12 @@ function wrapActions(command: Command): void {
           (group === "canvas" && ["open", "create", "delete"].includes(command.name())) ||
           (group === "portal" && command.name() === "open") ||
           (group === "auth" && ["link", "unlink"].includes(command.name())))) context.rejectNavigation();
-        return await action(processedArgs) as EnsoEnvelope;
+        return await action(processedArgs) as EnsoEnvelope | undefined;
       });
+      // A missing envelope is a bug, not a silent success, unless the command printed its own output.
+      if (result === undefined && !hasOwnOutput(command)) throw new EnsoCliError("internal_error", `${command.name()} returned no result`);
       command.setOptionValue("__ensoResult", result);
-      process.exitCode = result.ok ? 0 : 1;
+      process.exitCode = result === undefined || result.ok ? 0 : 1;
     } catch (error) {
       const envelope = errorEnvelope(error);
       printEnvelope(envelope, Boolean(program.optsWithGlobals().pretty), process.stderr);
