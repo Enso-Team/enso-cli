@@ -3,12 +3,13 @@ import { once } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runnerCall } from "../../src/runner/client.js";
 import { ClaudeProvider } from "../../src/runner/claude.js";
 import { RunnerEngine } from "../../src/runner/engine.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
-import { claudeProtocol, claudeReplay, claudeTranscript, nativeSessionID, recordedPrompts, type ClaudeReplay } from "./replay/claude.js";
+import { claudeProtocol, claudeReplay, claudeTranscript, nativeSessionID, recordedPrompts, reopen, type ClaudeReplay } from "./replay/claude.js";
 import { observeCommits } from "./replay/commits.js";
 import { labelled, nothing, variant, type Transcript } from "./replay/transcript.js";
 import { durable } from "./replica.js";
@@ -50,7 +51,8 @@ async function crashAt(boundary: string, fixture: string): Promise<{ sessionID: 
   child = spawn(process.execPath, ["--import", "tsx", "test/runner/claude-crash-child.ts", directory, boundary, fixture, workspace], { stdio: ["ignore", "pipe", "pipe"] });
   let errors = "";
   child.stderr!.on("data", chunk => { errors += chunk; });
-  const exited = once(child, "exit");
+  // After its output closes, so every reported line is in `errors`.
+  const exited = once(child, "close");
   await new Promise<void>((resolve, reject) => {
     child!.stdout!.once("data", () => resolve());
     child!.once("exit", () => reject(new Error(`Runner exited before ready: ${errors}`)));
@@ -58,10 +60,27 @@ async function crashAt(boundary: string, fixture: string): Promise<{ sessionID: 
   const session = await runnerCall("POST", "/v1/sessions", { binding: binding(), provider: "claude" }, directory);
   if (!session.ok) throw new Error(JSON.stringify(session));
   const sessionID = (session.data as { id: string }).id;
-  await runnerCall("POST", "/v1/prompts", { requestID: "crash", sessionID, ...recordedPrompts(claudeTranscript(fixture, workspace))[0] }, directory).catch(error => error);
-  await exited;
-  expect(child.signalCode).toBe("SIGKILL");
+  // The kill can drop the connection before the runner replies; a reply that refuses the prompt means no run.
+  const prompt = await runnerCall("POST", "/v1/prompts", { requestID: "crash", sessionID, ...recordedPrompts(claudeTranscript(fixture, workspace))[0] }, directory).catch(() => undefined);
+  if (prompt && !prompt.ok) throw new Error(`The runner refused the prompt: ${JSON.stringify(prompt)}\nRunner stderr: ${errors}`);
+  const exitsWithin = (ms: number) => Promise.race([exited.then(() => true), delay(ms, false, { ref: false })]);
+  if (!(await exitsWithin(10_000))) {
+    // The child reports where its replay stopped, then kills itself.
+    child.kill("SIGTERM");
+    if (!(await exitsWithin(2_000))) { child.kill("SIGKILL"); await exited; }
+    throw new Error(`The runner never reached ${boundary}: ${crashRun()}\nRunner stderr: ${errors}`);
+  }
+  expect(child.signalCode, `The runner exited with code ${child.exitCode} before reaching ${boundary}\nRunner stderr: ${errors}`).toBe("SIGKILL");
   return { sessionID };
+}
+/** The crash run as the store holds it: where it stopped, and why (a replay divergence is the error's cause). */
+function crashRun(): string {
+  try {
+    const run = durable(directory).runs.find(run => run.request.requestID === "crash");
+    return run ? `the run is ${run.status}${run.error ? ` with ${JSON.stringify(run.error)}` : ""}` : "the run was never accepted";
+  } catch (error) {
+    return `the store could not be read: ${String(error)}`;
+  }
 }
 /** Restarts on the crashed store with a provider that may only do what `after` expects: nothing, by default. */
 function restart(after: Transcript = nothing("after restart", "claude", claudeProtocol), newID?: () => string) {
@@ -75,9 +94,7 @@ function restart(after: Transcript = nothing("after restart", "claude", claudePr
 /** The fixture's own query, reopened with `resume` for its recorded conversation. */
 function resumed(fixture: string, from = 0): Transcript {
   const recorded = claudeTranscript(fixture, workspace);
-  return variant(recorded, "resumed", entries => entries.slice(from).map((entry, index) => index === 0 && entry.label === "query.open"
-    ? { ...entry, frame: { type: "query.open", options: { ...(entry as { frame: { options: object } }).frame.options, sessionId: undefined, resume: nativeSessionID(recorded) } } }
-    : entry));
+  return variant(recorded, "resumed", entries => entries.slice(from).map((entry, index) => index === 0 ? reopen(entry, { resume: nativeSessionID(recorded) }) : entry));
 }
 
 describe("Claude runs across a runner crash", () => {

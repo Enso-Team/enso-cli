@@ -171,7 +171,7 @@ export class Replay {
   /** Records the first divergence, wakes every waiter so playback stops, and throws it. */
   fail(error: ReplayError): never {
     this.failure ??= error;
-    for (const gate of this.gates.values()) gate.released.resolve();
+    for (const gate of this.gates.values()) { gate.released.resolve(); gate.reached.resolve(); }
     this.advancedSignal.resolve();
     throw this.failure;
   }
@@ -238,7 +238,8 @@ export class Replay {
     if (this.gates.has(label)) throw new Error(`${this.scenario} already holds ${label}`);
     const gate = { reached: signal(), released: signal(), hasReached: false };
     this.gates.set(label, gate);
-    return { reached: gate.reached.promise, release: gate.released.resolve };
+    // Playback that fails before arriving settles `reached` too, rejecting with the divergence.
+    return { reached: gate.reached.promise.then(() => this.throwIfFailed()), release: gate.released.resolve };
   }
 
   /** Throws the recorded divergence, or an incomplete-playback failure if entries remain. */

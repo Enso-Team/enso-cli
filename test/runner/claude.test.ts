@@ -8,7 +8,7 @@ import { RunnerEngine } from "../../src/runner/engine.js";
 import { FakeProvider } from "../../src/runner/provider.js";
 import type { Run } from "../../src/runner/protocol.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
-import { claudeProtocol, claudeReplay, claudeTranscript, nativeSessionID, recordedPrompts, type ClaudeReplay } from "./replay/claude.js";
+import { claudeProtocol, claudeReplay, claudeTranscript, nativeSessionID, recordedPrompts, reopen, type ClaudeReplay } from "./replay/claude.js";
 import { observeCommits, type Commits } from "./replay/commits.js";
 import { labelled, nothing, ReplayError, variant, type Entry, type Transcript } from "./replay/transcript.js";
 import { durable } from "./replica.js";
@@ -44,7 +44,7 @@ function start(transcripts: Transcript | Transcript[], options: { newID?: () => 
 function submit(sessionID: string, requestID: string, from: Transcript, n = 0, extra: Record<string, unknown> = {}): Run {
   return engine!.submit({ requestID, sessionID, ...recordedPrompts(from)[n], ...extra });
 }
-/** The run as an independent connection reads it from the store, which must agree with the engine. */
+/** The run as an independent connection reads it from the store, which must agree with the engine: later checks can read the engine. */
 function persisted(requestID: string): Run {
   const durableState = store();
   expect(durableState).toEqual(engine!.snapshot());
@@ -69,7 +69,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
   try {
-    await engine?.shutdown();
+    // A test that failed before advancing its fake clock leaves the provider waiting on it: run that clock out.
+    await Promise.all([engine?.shutdown(), vi.isFakeTimers() ? vi.runAllTimersAsync() : undefined]);
     // Every transcript played to its end, with no divergence: unplayed entries fail the test here.
     replay?.complete();
   } finally {
@@ -96,8 +97,8 @@ describe("completion and resume", () => {
     expect(done.result).toMatchObject({ text: "fixture simple ok", conversationID: sid, promptUUID: uuid(1), stopReason: "end_turn", terminalReason: "completed", permissionDenials: [] });
     expect(statuses("turn")).toEqual(["accepted", "running", "running", "completed"]);
     expect(persisted("turn")).toEqual(done);
-    expect(store().sessions[0]).toMatchObject({ providerState: { conversationID: sid } });
-    expect(store().sessions[0].uncertain).toBeUndefined();
+    expect(engine!.session(session.id)).toMatchObject({ providerState: { conversationID: sid } });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
   it("escapes the framing tag inside node content, and nothing else", async () => {
@@ -131,7 +132,7 @@ describe("completion and resume", () => {
     expect(second.result).toMatchObject({ text: "idle resume second turn complete", conversationID: sid });
     expect(second.native).toEqual({ conversationID: sid, resume: true, promptUUID: uuid(2), model: null, permissionMode: "default" });
     expect(persisted("second")).toEqual(second);
-    expect(store().sessions[0].providerState).toEqual({ conversationID: sid });
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: sid });
   });
 
   it("fails without querying when the stored working directory is gone, and never substitutes another", async () => {
@@ -165,8 +166,8 @@ describe("provider-reported failure", () => {
     expect(run.error).toEqual({ code: "api_error_401", message: "Failed to authenticate. API Error: 401 Invalid authentication credentials", details: { conversationID: sid, promptUUID: uuid(1) } });
     // The CLI reported the conversation, so the next prompt resumes it; a confirmed failure is not uncertain.
     expect(persisted("auth")).toEqual(run);
-    expect(store().sessions[0].providerState).toEqual({ conversationID: sid });
-    expect(store().sessions[0].uncertain).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: sid });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
   it.each([
@@ -365,8 +366,8 @@ describe("cancellation", () => {
     expect(run.native).toMatchObject({ conversationID: sid });
     // A confirmed cancellation leaves a known conversation: it is checkpointed, and the session is not uncertain.
     expect(persisted("turn")).toEqual(run);
-    expect(store().sessions[0].providerState).toEqual({ conversationID: sid });
-    expect(store().sessions[0].uncertain).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: sid });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
   it("reports completion when the turn finishes before the interrupt takes effect", async () => {
@@ -419,8 +420,8 @@ describe("termination without a confirmed result", () => {
     expect(run.error).toMatchObject({ code, details: { conversationID: nativeSessionID(from), promptUUID: uuid(1) } });
     expect(persisted("turn")).toEqual(run);
     // Uncertain, never failed or cancelled: the session keeps the run's identifiers for an explicit recovery.
-    expect(store().sessions[0].uncertain).toEqual({ requestID: "turn", native: run.native });
-    expect(store().sessions[0].providerState).toBeUndefined();
+    expect(engine!.session(session.id).uncertain).toEqual({ requestID: "turn", native: run.native });
+    expect(engine!.session(session.id).providerState).toBeUndefined();
     return run;
   }
 
@@ -501,22 +502,22 @@ describe("uncertain sessions", () => {
   it("resumes the recorded conversation when asked, and a completed turn reconciles the session", async () => {
     const simple = transcript("simple");
     const sid = nativeSessionID(simple);
-    const resumed = simple.entries.map(entry => entry.label === "query.open" ? { ...entry, frame: { type: "query.open", options: { ...(entry as { frame: { options: object } }).frame.options, sessionId: undefined, resume: sid } } } : entry);
+    const resumed = simple.entries.map(entry => reopen(entry, { resume: sid }));
     const { session, lost } = await lose(lostThen(resumed), ids(sid));
     expect(lost.native).toMatchObject({ conversationID: sid });
     submit(session.id, "next", simple, 0, { recovery: { after: "lost", mode: "resume" } });
     const next = await commits.reached("next", "completed");
     expect(next.native).toMatchObject({ conversationID: sid, resume: true });
     expect(persisted("next")).toEqual(next);
-    expect(store().sessions[0].providerState).toEqual({ conversationID: sid });
-    expect(store().sessions[0].uncertain).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: sid });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
   });
 
   it("starts a new conversation for fresh, and keeps the session uncertain if that turn fails", async () => {
     const simple = transcript("simple");
     const sid = nativeSessionID(simple);
     const fresh = simple.entries.map(entry => {
-      if (entry.label === "query.open") return { ...entry, frame: { type: "query.open", options: { ...(entry as { frame: { options: object } }).frame.options, sessionId: uuid(2) } } };
+      if (entry.label === "query.open") return reopen(entry, { sessionId: uuid(2) });
       if (entry.label === "result" && entry.type === "emit_inbound") return { ...entry, frame: { ...(entry.frame as object), session_id: uuid(2), is_error: true, api_error_status: 529 } };
       return entry;
     });
@@ -524,7 +525,7 @@ describe("uncertain sessions", () => {
     submit(session.id, "next", simple, 0, { recovery: { after: "lost", mode: "fresh" } });
     expect((await commits.reached("next", "failed")).error).toMatchObject({ code: "api_error_529" });
     expect(persisted("next").native).toMatchObject({ conversationID: uuid(2), resume: false });
-    expect(store().sessions[0].uncertain).toMatchObject({ requestID: "lost" });
+    expect(engine!.session(session.id).uncertain).toMatchObject({ requestID: "lost" });
   });
 });
 

@@ -36,13 +36,14 @@
  * SOFTWARE.
  */
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CanUseTool, Options, PermissionResult, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeQuery, ClaudeQueryHandle } from "../../../src/runner/claude.js";
 import { runnerBridgeEnv } from "../../../src/runner/claude.js";
-import { materializeWorkspace, readTranscript, Replay, ReplayError, sameFrame, type Transcript } from "./transcript.js";
+import { materializeWorkspace, readTranscript, Replay, ReplayError, sameFrame, type Entry, type Transcript } from "./transcript.js";
 
 export const claudeProtocol = "claude-agent-sdk.query";
-const fixtures = join(import.meta.dirname, "..", "fixtures");
+const fixtures = fileURLToPath(new URL("../fixtures", import.meta.url));
 
 /** A Claude transcript by name: recorded ones (adapted from agent-host) first, then Enso-authored ones. */
 export function claudeTranscript(name: string, workspace: string): Transcript {
@@ -74,7 +75,8 @@ function openFrame(options: Options) {
   const systemPrompt = options.systemPrompt;
   return { type: "query.open", options: {
     cwd: options.cwd,
-    ...(options.resume !== undefined ? { resume: options.resume } : { sessionId: options.sessionId }),
+    ...(options.resume !== undefined ? { resume: options.resume } : {}),
+    ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
     permissionMode: options.permissionMode,
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.pathToClaudeCodeExecutable !== undefined ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable } : {}),
@@ -85,6 +87,12 @@ function openFrame(options: Options) {
 
 type Frame = Record<string, unknown>;
 const record = (value: unknown): Frame => (typeof value === "object" && value !== null ? value : {}) as Frame;
+/** A recorded `query.open` with another conversation identity: `resume` an existing one, or open a new `sessionId`. */
+export function reopen(entry: Entry, identity: { resume: string } | { sessionId: string }): Entry {
+  if (entry.type !== "expect_outbound" || entry.label !== "query.open") return entry;
+  const { sessionId: _, resume: __, ...options } = record(record(entry.frame).options);
+  return { ...entry, frame: { type: "query.open", options: { ...options, ...identity } } };
+}
 function offeredUUID(frame: unknown): string | undefined {
   const uuid = record(record(frame).message).uuid;
   return typeof uuid === "string" ? uuid : undefined;
@@ -93,7 +101,11 @@ function withoutUUID(frame: unknown): unknown {
   const { uuid: _, ...message } = record(record(frame).message);
   return { ...record(frame), message };
 }
-const sdkMessageTypes = new Set(["assistant", "user", "result", "system", "stream_event", "rate_limit_event", "command_lifecycle"]);
+/** Top-level `SDKMessage` types in SDK 0.3.318; typed so a name outside the union fails to compile. */
+const sdkMessageTypes = new Set<SDKMessage["type"]>([
+  "assistant", "user", "result", "system", "stream_event", "tool_progress", "auth_status", "tool_use_summary",
+  "rate_limit_event", "prompt_suggestion", "conversation_reset"
+]);
 
 type Interrupt = { status: "acknowledged" } | { status: "rejected"; error?: string } | { status: "unanswered" };
 export type ClaudeReplayQuery = {
@@ -184,7 +196,7 @@ export function claudeReplay(transcripts: Transcript | Transcript[]) {
         const frame = record(taken.frame);
         if (frame.type === "permission.request") request(frame);
         else if (frame.type === "permission.withdraw") callbacks.get(frame.toolUseID as string)?.abort();
-        else if (!sdkMessageTypes.has(frame.type as string)) {
+        else if (!sdkMessageTypes.has(frame.type as SDKMessage["type"])) {
           replay.fail(new ReplayError("driver", replay.scenario, replay.cursor - 1, { label: taken.label, message: "not a Claude Agent SDK message", actual: frame }));
         } else yield echo(frame) as unknown as SDKMessage;
       }

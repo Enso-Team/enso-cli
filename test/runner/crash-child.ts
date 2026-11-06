@@ -6,26 +6,23 @@ import { FakeProvider, type Execution } from "../../src/runner/provider.js";
 import type { Change, RunnerEvent } from "../../src/runner/protocol.js";
 import { startRunner } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
+import { kill, killAroundCommit } from "./crash-boundary.js";
 
 const directory = process.argv[2];
 const boundary = process.argv[3];
-const kill = () => process.kill(process.pid, "SIGKILL");
 const statuses = (changes: Change[]) => changes.map(change => change.type === "run_accepted" ? change.run.status : change.type === "run_updated" ? change.status : undefined);
-const storage = RunnerStorage.prototype as unknown as {
-  commit(changes: Change[]): void;
-  apply(db: BetterSqlite3.Database, event: RunnerEvent): void;
-};
-const commit = storage.commit;
-storage.commit = function (changes) {
-  if (boundary === "before_completed" && statuses(changes).includes("completed")) kill();
-  commit.call(this, changes);
-  if (boundary === "checkpointed" && statuses(changes).includes("completed")) {
-    // Move the commit from the WAL into the main database file first.
-    (this as unknown as { db: BetterSqlite3.Database }).db.pragma("wal_checkpoint(TRUNCATE)");
-    kill();
+killAroundCommit(
+  changes => boundary === "before_completed" && statuses(changes).includes("completed"),
+  (changes, db) => {
+    if (boundary === "checkpointed" && statuses(changes).includes("completed")) {
+      // Move the commit from the WAL into the main database file first.
+      db.pragma("wal_checkpoint(TRUNCATE)");
+      return true;
+    }
+    return statuses(changes).includes(boundary as never);
   }
-  if (statuses(changes).includes(boundary as never)) kill();
-};
+);
+const storage = RunnerStorage.prototype as unknown as { apply(db: BetterSqlite3.Database, event: RunnerEvent): void };
 const apply = storage.apply;
 storage.apply = function (db, event) {
   apply.call(this, db, event);
