@@ -5,6 +5,7 @@
  * Effect or the vendored code, and the CLI loads this module only when it serves the Codex provider.
  */
 import { spawn as spawnChild } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -19,6 +20,7 @@ import * as CodexClient from "../vendor/effect-codex-app-server/src/client.js";
 import * as CodexError from "../vendor/effect-codex-app-server/src/errors.js";
 import { appendStderrTail, stderrExcerpt } from "../vendor/effect-codex-app-server/src/_internal/stdio.js";
 import { CodexRequestError, type CodexConnect, type CodexConnection, type CodexDiagnostic, type CodexSpawn, type CodexTermination } from "./codex-connection.js";
+import { ProviderCleanupError } from "./provider.js";
 
 /**
  * Starts the app-server in its own process group, so a terminal's Ctrl-C reaches the runner (which stops the turn)
@@ -162,6 +164,11 @@ export const connectCodex: CodexConnect = async options => {
       await Effect.runPromise(Scope.close(scope, Exit.void));
       child.stdin.end();
       const gone = () => exit !== undefined && !child.isAlive();
+      const closeStreams = () => {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+      };
       const awaitGroupExit = async () => {
         const deadline = Date.now() + grace;
         if (!exit) await Promise.race([exited, wait(grace)]);
@@ -170,12 +177,22 @@ export const connectCodex: CodexConnect = async options => {
         return gone();
       };
       for (const signal of [undefined, "SIGTERM", "SIGKILL"] as const) {
-        if (signal) child.kill(signal);
+        if (gone()) break;
+        if (signal) {
+          try { child.kill(signal); } catch { /* checked below, never mistaken for an exit */ }
+        }
         if (await awaitGroupExit()) break;
       }
-      if (!gone()) diagnose({ level: "Error", message: "Codex's process group did not exit after SIGKILL", annotations: { pid: child.pid ?? null } });
-      child.stdout.destroy();
-      child.stderr.destroy();
+      if (!gone()) {
+        // A timeout is not proof of exit. Fail the engine closed and retain service ownership until the whole group
+        // is gone, rather than releasing this session for another prompt while its execution may still be alive.
+        const untilGone = async () => {
+          while (!gone()) await delay(100);
+          closeStreams();
+        };
+        throw new ProviderCleanupError("Codex's process group did not exit after SIGKILL; runner stopped accepting work", untilGone(), { pid: child.pid ?? null });
+      }
+      closeStreams();
     })()
   };
 };

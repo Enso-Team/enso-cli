@@ -3,6 +3,7 @@
 // - transcript (default): plays the inbound side of an Enso Codex replay transcript (ENSO_MOCK_TRANSCRIPT). Each line it
 //   reads stands for the next expected outbound frame, unchecked; it then writes the inbound entries that follow, with
 //   `<workspace>` as its working directory. Closing stdin plays `stdin.close`; a runtime_exit ends the process.
+// - stubborn-transcript: plays a transcript but stays alive after EOF and ignores SIGTERM.
 // - crash: answers the first request, writes an error to stderr and exits with code 3.
 // - garbage: answers the first request with a line that is not JSON, then waits for stdin to close.
 // - stubborn: ignores stdin's end and SIGTERM, starts `sleep` in the server's process group, and writes both pids to
@@ -36,6 +37,11 @@ if (["stubborn", "orphan-eof", "orphan-term"].includes(mode)) {
   });
   lines.on("close", () => process.exit(0));
 } else {
+  const stubborn = mode === "stubborn-transcript";
+  if (stubborn) {
+    process.on("SIGTERM", () => {});
+    setInterval(() => {}, 1000);
+  }
   const workspace = realpathSync(process.cwd());
   const materialize = value => {
     if (value === "<workspace>") return workspace;
@@ -50,11 +56,14 @@ if (["stubborn", "orphan-eof", "orphan-term"].includes(mode)) {
     for (; cursor < entries.length; cursor++) {
       const entry = entries[cursor];
       if (entry.type === "expect_outbound") return;
-      if (entry.type === "runtime_exit") process.exit(entry.status === "success" ? 0 : 1);
+      if (entry.type === "runtime_exit") {
+        if (!stubborn) process.exit(entry.status === "success" ? 0 : 1);
+        return;
+      }
       send(materialize(entry.frame));
     }
   };
   const consume = () => { if (entries[cursor]?.type === "expect_outbound") cursor++; play(); };
   lines.on("line", line => { if (line.trim()) consume(); });
-  lines.on("close", () => { consume(); process.exit(0); });
+  lines.on("close", () => { consume(); if (!stubborn) process.exit(0); });
 }

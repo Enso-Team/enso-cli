@@ -678,8 +678,12 @@ can fail requests or drop notifications (see Outcomes).
   then SIGKILL, to the app-server's process group (and so to anything Codex started
   without leaving that group). Cleanup checks the group even after the app-server
   exits, so remaining children still receive those signals. Commands Codex runs in
-  a session of their own are Codex's to end when it exits. If the runner itself is
-  killed, Codex sees its stdin close.
+  a session of their own are Codex's to end when it exits. If group exit still cannot
+  be confirmed after SIGKILL, the service rejects further work with
+  `runner_cleanup_failure` and retains storage ownership until the group is gone.
+  No terminal outcome or checkpoint is committed, and shutdown waits for that
+  cleanup. The next runner marks the dispatched run uncertain through normal restart
+  recovery. If the runner itself is killed, Codex sees its stdin close.
 - **Bridge.** As for Claude: `ENSO_RUNNER_BRIDGE=disabled` is set for the process and,
   through Codex's shell environment policy, for the commands it runs, and the
   instructions tell Codex the bridge is unavailable.

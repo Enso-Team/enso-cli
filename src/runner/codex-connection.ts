@@ -69,7 +69,8 @@ export interface CodexConnection {
   /** The latest standard error output, bounded. */
   stderr(): string;
   /** Rejects outstanding RPCs, ends the Effect scope, closes stdin, then escalates SIGTERM and SIGKILL for the process
-   * group, including children of an exited leader. Cleanup is bounded and idempotent. */
+   * group, including children of an exited leader. Cleanup is bounded and idempotent. If exit cannot be confirmed,
+   * rejects with ProviderCleanupError carrying an exit promise the engine must await before releasing ownership. */
   close(): Promise<void>;
 }
 
