@@ -4,7 +4,7 @@ import { isAbsolute } from "node:path";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import { EnsoCliError } from "../errors.js";
 import { answerSchema, canonical, defaultFakeOptions, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Json, type Pending, type Prompt, type Run, type RunnerEvent, type Session } from "./protocol.js";
-import type { RunnerProvider } from "./provider.js";
+import { ProviderCleanupError, type RunnerProvider } from "./provider.js";
 import type { RunnerStorage } from "./storage.js";
 
 type Active = { controller: AbortController; task: Promise<void>; answer?: (answer: Answer) => void };
@@ -27,11 +27,12 @@ export class RunnerEngine {
   private active = new Map<string, Active>();
   private accepting = true;
   private healthy = true;
+  private fatalError?: EnsoCliError;
   private shutdownTask?: Promise<void>;
   constructor(
     private readonly storage: RunnerStorage,
     private readonly provider: RunnerProvider,
-    private readonly options: { autoDispatch?: boolean; onFatal?: () => void; reclaimStep?: number } = {}
+    private readonly options: { autoDispatch?: boolean; onFatal?: (error: EnsoCliError) => void; reclaimStep?: number } = {}
   ) {
     // Anything past its dispatch marker may have executed: record it as uncertain, never dispatch it again, and mark
     // its session uncertain so the next prompt has to choose how to continue.
@@ -235,7 +236,14 @@ export class RunnerEngine {
         const uncertain = status === "completed" || checkpointed ? undefined : session.uncertain;
         const changed = checkpointed || uncertain !== session.uncertain;
         this.commit([this.update(id, status, fields), ...(changed ? [this.sessionUpdate(sessionID, providerState, uncertain)] : [])]);
-      } catch {
+      } catch (error) {
+        if (error instanceof ProviderCleanupError) {
+          this.fail(error.message, error);
+          // Do not commit a terminal outcome or release service ownership while execution may still be alive.
+          // The dispatch marker stays durable; restart will mark it uncertain once cleanup has actually finished.
+          await error.exited;
+          return;
+        }
         if (this.healthy) this.commit(this.uncertain(this.run(id), {
           code: "provider_uncertain", message: "Provider ended without confirming an outcome; no automatic replay"
         }));
@@ -325,15 +333,19 @@ export class RunnerEngine {
       throw this.fail("Durable read failed; runner stopped. Restart and inspect durable state");
     }
   }
-  private fail(message: string): EnsoCliError {
+  private fail(message: string, error = new EnsoCliError("runner_storage_failure", message)): EnsoCliError {
     this.healthy = false;
     this.accepting = false;
+    this.fatalError ??= error;
     for (const active of this.active.values()) active.controller.abort();
-    this.options.onFatal?.();
-    return new EnsoCliError("runner_storage_failure", message);
+    this.options.onFatal?.(this.fatalError);
+    return this.fatalError;
   }
   private assertHealthy(): void {
-    if (!this.healthy) throw new EnsoCliError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");
+    if (!this.healthy) {
+      if (this.fatalError instanceof ProviderCleanupError) throw this.fatalError;
+      throw new EnsoCliError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");
+    }
   }
   private assertAccepting(): void {
     this.assertHealthy();

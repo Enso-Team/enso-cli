@@ -568,8 +568,18 @@ CLI does). Every turn is a paid agent call.
   result after the request confirms `cancelled`; a success result that arrives
   first is `completed`. No confirmation in time, a refused interrupt, or a stream
   that ends without a result is `interrupted` with `cancel_unconfirmed` and
-  `details.interrupt` (`pending`, `acknowledged` or `failed`). The query is closed
-  in every case, which ends the CLI process and any background shell it started.
+  `details.interrupt` (`pending`, `acknowledged` or `failed`).
+- **Process lifetime.** Each query's CLI runs in its own process group. After the
+  query is closed, the runner waits for that group to exit before committing the
+  outcome or releasing the session for another prompt. It allows 2 seconds after
+  stdin EOF, then sends SIGTERM and, after another 2 seconds, SIGKILL, allowing a
+  final 2 seconds for exit. Remaining group members are checked even after the CLI
+  exits. Processes that start their own session are outside this group. If exit
+  still cannot be confirmed, the service rejects further work with
+  `runner_cleanup_failure` (HTTP 503) and retains storage ownership until the group
+  is gone. No terminal outcome or checkpoint is committed; the next runner marks
+  the dispatched run uncertain through normal restart recovery. Shutdown waits
+  for cleanup too; forcing the runner to exit bypasses that wait.
 - **Bridge.** No Enso bridge operation is exposed to Claude. The bridge
   identifies an app only by origin and pairing token; it advertises no stable
   instance identity, so a runner cannot tell the paired app from another process

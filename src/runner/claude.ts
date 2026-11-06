@@ -5,6 +5,7 @@ import { EnsoCliError } from "../errors.js";
 import { cliVersion } from "../version.js";
 import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
 import { bounded, plain, runnerBridgeEnv, runnerInstructions, selectionText } from "./agent-context.js";
+import { ClaudeProcessGroup } from "./claude-process.js";
 import type { Answer, Json, Pending, Prompt, Session } from "./protocol.js";
 import type { Execution, ProviderOutcome, RunnerProvider } from "./provider.js";
 
@@ -58,7 +59,7 @@ export class ClaudeProvider implements RunnerProvider {
   constructor(
     private readonly query: ClaudeQuery,
     private readonly config: ClaudeConfig = { permissionMode: "default" },
-    private readonly options: { stopTimeoutMs?: number; newID?: () => string } = {}
+    private readonly options: { stopTimeoutMs?: number; exitGraceMs?: number; newID?: () => string } = {}
   ) {}
 
   async execute({ session, prompt, signal, record, wait }: Execution): Promise<ProviderOutcome> {
@@ -74,7 +75,8 @@ export class ClaudeProvider implements RunnerProvider {
     const native: ClaudeNative = { conversationID, resume, promptUUID, model: this.config.model ?? null, permissionMode: this.config.permissionMode };
     // Durable before the query can create or advance the conversation under these identifiers.
     record(native);
-    return new Turn(this.query, this.config, { cwd, conversationID, resume, promptUUID, prompt, signal, wait, stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs }).run();
+    return new Turn(this.query, this.config, { cwd, conversationID, resume, promptUUID, prompt, signal, wait,
+      stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs, exitGraceMs: this.options.exitGraceMs }).run();
   }
 
   /**
@@ -100,7 +102,7 @@ function conversationOf(value: Json | undefined): string | undefined {
 
 type TurnInput = {
   cwd: string; conversationID: string; resume: boolean; promptUUID: string; prompt: Readonly<Prompt>;
-  signal: AbortSignal; wait: Execution["wait"]; stopTimeoutMs: number;
+  signal: AbortSignal; wait: Execution["wait"]; stopTimeoutMs: number; exitGraceMs?: number;
 };
 
 class Turn {
@@ -116,6 +118,16 @@ class Turn {
   constructor(private readonly query: ClaudeQuery, private readonly config: ClaudeConfig, private readonly input: TurnInput) {}
 
   async run(): Promise<ProviderOutcome> {
+    const processes = new ClaudeProcessGroup(data => { this.stderr = (this.stderr + data).slice(-stderrTail); }, this.input.exitGraceMs);
+    try { return await this.drive(processes); }
+    finally {
+      this.finished = true;
+      // Even a synchronous query() failure may have spawned a process before throwing.
+      await processes.close();
+    }
+  }
+
+  private async drive(processes: ClaudeProcessGroup): Promise<ProviderOutcome> {
     const { signal, stopTimeoutMs } = this.input;
     let endInput!: () => void;
     const inputEnded = new Promise<void>(resolve => { endInput = resolve; });
@@ -124,7 +136,7 @@ class Turn {
     try {
       handle = this.query({
         prompt: (async function* () { yield message; await inputEnded; })(),
-        options: this.options()
+        options: this.options(processes)
       });
     } catch (error) {
       endInput();
@@ -166,6 +178,7 @@ class Turn {
         return outcome;
       }
     } finally {
+      this.finished = true;
       signal.removeEventListener("abort", stop);
       clearTimeout(timer);
       endInput();
@@ -224,7 +237,7 @@ class Turn {
     } };
   }
 
-  private options(): Options {
+  private options(processes: ClaudeProcessGroup): Options {
     const canUseTool: CanUseTool = (toolName, toolInput, options) => this.serialized(options, () => this.decide(toolName, toolInput, options));
     return {
       cwd: this.input.cwd,
@@ -235,7 +248,8 @@ class Turn {
       canUseTool,
       systemPrompt: { type: "preset", preset: "claude_code", append: runnerInstructions },
       env: { ...process.env, [runnerBridgeEnv]: "disabled", CLAUDE_AGENT_SDK_CLIENT_APP: `enso-cli/${cliVersion}` },
-      stderr: data => { this.stderr = (this.stderr + data).slice(-stderrTail); }
+      stderr: data => { this.stderr = (this.stderr + data).slice(-stderrTail); },
+      spawnClaudeCodeProcess: processes.spawn
     };
   }
 
