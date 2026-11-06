@@ -1,3 +1,5 @@
+import { accessSync, constants, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Command } from "commander";
 import { EnsoCliError, printEnvelope, printsOwnOutput } from "../errors.js";
 import { ClaudeProvider, claudePermissionModes, loadClaudeQuery } from "../runner/claude.js";
@@ -28,6 +30,13 @@ function parseDays(value: string): number {
   if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", `--retain-days must be a whole number of days from 1 to ${maxRetainDays}`);
   return days;
 }
+/** The SDK spawns Claude in each session's working directory, so a relative path must be fixed against this one. */
+function parseExecutable(value: string): string {
+  const path = resolve(value);
+  try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path; }
+  catch { /* missing or not executable; refused below */ }
+  throw new EnsoCliError("invalid_input", "--claude-executable must be an executable file");
+}
 
 export function registerRunner(program: Command): void {
   const runner = withoutUpdateNotice(program.command("runner")).description("Durable local prompt runner (fake or Claude provider)");
@@ -36,7 +45,7 @@ export function registerRunner(program: Command): void {
     .requiredOption("--provider <name>", "execution provider: fake (deterministic test provider) or claude (Claude Agent SDK)", parseProvider)
     .option("--claude-model <model>", "Claude model for new and resumed turns (default: Claude Code's default)")
     .option("--claude-permission-mode <mode>", `Claude permission mode: ${claudePermissionModes.join(", ")} (default: default, which asks through the runner)`, parsePermissionMode)
-    .option("--claude-executable <path>", "Claude Code executable to run instead of the SDK's bundled one")
+    .option("--claude-executable <path>", "Claude Code executable to run instead of the SDK's bundled one", parseExecutable)
     .option("--directory <path>", "private runner storage directory")
     .option("--retain-days <days>", "delete finished runs and their events this many days after their last update (default: keep everything)", parseDays)
     .action(async function (this: Command) {

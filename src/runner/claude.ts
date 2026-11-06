@@ -37,9 +37,19 @@ export async function loadClaudeQuery(): Promise<ClaudeQuery> {
   try {
     const sdk = await import("@anthropic-ai/claude-agent-sdk");
     return sdk.query as ClaudeQuery;
-  } catch {
-    throw new EnsoCliError("runner_provider_unavailable", "The Claude provider needs the optional @anthropic-ai/claude-agent-sdk package; reinstall the CLI without omitting optional dependencies");
+  } catch (error) {
+    throw claudeLoadError(error);
   }
+}
+
+/** Only the package itself missing means it was omitted; a missing dependency of it, or a throw while loading, is reported with its cause. */
+export function claudeLoadError(error: unknown): EnsoCliError {
+  const code = (error as { code?: unknown } | null)?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  if ((code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && /['"]@anthropic-ai\/claude-agent-sdk['"]/.test(message)) {
+    return new EnsoCliError("runner_provider_unavailable", "The Claude provider needs the optional @anthropic-ai/claude-agent-sdk package; reinstall the CLI without omitting optional dependencies");
+  }
+  return new EnsoCliError("runner_provider_unavailable", "The Claude provider's @anthropic-ai/claude-agent-sdk package failed to load", { cause: message });
 }
 
 /**
@@ -123,7 +133,8 @@ class Turn {
     const stop = () => {
       this.interruptRequested = true;
       this.interrupt = "pending";
-      handle.interrupt().then(() => { this.interrupt = "acknowledged"; }, () => { this.interrupt = "failed"; });
+      // A refused interrupt will not be confirmed: stop waiting.
+      handle.interrupt().then(() => { this.interrupt = "acknowledged"; }, () => { this.interrupt = "failed"; expire(); });
       // Time for the CLI to acknowledge the interrupt and then end the turn.
       timer = setTimeout(expire, 2 * stopTimeoutMs);
     };
@@ -200,12 +211,14 @@ class Turn {
     };
   }
 
-  /** The captured prompt and selection, as submitted; nothing is reread from the canvas. */
+  /** The captured prompt and selection, as submitted except for escaped framing tags; nothing is reread from the canvas. */
   private message(): SDKUserMessage {
     const { text, context } = this.input.prompt;
     const nodes = context.selectedNodes.map(node => {
       const attributes = `node_id=${JSON.stringify(node.nodeID)}${node.noteID === undefined ? "" : ` note_id=${JSON.stringify(node.noteID)}`}`;
-      return `<enso_node ${attributes}>\n${node.content}\n</enso_node>`;
+      // Content cannot close its node or open another; nothing else in it is escaped.
+      const content = node.content.replace(/<(\/?enso_node)/gi, "&lt;$1");
+      return `<enso_node ${attributes}>\n${content}\n</enso_node>`;
     });
     const selection = nodes.length ? [{ type: "text" as const, text: `Selected Enso canvas nodes, captured when this prompt was submitted:\n\n${nodes.join("\n\n")}` }] : [];
     return {

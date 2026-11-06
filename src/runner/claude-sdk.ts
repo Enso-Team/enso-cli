@@ -85,9 +85,9 @@ export function permissionRequest(toolName: string, input: Record<string, unknow
   };
 }
 
-/** Enso: `cancel` is not offered as a choice; the runner's cancellation denies with interrupt instead. */
+/** Enso: there is no `cancel` decision; the provider handles cancellation with its own deny-with-interrupt. */
 export function permissionResultFromDecision(input: {
-  toolName: string; decision: PermissionDecision | "cancel"; toolInput: Record<string, unknown>; toolUseID: string;
+  toolName: string; decision: PermissionDecision; toolInput: Record<string, unknown>; toolUseID: string;
   suggestions?: PermissionUpdate[];
 }): PermissionResult {
   if (input.decision === "allow" || input.decision === "allow_session") {
@@ -97,12 +97,7 @@ export function permissionResultFromDecision(input: {
       ...(input.decision === "allow_session" ? { updatedPermissions: toSessionPermissionUpdates(input.toolName, input.suggestions) } : {})
     };
   }
-  return {
-    behavior: "deny",
-    message: input.decision === "cancel" ? "User cancelled tool execution." : "User declined tool execution.",
-    toolUseID: input.toolUseID, decisionClassification: "user_reject",
-    ...(input.decision === "cancel" ? { interrupt: true } : {})
-  };
+  return { behavior: "deny", message: "User declined tool execution.", toolUseID: input.toolUseID, decisionClassification: "user_reject" };
 }
 
 function toSessionPermissionUpdates(toolName: string, suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
@@ -110,15 +105,18 @@ function toSessionPermissionUpdates(toolName: string, suggestions: readonly Perm
   return updates.length > 0 ? updates : [{ type: "addRules", rules: [{ toolName }], behavior: "allow", destination: "session" }];
 }
 
-/** AskUserQuestion input as runner questions. Enso: option previews are dropped. */
+/**
+ * AskUserQuestion input as runner questions.
+ * Enso: option previews are dropped, and the id and question keep the untrimmed text the CLI expects as answer keys.
+ */
 export function userInputQuestions(input: unknown): Question[] {
   const questions = typeof input === "object" && input !== null ? Reflect.get(input, "questions") : undefined;
   if (!Array.isArray(questions)) return [];
   return questions.flatMap((value: unknown, index: number): Question[] => {
     if (typeof value !== "object" || value === null) return [];
     const record = value as Record<string, unknown>;
-    const question = typeof record.question === "string" ? record.question.trim() : "";
-    if (question.length === 0) return [];
+    const question = typeof record.question === "string" ? record.question : "";
+    if (question.trim().length === 0) return [];
     const header = typeof record.header === "string" && record.header.trim().length > 0 ? record.header.trim() : `Question ${index + 1}`;
     const options = Array.isArray(record.options) ? record.options.flatMap(option => {
       if (typeof option !== "object" || option === null) return [];

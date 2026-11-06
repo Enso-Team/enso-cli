@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -177,6 +177,18 @@ it("rejects unsupported providers and Claude options without the Claude provider
     const result = await command(["runner", "serve", ...args, "--directory", path]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+  }
+  expect(leftovers(path)).toEqual([]);
+}, 15_000);
+
+it("refuses a Claude executable that is missing, not executable, or a directory before touching runner files", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  writeFileSync(join(path, "plain"), "", { mode: 0o644 });
+  mkdirSync(join(path, "folder"));
+  for (const executable of [join(path, "missing"), join(path, "plain"), join(path, "folder")]) {
+    const result = await command(["runner", "serve", "--provider", "claude", "--claude-executable", executable, "--directory", path]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", message: "--claude-executable must be an executable file" });
   }
   expect(leftovers(path)).toEqual([]);
 }, 15_000);

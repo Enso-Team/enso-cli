@@ -483,8 +483,9 @@ CLI does). Every turn is a paid agent call.
   working directory. If that directory no longer exists the run fails with
   `working_directory_unavailable` without starting anything; no other directory
   is substituted. The prompt is the captured `text` plus the captured
-  `selectedNodes` (node and note identities and content), sent as submitted; the
-  canvas is never reread.
+  `selectedNodes` (node and note identities and content), sent as submitted
+  except that `<enso_node` and `</enso_node` in content are escaped as `&lt;`, so
+  content cannot break out of its node's framing; the canvas is never reread.
 - **Conversations.** A session's `providerState` is `{conversationID}`. A turn
   continues it with the SDK's `resume`; a session without one starts a new
   conversation under a runner-allocated UUID (`sessionId`). Before the query
@@ -495,9 +496,10 @@ CLI does). Every turn is a paid agent call.
 - **Configuration.** `--claude-permission-mode` is always passed explicitly
   (default `default`, so tools Claude Code would ask about become runner pending
   requests); `bypassPermissions` and `dontAsk` are not offered. `--claude-model`
-  and `--claude-executable` select the model and a Claude Code executable. These
-  are runner settings, not session settings: a restart with other settings applies
-  them to resumed conversations too.
+  and `--claude-executable` select the model and a Claude Code executable (the
+  path is resolved against the directory `serve` runs in and must be an
+  executable file). These are runner settings, not session settings: a restart
+  with other settings applies them to resumed conversations too.
 - **Permissions and input.** Each permission callback becomes a `permission`
   request with ID `<requestID>:<toolUseID>`, choices `allow`, `allow_session`
   (grants Claude's suggested rule, or the tool, for the rest of that turn: each turn is a new Claude Code process) and
