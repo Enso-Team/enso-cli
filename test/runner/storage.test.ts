@@ -7,7 +7,7 @@ import { RunnerEngine } from "../../src/runner/engine.js";
 import { FakeProvider, type RunnerProvider } from "../../src/runner/provider.js";
 import { startRunner } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
-import type { Run } from "../../src/runner/protocol.js";
+import { eventSchema, type Run } from "../../src/runner/protocol.js";
 import { allEvents, applyEvents, durable, empty } from "./replica.js";
 
 let directory: string;
@@ -657,6 +657,18 @@ describe("check", () => {
     expect(RunnerStorage.check(directory)).toEqual({
       cursor: live.cursor, expiredThrough: 0, events: live.cursor, sessions: live.sessions.length, runs: live.runs.length, differences: []
     });
+  });
+
+  it("parses each event once, and each row's events once", async () => {
+    open();
+    await history();
+    const live = engine!.snapshot();
+    abandon();
+    const parse = vi.spyOn(eventSchema, "parse");
+    const result = RunnerStorage.check(directory);
+    // Every event, plus at most a first and a latest event per row; folding and comparing again would double it.
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(result.events + 2 * (live.sessions.length + live.runs.length));
+    expect(result.differences).toEqual([]);
   });
 
   it("finds history that startup's checks accept but the rows hide", async () => {

@@ -297,7 +297,7 @@ export class RunnerStorage {
    * named, and never reach `differences`. Only history the rows hide (an update to a finished run, a deletion of an
    * unfinished one) is listed. The schema's triggers keep such mismatches from committing, so this matters only for
    * repairing a store damaged by hand or by the disk. Listing them would need `linkage` to return every mismatch with
-   * its ID, and `rebuild` to record an unreadable row instead of throwing.
+   * its ID, and `history` to record an unreadable row instead of throwing.
    */
   static check(directory = runnerDirectory()): StoreCheck {
     const storage = new RunnerStorage(directory);
@@ -313,7 +313,10 @@ export class RunnerStorage {
       throw new EnsoCliError("runner_storage_failure", "Runner database could not be opened", { directory: storage.directory, cause: { code, message } });
     }
     const db = storage.db = openDatabase(sqlite(), path, { readonly: true, fileMustExist: true });
-    try { return db.transaction(() => { storage.verify(); return storage.rebuild(); })(); }
+    try {
+      // One pass: verify parses each event once and hands it to the fold, and the rows it read are the ones compared.
+      return db.transaction(() => { const history = storage.history(); return history.compare(storage.verify(history.apply)); })();
+    }
     finally { storage.release(); }
   }
 
@@ -403,8 +406,9 @@ export class RunnerStorage {
     return "store";
   }
 
-  /** Validates the whole store before anything is served or dispatched. */
-  private verify(): void {
+  /** Validates the whole store before anything is served or dispatched, and returns its rows as read. `visit` sees each
+   * event, parsed, in sequence order. */
+  private verify(visit?: (event: RunnerEvent) => void): { sessions: Session[]; runs: Run[] } {
     const db = this.database();
     const check = <T>(statement: () => T, message: string): T => {
       try { return statement(); }
@@ -419,21 +423,24 @@ export class RunnerStorage {
       if (expired > cursor || above !== cursor - expired) throw new Error();
     }, "Runner event sequence gap");
     check(() => { if ((db.pragma("foreign_key_check") as unknown[]).length) throw new Error(); }, "Runner record references a missing event or session");
-    check(() => { for (const row of prepare(db, "SELECT sequence, type, event_json FROM events").iterate()) this.event(row as EventRow); }, "Damaged runner event");
+    check(() => {
+      for (const row of prepare(db, "SELECT sequence, type, event_json FROM events ORDER BY sequence").iterate()) {
+        const event = this.event(row as EventRow);
+        visit?.(event);
+      }
+    }, "Damaged runner event");
     // Names no row, and stops `check` before it can list differences: see the limitation noted on `check`.
     check(() => { if (prepare(db, linkage).get() !== undefined) throw new Error(); }, "Runner rows do not match their events");
-    check(() => this.sessions(), "Damaged runner session");
-    check(() => this.runs(), "Damaged runner run");
+    return { sessions: check(() => this.sessions(), "Damaged runner session"), runs: check(() => this.runs(), "Damaged runner run") };
   }
 
-  /** Folds the whole event history, as a client applies it, and lists where it disagrees with the rows. */
-  private rebuild(): StoreCheck {
-    const db = this.database();
+  /** Folds the whole event history, as a client applies it (`apply`, in sequence order), and lists where it disagrees
+   * with the rows (`compare`). */
+  private history(): { apply: (event: RunnerEvent) => void; compare: (stored: { sessions: Session[]; runs: Run[] }) => StoreCheck } {
     const sessions = new Map<string, Session>(), runs = new Map<string, Run>();
     const differences: Difference[] = [];
     let events = 0;
-    for (const row of prepare(db, "SELECT sequence, type, event_json FROM events ORDER BY sequence").iterate()) {
-      const event = this.event(row as EventRow);
+    const apply = (event: RunnerEvent) => {
       const { sequence } = event;
       events++;
       if (event.type === "session_created") {
@@ -463,9 +470,8 @@ export class RunnerStorage {
           runs.delete(requestID);
         }
       }
-    }
-    const stored = this.snapshot();
-    const compare = <T>(kind: "session" | "run", rebuilt: Map<string, T>, rows: T[], key: (value: T) => string, id: (key: string) => Omit<Difference, "problem">) => {
+    };
+    const differ = <T>(kind: "session" | "run", rebuilt: Map<string, T>, rows: T[], key: (value: T) => string, id: (key: string) => Omit<Difference, "problem">) => {
       const read = new Map(rows.map(value => [key(value), value]));
       for (const [name, value] of rebuilt) {
         const row = read.get(name);
@@ -474,9 +480,12 @@ export class RunnerStorage {
       }
       for (const name of read.keys()) if (!rebuilt.has(name)) differences.push({ problem: `${kind} row without events`, ...id(name) });
     };
-    compare("session", sessions, stored.sessions, session => session.id, sessionID => ({ sessionID }));
-    compare("run", runs, stored.runs, run => run.request.requestID, requestID => ({ requestID }));
-    return { cursor: stored.cursor, expiredThrough: this.expiredThrough(), events, sessions: sessions.size, runs: runs.size, differences };
+    const compare = (stored: { sessions: Session[]; runs: Run[] }): StoreCheck => {
+      differ("session", sessions, stored.sessions, session => session.id, sessionID => ({ sessionID }));
+      differ("run", runs, stored.runs, run => run.request.requestID, requestID => ({ requestID }));
+      return { cursor: this.cursor(), expiredThrough: this.expiredThrough(), events, sessions: sessions.size, runs: runs.size, differences };
+    };
+    return { apply, compare };
   }
 
   /** Commits every change as one transaction of consecutive events; nothing persists if it throws. */
