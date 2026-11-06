@@ -353,14 +353,22 @@ client does, and compares the result with what the rows read. It catches history
 the rows hide, such as an update to a finished run. It is read-only and runs in
 one read transaction, so it is safe beside a live runner. It reports
 `{cursor, expiredThrough, events, sessions, runs}`, or fails with
-`invalid_runner_storage` and up to 50 `details.differences`. With no store in the
+`invalid_runner_storage` and up to 50 `details.differences`. It refuses what
+startup refuses beside the database (pre-SQLite files, orphaned `-wal`/`-shm`),
+and reports an empty `runner.sqlite`, which startup initializes, as an empty
+store with `empty: true`. With no store in the
 directory, or a file where the directory should be, it fails with
 `runner_storage_not_found`, and creates nothing; a store it cannot reach (an
 unsearchable directory, a dangling symlink) fails with `runner_storage_failure`
 instead.
 
+Only these checks failing on the store's contents refuse it (`invalid_runner_storage`):
+any other error while judging or initializing it, such as I/O, is reported as a
+`runner_storage_failure` with its cause.
+
 Once its checks pass, startup recovers terminal records unchanged, dispatches
-only accepted work, and converts all previous running, waiting, or stopping work
+only accepted work (none if `serve` received SIGINT or SIGTERM while starting:
+shutdown cancels it instead), and converts all previous running, waiting, or stopping work
 to durable `interrupted` records with `error.code: "restart_uncertain"`, marking
 each one's session uncertain, in one transaction. A crash part way through a
 transaction leaves no trace of it. In particular:
@@ -475,8 +483,9 @@ CLI does). Every turn is a paid agent call.
   working directory. If that directory no longer exists the run fails with
   `working_directory_unavailable` without starting anything; no other directory
   is substituted. The prompt is the captured `text` plus the captured
-  `selectedNodes` (node and note identities and content), sent as submitted; the
-  canvas is never reread.
+  `selectedNodes` (node and note identities and content), sent as submitted
+  except that `<enso_node` and `</enso_node` in content are escaped as `&lt;`, so
+  content cannot break out of its node's framing; the canvas is never reread.
 - **Conversations.** A session's `providerState` is `{conversationID}`. A turn
   continues it with the SDK's `resume`; a session without one starts a new
   conversation under a runner-allocated UUID (`sessionId`). Before the query
@@ -487,9 +496,10 @@ CLI does). Every turn is a paid agent call.
 - **Configuration.** `--claude-permission-mode` is always passed explicitly
   (default `default`, so tools Claude Code would ask about become runner pending
   requests); `bypassPermissions` and `dontAsk` are not offered. `--claude-model`
-  and `--claude-executable` select the model and a Claude Code executable. These
-  are runner settings, not session settings: a restart with other settings applies
-  them to resumed conversations too.
+  and `--claude-executable` select the model and a Claude Code executable (the
+  path is resolved against the directory `serve` runs in and must be an
+  executable file). These are runner settings, not session settings: a restart
+  with other settings applies them to resumed conversations too.
 - **Permissions and input.** Each permission callback becomes a `permission`
   request with ID `<requestID>:<toolUseID>`, choices `allow`, `allow_session`
   (grants Claude's suggested rule, or the tool, for the rest of that turn: each turn is a new Claude Code process) and

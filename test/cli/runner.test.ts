@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,7 +88,10 @@ it("defers an early signal until startup finishes, then stops without announcing
   const starting = new Promise<void>(resolve => { started = resolve; });
   const closed = new Promise<void>(resolve => { finishStop = resolve; });
   const stop = vi.fn(async () => { finishStop(); });
-  vi.doMock("../../src/runner/service.js", () => ({ startRunner: () => { started(); return new Promise(resolve => { finishStart = resolve; }); } }));
+  let signal: AbortSignal | undefined;
+  vi.doMock("../../src/runner/service.js", () => ({ startRunner: (options: { signal?: AbortSignal }) => {
+    signal = options.signal; started(); return new Promise(resolve => { finishStart = resolve; });
+  } }));
   const { buildProgram } = await import("../../src/index.js");
   const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   const before = { SIGINT: process.listeners("SIGINT"), SIGTERM: process.listeners("SIGTERM") };
@@ -96,7 +99,10 @@ it("defers an early signal until startup finishes, then stops without announcing
   await starting;
   const handler = process.listeners("SIGTERM").find(listener => !before.SIGTERM.includes(listener))!;
   expect(process.listeners("SIGINT").filter(listener => !before.SIGINT.includes(listener))).toEqual([handler]);
+  expect(signal?.aborted).toBe(false);
   handler("SIGTERM"); handler("SIGTERM");
+  // Startup is told at once, so it does not dispatch the runs this signal means to stop.
+  expect(signal?.aborted).toBe(true);
   finishStart({ directory: "/unused", closed, stop });
   await parsed;
   expect(stop).toHaveBeenCalled();
@@ -159,12 +165,30 @@ it("rejects non-positive runner timeouts", async () => {
   }
 }, 15_000);
 
+it("names the range of --retain-days when a value is outside it", async () => {
+  const result = await command(["runner", "serve", "--provider", "fake", "--retain-days", "40000"]);
+  expect(result.code).toBe(1);
+  expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", message: "--retain-days must be a whole number of days from 1 to 36500" });
+});
+
 it("rejects unsupported providers and Claude options without the Claude provider", async () => {
   const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
   for (const args of [["--provider", "openai"], ["--provider", "fake", "--claude-model", "x"], ["--provider", "claude", "--claude-permission-mode", "bypassPermissions"]]) {
     const result = await command(["runner", "serve", ...args, "--directory", path]);
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+  }
+  expect(leftovers(path)).toEqual([]);
+}, 15_000);
+
+it("refuses a Claude executable that is missing, not executable, or a directory before touching runner files", async () => {
+  const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
+  writeFileSync(join(path, "plain"), "", { mode: 0o644 });
+  mkdirSync(join(path, "folder"));
+  for (const executable of [join(path, "missing"), join(path, "plain"), join(path, "folder")]) {
+    const result = await command(["runner", "serve", "--provider", "claude", "--claude-executable", executable, "--directory", path]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "invalid_input", message: "--claude-executable must be an executable file" });
   }
   expect(leftovers(path)).toEqual([]);
 }, 15_000);
@@ -207,5 +231,6 @@ it("exempts runner and update commands from the update notice", async () => {
   const find = (...names: string[]) => names.reduce((command, name) => command.commands.find(child => child.name() === name)!, program);
   expect(wantsUpdateNotice(find("runner", "call"))).toBe(false);
   expect(wantsUpdateNotice(find("update"))).toBe(false);
-  expect(wantsUpdateNotice(find("node", "update"))).toBe(true);
+  // Only the top-level update command is exempt; subcommands named update are ordinary edits.
+  for (const group of ["node", "link", "mark", "primitive", "excerpt"]) expect(wantsUpdateNotice(find(group, "update")), group).toBe(true);
 });

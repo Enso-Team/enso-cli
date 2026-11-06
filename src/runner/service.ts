@@ -26,13 +26,24 @@ const errorStatus = new Map<string, number>([
 /** How often a runner with retention looks for finished runs to delete. */
 const retentionIntervalMs = 60 * 60 * 1000;
 
-/** `retainDays`: delete finished runs (and their events) this many days after their last update; unset keeps everything. */
-export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number } = {}): Promise<RunnerService> {
+/** The longest retention `--retain-days` accepts: a century. */
+export const maxRetainDays = 36_500;
+/**
+ * `retainDays`: delete finished runs (and their events) this many days after their last update; unset keeps everything.
+ * `signal`: aborted once the caller means to stop. Startup still completes, so the caller can stop the service it
+ * returns, but runs accepted before startup are not dispatched: shutdown cancels them instead.
+ */
+export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number; signal?: AbortSignal } = {}): Promise<RunnerService> {
+  // Checked before ownership: 0 or a negative count would delete every finished run, and NaN would fail every pass.
+  const retain = options.retainDays;
+  if (retain !== undefined && !(Number.isFinite(retain) && retain > 0 && retain <= maxRetainDays)) {
+    throw new EnsoCliError("invalid_input", `retainDays must be a number of days greater than 0 and at most ${maxRetainDays}`);
+  }
   const storage = new RunnerStorage(options.directory);
   storage.acquire();
   const socketPath = join(storage.directory, "control.sock");
   if (Buffer.byteLength(socketPath) > 103) {
-    storage.release();
+    try { storage.release(); } catch { /* report the path, not a failure to clean up after it */ }
     throw new EnsoCliError("runner_path_too_long", "Unix socket path exceeds macOS limits; choose a shorter --directory");
   }
   const token = randomBytes(32).toString("hex");
@@ -41,6 +52,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   let initialized = false;
   let fatalError: Error | undefined;
   let retention: NodeJS.Timeout | undefined;
+  let firstPass: NodeJS.Immediate | undefined;
   let finish!: () => void;
   let fail!: (error: Error) => void;
   const closed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
@@ -75,6 +87,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   const stop = (): Promise<void> => {
     if (stopTask) return stopTask;
     stopTask = (async () => {
+      clearImmediate(firstPass);
       clearInterval(retention);
       try { await engine.shutdown(); }
       catch (error) { fatalError ??= error instanceof Error ? error : new Error("Runner shutdown failed"); }
@@ -153,11 +166,11 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     chmodSync(socketPath, 0o600);
     storage.write("connection.json", { protocolVersion: runnerVersion, socketPath, token, pid: process.pid });
     initialized = true;
-    // Passes run once the service is up, so a backlog never holds back `ready` and stop() or a signal ends a pass at
-    // its next step. The first starts now: its first batch is deleted before startRunner returns, the rest is served
-    // between. A failed deletion or reclaim has already failed the engine closed, which stops the service; stopping
-    // refuses the rest. A pass still working through a backlog an hour later is left to finish rather than joined.
-    const retain = options.retainDays;
+    // Passes run once the service is up, so a backlog never holds back `ready` or dispatch, and stop() or a signal ends
+    // a pass at its next step. The first starts on the next turn, after startRunner returns: none of its work, not even
+    // its first batch, runs before `ready`. A failed deletion or reclaim fails the engine closed, which stops the
+    // service as any failed write after `ready` does. A pass still working through a backlog an hour later is left to
+    // finish rather than joined.
     if (retain !== undefined) {
       let expiring = false;
       const expire = () => {
@@ -166,10 +179,12 @@ export async function startRunner(options: { directory?: string; provider?: Runn
         void engine.deleteFinishedBefore(new Date(Date.now() - retain * 24 * 60 * 60 * 1000))
           .catch(() => { /* see above */ }).finally(() => { expiring = false; });
       };
-      expire();
+      firstPass = setImmediate(expire);
       (retention = setInterval(expire, retentionIntervalMs)).unref();
     }
-    if (options.autoDispatch !== false) engine.dispatchAccepted();
+    // A stop requested during startup (a signal handled at the listen above) arrives before the caller has a service
+    // to stop: dispatching here would start work it already asked to stop.
+    if (options.autoDispatch !== false && !options.signal?.aborted) engine.dispatchAccepted();
     return { directory: storage.directory, socketPath, engine, closed, stop };
   } catch (error) {
     server.close();

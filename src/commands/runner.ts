@@ -1,10 +1,12 @@
+import { accessSync, constants, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Command } from "commander";
-import { EnsoCliError, printEnvelope } from "../errors.js";
+import { EnsoCliError, printEnvelope, printsOwnOutput } from "../errors.js";
 import { ClaudeProvider, claudePermissionModes, loadClaudeQuery } from "../runner/claude.js";
 import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
 import { FakeProvider, type RunnerProvider } from "../runner/provider.js";
-import { startRunner, type RunnerService } from "../runner/service.js";
+import { maxRetainDays, startRunner, type RunnerService } from "../runner/service.js";
 import { RunnerStorage } from "../runner/storage.js";
 import { currentRequestContext, withoutRequestContext } from "../targeting.js";
 import { withoutUpdateNotice } from "../update.js";
@@ -25,18 +27,25 @@ function parsePermissionMode(value: string): (typeof claudePermissionModes)[numb
 }
 function parseDays(value: string): number {
   const days = Number(value);
-  if (!/^\d+$/.test(value) || days <= 0 || days > 36_500) throw new EnsoCliError("invalid_input", "--retain-days must be a positive integer of days");
+  if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", `--retain-days must be a whole number of days from 1 to ${maxRetainDays}`);
   return days;
+}
+/** The SDK spawns Claude in each session's working directory, so a relative path must be fixed against this one. */
+function parseExecutable(value: string): string {
+  const path = resolve(value);
+  try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path; }
+  catch { /* missing or not executable; refused below */ }
+  throw new EnsoCliError("invalid_input", "--claude-executable must be an executable file");
 }
 
 export function registerRunner(program: Command): void {
   const runner = withoutUpdateNotice(program.command("runner")).description("Durable local prompt runner (fake or Claude provider)");
-  runner.command("serve")
+  printsOwnOutput(runner.command("serve"))
     .description("Run an independent foreground service; stop with runner shutdown, SIGINT or SIGTERM (a third signal force-exits)")
     .requiredOption("--provider <name>", "execution provider: fake (deterministic test provider) or claude (Claude Agent SDK)", parseProvider)
     .option("--claude-model <model>", "Claude model for new and resumed turns (default: Claude Code's default)")
     .option("--claude-permission-mode <mode>", `Claude permission mode: ${claudePermissionModes.join(", ")} (default: default, which asks through the runner)`, parsePermissionMode)
-    .option("--claude-executable <path>", "Claude Code executable to run instead of the SDK's bundled one")
+    .option("--claude-executable <path>", "Claude Code executable to run instead of the SDK's bundled one", parseExecutable)
     .option("--directory <path>", "private runner storage directory")
     .option("--retain-days <days>", "delete finished runs and their events this many days after their last update (default: keep everything)", parseDays)
     .action(async function (this: Command) {
@@ -49,7 +58,13 @@ export function registerRunner(program: Command): void {
       // Handlers precede startup so an early signal stops the service once it exists instead of killing a half-acquired lock.
       let service: RunnerService | undefined;
       let signals = 0;
-      const signal = (name: NodeJS.Signals) => { if (++signals >= 3) process.exit(name === "SIGTERM" ? 143 : 130); void service?.stop(); };
+      // Until startRunner returns there is no service to stop; the abort keeps it from dispatching accepted runs.
+      const stopping = new AbortController();
+      const signal = (name: NodeJS.Signals) => {
+        if (++signals >= 3) process.exit(name === "SIGTERM" ? 143 : 130);
+        stopping.abort();
+        void service?.stop();
+      };
       process.on("SIGINT", signal);
       process.on("SIGTERM", signal);
       try {
@@ -63,7 +78,7 @@ export function registerRunner(program: Command): void {
             ...(options.claudeExecutable ? { executable: options.claudeExecutable } : {})
           })
           : new FakeProvider();
-        service = await withoutRequestContext(() => startRunner({ directory, retainDays, provider }));
+        service = await withoutRequestContext(() => startRunner({ directory, retainDays, provider, signal: stopping.signal }));
         if (signals) void service.stop();
         else printEnvelope({ ok: true, data: { ready: true, protocolVersion: runnerVersion, provider: provider.name, directory: service.directory } }, Boolean(this.optsWithGlobals().pretty));
         await service.closed;

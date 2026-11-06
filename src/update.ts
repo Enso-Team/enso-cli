@@ -110,7 +110,13 @@ export async function updateCli(checkOnly: boolean): Promise<{ installedVersion:
         hint: "Run `npm install -g @enso-app/cli@latest` with the npm prefix that owns this installation. For a project dependency, run `npm install @enso-app/cli@latest` in that project."
       });
     }
-    await execute("npm", ["install", "--global", `${packageName}@${latest}`, "--registry", registry, "--engine-strict"], {
+    const { stdout: npmVersion } = await execute("npm", ["--version"], { timeout: 5000 });
+    const npmMajor = Number(/^(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.exec(npmVersion.trim())?.[1]);
+    if (!Number.isSafeInteger(npmMajor)) throw new Error("npm returned an invalid version");
+    const installArgs = ["install", "--global", `${packageName}@${latest}`, "--registry", registry, "--engine-strict"];
+    // Global installs ignore package.json's allowScripts; npm 12 requires explicit approval for the native binding.
+    if (npmMajor >= 12) installArgs.push("--allow-scripts=better-sqlite3");
+    await execute("npm", installArgs, {
       cwd: dirname(packageDirectory),
       timeout: 120000,
       maxBuffer: 4 * 1024 * 1024

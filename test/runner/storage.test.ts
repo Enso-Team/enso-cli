@@ -7,7 +7,7 @@ import { RunnerEngine } from "../../src/runner/engine.js";
 import { FakeProvider, type RunnerProvider } from "../../src/runner/provider.js";
 import { startRunner } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
-import type { Run } from "../../src/runner/protocol.js";
+import { eventSchema, type Run } from "../../src/runner/protocol.js";
 import { allEvents, applyEvents, durable, empty } from "./replica.js";
 
 let directory: string;
@@ -170,7 +170,10 @@ describe("transactions", () => {
         [updated("active", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'completed' WHERE request_id = 'active'`],
         [updated("done", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'running' WHERE request_id = 'done'`],
         [updated("active", "accepted"), `UPDATE runs SET last_sequence = ${next}, status = 'accepted' WHERE request_id = 'active'`],
-        ["INSERT INTO runs (request_id, session_id, sequence, last_sequence, status) SELECT 'second', session_id, 2, 2, 'accepted' FROM runs WHERE request_id = 'active'"],
+        // Retention reads updated_at alone, so it must be the latest event's.
+        ["UPDATE runs SET updated_at = 'later' WHERE request_id = 'active'"],
+        [updated("active", "running"), `UPDATE runs SET last_sequence = ${next}, status = 'running', updated_at = 'later' WHERE request_id = 'active'`],
+        ["INSERT INTO runs (request_id, session_id, sequence, last_sequence, status, updated_at) SELECT 'second', session_id, 2, 2, 'accepted', updated_at FROM runs WHERE request_id = 'active'"],
         [`INSERT INTO sessions (id, sequence, last_sequence) VALUES ('${s.id}', 1, 1)`],
         // Events are append-only, gap-free, and name their own subject.
         ["INSERT INTO events (sequence, type, subject, event_json) VALUES (99, 'session_updated', NULL, '{}')"],
@@ -227,14 +230,84 @@ describe("existing stores", () => {
     ownerReleased();
   });
 
+  it.each(["SQLITE_READONLY_CANTINIT", "SQLITE_PROTOCOL", "SQLITE_PERM", "SQLITE_NOMEM"])("reports %s while judging a store as a failure, not a refusal", async code => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "application_id") throw Object.assign(new Error("not a judgment"), { code });
+      return pragma.call(this, source, options);
+    });
+    const error = await startRunner({ directory }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ body: { code: "runner_storage_failure", details: { cause: { code } } } });
+    expect((error as Error).message).not.toMatch(/refusing/);
+    ownerReleased();
+  });
+
+  it("reports a lock held inside SQLite as locked, not as a refused store", async () => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "quick_check") throw Object.assign(new Error("database table is locked"), { code: "SQLITE_LOCKED" });
+      return pragma.call(this, source, options);
+    });
+    await expect(startRunner({ directory })).rejects.toMatchObject({ body: { code: "runner_locked" } });
+  });
+
   it("does not claim to refuse a store it created when initializing it fails", async () => {
     const pragma = Database.prototype.pragma;
     vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
       if (source === "journal_mode = WAL") throw new Error("no WAL here");
       return pragma.call(this, source, options);
     });
-    await expect(startRunner({ directory })).rejects.toEqual(storageError(/^Runner database could not be initialized$/));
+    const error = await startRunner({ directory }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ body: { code: "runner_storage_failure", details: { cause: { message: "no WAL here" } } } });
+    expect((error as Error).message).not.toMatch(/refusing/);
     ownerReleased();
+  });
+
+  it("reports an error that is not a verdict on an existing store as a failure, keeping its message", async () => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "quick_check") throw new TypeError("a bug, not the store");
+      return pragma.call(this, source, options);
+    });
+    const error = await startRunner({ directory }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ body: { code: "runner_storage_failure", details: { cause: { message: "a bug, not the store" } } } });
+    expect((error as Error).message).not.toMatch(/refusing|Damaged/);
+    ownerReleased();
+  });
+
+  it("reports the refusal, not the cleanup, when the owner record is already gone", async () => {
+    open();
+    abandon();
+    const pragma = Database.prototype.pragma;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: Database.PragmaOptions) {
+      if (source === "application_id") {
+        rmSync(path("owner"));
+        throw Object.assign(new Error("file is not a database"), { code: "SQLITE_NOTADB" });
+      }
+      return pragma.call(this, source, options);
+    });
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/refusing to dispatch or overwrite it$/));
+    vi.restoreAllMocks();
+    // Ownership was given up, so the store can be taken again.
+    const service = await startRunner({ directory, autoDispatch: false });
+    await service.stop();
+  });
+
+  it("parses each event once while judging a store at startup", async () => {
+    open();
+    await history();
+    const { cursor } = engine!.snapshot();
+    abandon();
+    const parse = vi.spyOn(eventSchema, "parse");
+    storage = new RunnerStorage(directory);
+    storage.acquire();
+    expect(parse).toHaveBeenCalledTimes(cursor);
   });
 
   it("refuses another application's database before changing its journal mode", async () => {
@@ -276,6 +349,18 @@ describe("existing stores", () => {
     const before = readFileSync(path("runner.sqlite"));
     await expect(startRunner({ directory })).rejects.toEqual(storageError(message));
     expect(readFileSync(path("runner.sqlite"))).toEqual(before);
+    ownerReleased();
+  });
+
+  it("refuses a store whose run row disagrees with its latest event's update time", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "done"));
+    engine!.cancel("done");
+    abandon();
+    // Backdated, a row would be deleted by retention long before its run expired.
+    external(db => db.exec("DROP TRIGGER runs_updated; DROP TRIGGER runs_terminal_final; UPDATE runs SET updated_at = '2000-01-01T00:00:00.000Z'"));
+    await expect(startRunner({ directory })).rejects.toEqual(storageError(/rows do not match/));
     ownerReleased();
   });
 
@@ -383,6 +468,16 @@ describe("events", () => {
 describe("retention", () => {
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const expired = expect.objectContaining({ body: expect.objectContaining({ code: "cursor_expired" }) });
+
+  it("finds expired runs through the finished-run index, without reading events", () => {
+    open({ autoDispatch: false });
+    const prepare = vi.spyOn(Database.prototype, "prepare");
+    storage.finishedBefore(new Date().toISOString(), 500);
+    const sql = prepare.mock.calls.map(([source]) => source).find(source => source.includes("updated_at <"))!;
+    prepare.mockRestore();
+    const plan = external(db => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(new Date().toISOString(), 500) as { detail: string }[]);
+    expect(plan.map(step => step.detail)).toEqual([expect.stringMatching(/^SEARCH runs USING INDEX runs_finished \(updated_at<\?\)$/)]);
+  });
 
   it("deletes finished runs older than the cutoff with their events, expiring only cursors that cannot replay", async () => {
     open({ autoDispatch: false });
@@ -551,8 +646,49 @@ describe("retention", () => {
     let passes = 0;
     vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore").mockImplementation(() => { passes++; return new Promise<number>(() => {}); });
     const service = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    // Not even the first batch runs before startRunner returns.
+    expect(passes).toBe(0);
+    await new Promise(resolve => setImmediate(resolve));
     expect(passes).toBe(1);
     await service.stop();
+  });
+
+  it("serve --retain-days dispatches accepted runs before its first pass", async () => {
+    const order: string[] = [];
+    vi.spyOn(RunnerEngine.prototype, "dispatchAccepted").mockImplementation(() => { order.push("dispatch"); });
+    vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore").mockImplementation(async () => { order.push("retention"); return 0; });
+    const service = await startRunner({ directory, retainDays: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(order).toEqual(["dispatch", "retention"]);
+    await service.stop();
+  });
+
+  it("does not dispatch accepted runs once its caller has asked it to stop", async () => {
+    open({ autoDispatch: false });
+    const s = engine!.createSession({ binding: binding() });
+    engine!.submit(prompt(s.id, "queued"));
+    abandon();
+    const stopping = new AbortController();
+    stopping.abort();
+    const service = await startRunner({ directory, signal: stopping.signal });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(service.engine.run("queued").status).toBe("accepted");
+    await service.stop();
+    open({ autoDispatch: false });
+    expect(engine!.run("queued").status).toBe("cancelled");
+  });
+
+  it("does not run a first pass for a service stopped before it starts", async () => {
+    const pass = vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore");
+    const service = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    await service.stop();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(pass).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 36_501])("refuses retainDays %s before taking the store", async retainDays => {
+    await expect(startRunner({ directory, retainDays })).rejects.toMatchObject({ body: { code: "invalid_input" } });
+    expect(readdirSync(directory)).toEqual([]);
   });
 
   it("serve --retain-days deletes expired runs at startup", async () => {
@@ -567,6 +703,7 @@ describe("retention", () => {
     expect(service.engine.snapshot().runs).toHaveLength(1);
     await service.stop();
     const later = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    await new Promise(resolve => setImmediate(resolve));
     expect(later.engine.snapshot().runs).toEqual([]);
     await later.stop();
   });
@@ -582,6 +719,18 @@ describe("check", () => {
     });
   });
 
+  it("parses each event once, and each row's events once", async () => {
+    open();
+    await history();
+    const live = engine!.snapshot();
+    abandon();
+    const parse = vi.spyOn(eventSchema, "parse");
+    const result = RunnerStorage.check(directory);
+    // Every event, plus at most a first and a latest event per row; folding and comparing again would double it.
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(result.events + 2 * (live.sessions.length + live.runs.length));
+    expect(result.differences).toEqual([]);
+  });
+
   it("finds history that startup's checks accept but the rows hide", async () => {
     open({ autoDispatch: false });
     const s = engine!.createSession({ binding: binding() });
@@ -590,13 +739,32 @@ describe("check", () => {
     const { cursor } = engine!.snapshot();
     abandon();
     // A finished run reopened by hand: every row still points at its latest event, so startup accepts it.
+    const updatedAt = new Date().toISOString();
     external(db => db.exec(`DROP TRIGGER runs_terminal_final;
       INSERT INTO events (sequence, type, subject, event_json) VALUES (${cursor + 1}, 'run_updated', 'done',
-        json_object('type', 'run_updated', 'requestID', 'done', 'status', 'running', 'updatedAt', '${new Date().toISOString()}'));
-      UPDATE runs SET last_sequence = ${cursor + 1}, status = 'running' WHERE request_id = 'done'`));
+        json_object('type', 'run_updated', 'requestID', 'done', 'status', 'running', 'updatedAt', '${updatedAt}'));
+      UPDATE runs SET last_sequence = ${cursor + 1}, status = 'running', updated_at = '${updatedAt}' WHERE request_id = 'done'`));
     open({ autoDispatch: false });
     abandon();
     expect(RunnerStorage.check(directory).differences).toEqual([{ problem: "update of a finished run", sequence: cursor + 1, requestID: "done" }]);
+  });
+
+  it("reports a file a crash left empty as an empty store, as startup initializes it", async () => {
+    writeFileSync(path("runner.sqlite"), "");
+    expect(RunnerStorage.check(directory)).toEqual({ cursor: 0, expiredThrough: 0, events: 0, sessions: 0, runs: 0, differences: [], empty: true });
+    expect(statSync(path("runner.sqlite")).size).toBe(0);
+    const service = await startRunner({ directory, autoDispatch: false });
+    await service.stop();
+    expect(RunnerStorage.check(directory)).toEqual({ cursor: 0, expiredThrough: 0, events: 0, sessions: 0, runs: 0, differences: [] });
+  });
+
+  it("refuses the files beside a store that startup refuses", () => {
+    open();
+    abandon();
+    writeFileSync(path("state.json"), "{}\n");
+    expect(() => RunnerStorage.check(directory)).toThrow(expect.objectContaining({
+      body: expect.objectContaining({ code: "invalid_runner_storage", details: { legacyFiles: ["state.json"] } })
+    }));
   });
 
   it("reports a missing store as not found, without creating it", () => {
