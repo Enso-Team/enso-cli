@@ -20,7 +20,7 @@ import { registerStatus } from "./commands/status.js";
 import { registerUpdate } from "./commands/update.js";
 import { notifyUpdate, wantsUpdateNotice } from "./update.js";
 import { registerVault } from "./commands/vault.js";
-import { EnsoCliError, errorEnvelope, printEnvelope, type EnsoEnvelope } from "./errors.js";
+import { EnsoCliError, errorEnvelope, hasOwnOutput, printEnvelope, type EnsoEnvelope } from "./errors.js";
 import { withRequestContext, currentRequestContext, type TargetOptions } from "./targeting.js";
 import { cliVersion } from "./version.js";
 
@@ -101,6 +101,8 @@ function wrapActions(command: Command): void {
           (group === "auth" && ["link", "unlink"].includes(command.name())))) context.rejectNavigation();
         return await action(processedArgs) as EnsoEnvelope | undefined;
       });
+      // A missing envelope is a bug, not a silent success, unless the command printed its own output.
+      if (result === undefined && !hasOwnOutput(command)) throw new EnsoCliError("internal_error", `${command.name()} returned no result`);
       command.setOptionValue("__ensoResult", result);
       process.exitCode = result === undefined || result.ok ? 0 : 1;
     } catch (error) {

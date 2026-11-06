@@ -1,35 +1,37 @@
 // A separate process is killed at actual durable-write boundaries, not a simulated restart.
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type BetterSqlite3 from "better-sqlite3";
 import { FakeProvider, type Execution } from "../../src/runner/provider.js";
+import type { Change, RunnerEvent } from "../../src/runner/protocol.js";
 import { startRunner } from "../../src/runner/service.js";
 import { RunnerStorage } from "../../src/runner/storage.js";
-import type { Snapshot } from "../../src/runner/protocol.js";
 
 const directory = process.argv[2];
 const boundary = process.argv[3];
-const originalAppend = RunnerStorage.prototype.append;
-RunnerStorage.prototype.append = function (events) {
-  const statuses = events.map(event => event.type === "run_accepted" ? event.run.status : event.type === "run_updated" ? event.status : undefined);
-  if (boundary === "before_completed" && statuses.includes("completed")) process.kill(process.pid, "SIGKILL");
-  if (boundary === "torn_completed" && statuses.includes("completed")) {
-    // Part of the (multi-event) transaction line reaches the file, but never its newline or fsync.
-    appendFileSync(join(directory, "log.jsonl"), JSON.stringify({ events }).slice(0, 60));
-    process.kill(process.pid, "SIGKILL");
-  }
-  originalAppend.call(this, events);
-  if (statuses.includes(boundary as never)) process.kill(process.pid, "SIGKILL");
+const kill = () => process.kill(process.pid, "SIGKILL");
+const statuses = (changes: Change[]) => changes.map(change => change.type === "run_accepted" ? change.run.status : change.type === "run_updated" ? change.status : undefined);
+const storage = RunnerStorage.prototype as unknown as {
+  commit(changes: Change[]): void;
+  apply(db: BetterSqlite3.Database, event: RunnerEvent): void;
 };
-if (boundary === "compacted") {
-  // Compact after every transaction; crash after the snapshot rename, before the log is replaced by its tail.
-  RunnerStorage.prototype.compactionDue = () => true;
-  const originalWrite = RunnerStorage.prototype.write;
-  RunnerStorage.prototype.write = function (name, value) {
-    const bytes = originalWrite.call(this, name, value);
-    if (name === "state.json" && (value as Snapshot).runs.some(run => run.status === "completed")) process.kill(process.pid, "SIGKILL");
-    return bytes;
-  };
-}
+const commit = storage.commit;
+storage.commit = function (changes) {
+  if (boundary === "before_completed" && statuses(changes).includes("completed")) kill();
+  commit.call(this, changes);
+  if (boundary === "checkpointed" && statuses(changes).includes("completed")) {
+    // Move the commit from the WAL into the main database file first.
+    (this as unknown as { db: BetterSqlite3.Database }).db.pragma("wal_checkpoint(TRUNCATE)");
+    kill();
+  }
+  if (statuses(changes).includes(boundary as never)) kill();
+};
+const apply = storage.apply;
+storage.apply = function (db, event) {
+  apply.call(this, db, event);
+  // Inside the open completion transaction: the result is written, its session checkpoint is not, nothing is committed.
+  if (boundary === "mid_completed" && event.type === "run_updated" && event.status === "completed") kill();
+};
 class CountingFake extends FakeProvider {
   override execute(execution: Execution) {
     let count = 0;

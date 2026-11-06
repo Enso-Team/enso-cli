@@ -1,20 +1,29 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { setImmediate as yieldTurn } from "node:timers/promises";
 import { EnsoCliError } from "../errors.js";
 import { answerSchema, canonical, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Pending, type Run, type RunnerEvent, type Session } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
-import { transact, type State } from "./state.js";
-import { RunnerStorage } from "./storage.js";
+import type { RunnerStorage } from "./storage.js";
 
 type Active = { controller: AbortController; task: Promise<void>; answer?: (answer: Answer) => void };
 type Fields = Omit<Extract<Change, { type: "run_updated" }>, "type" | "requestID" | "status" | "updatedAt">;
+/** Event data per /v1/events reply, beyond its first event. */
+const eventPageBytes = 1024 * 1024;
+/** Runs deleted per retention transaction, which bounds the size of its runs_deleted event. */
+const retentionBatch = 500;
+/** Pages released per step (8 MiB at SQLite's default 4 KiB page; the file shrinks at the next WAL checkpoint). Each
+ * step is a write transaction with a full fsync, so a step stays short while a large backlog takes several steps with
+ * requests served between them. */
+const reclaimStep = 2048;
+/** Free pages (1 MiB at 4 KiB pages) below which a pass releases nothing: ordinary churn frees a few pages between
+ * passes, and later writes reuse them for less than a write transaction and a full fsync would cost. */
+const reclaimMinimum = 256;
 
+/** Durable state lives only in storage. Every decision and its commit run without yielding, and storage calls are
+ * synchronous, so an idempotency or active-slot check cannot interleave with another request's commit. */
 export class RunnerEngine {
-  private state: State;
-  // Retained events are exactly the log: the tail the last compaction kept, then every later one. `base` precedes the oldest.
-  private history: RunnerEvent[];
-  private base: number;
   private active = new Map<string, Active>();
   private accepting = true;
   private healthy = true;
@@ -22,13 +31,10 @@ export class RunnerEngine {
   constructor(
     private readonly storage: RunnerStorage,
     private readonly provider: RunnerProvider,
-    private readonly options: { autoDispatch?: boolean; onFatal?: () => void } = {}
+    private readonly options: { autoDispatch?: boolean; onFatal?: () => void; reclaimStep?: number } = {}
   ) {
-    const { state, events } = storage.load();
-    this.state = state;
-    this.history = events;
-    this.base = state.sequence - events.length;
-    this.commit(this.unfinished().filter(run => run.status !== "accepted").map(run => this.update(run.request.requestID, "interrupted", {
+    // Anything past its dispatch marker may have executed: record it as uncertain, never dispatch it again.
+    this.commit(this.read(() => storage.unfinished()).filter(run => run.status !== "accepted").map(run => this.update(run.request.requestID, "interrupted", {
       error: { code: "restart_uncertain", message: "Runner stopped after dispatch was recorded; execution may have begun or completed. No automatic replay." }
     })));
   }
@@ -43,53 +49,57 @@ export class RunnerEngine {
     } catch { throw new EnsoCliError("invalid_input", "workingDirectory must be an existing codebase directory"); }
     const session: Session = { id: randomUUID(), binding, provider: this.provider.name, createdAt: new Date().toISOString() };
     this.commit([{ type: "session_created", session }]);
-    return structuredClone(session);
+    return session;
   }
 
   submit(input: unknown): Run {
     this.assertHealthy();
     const request = parse(submitSchema, input);
-    const existing = this.state.runs.get(request.requestID);
+    const existing = this.read(() => this.storage.run(request.requestID));
     // Idempotency precedes busy/stopping checks, including after a service restart.
     if (existing) {
       if (canonical(existing.request) !== canonical(request)) throw new EnsoCliError("request_conflict", "requestID already belongs to a different payload");
-      return structuredClone(existing);
+      return existing;
     }
     this.assertAccepting();
     this.session(request.sessionID);
-    if (this.state.busy.has(request.sessionID)) {
+    if (this.read(() => this.storage.busy(request.sessionID))) {
       throw new EnsoCliError("session_busy", "Only one active prompt is allowed per session");
     }
     const now = new Date().toISOString();
     const run: Run = { request, status: "accepted", createdAt: now, updatedAt: now };
     this.commit([{ type: "run_accepted", run }]);
     if (this.options.autoDispatch !== false) setImmediate(() => this.dispatch(request.requestID));
-    return structuredClone(run);
+    return run;
   }
 
   snapshot(): { sessions: Session[]; runs: Run[]; cursor: number } {
     this.assertHealthy();
-    return structuredClone({ sessions: [...this.state.sessions.values()], runs: [...this.state.runs.values()], cursor: this.state.sequence });
+    return this.read(() => this.storage.snapshot());
   }
+  /** Committed events after `after`, a page at a time: `cursor` is the last one returned, or `after` when caught up. */
   events(after: number): { events: RunnerEvent[]; cursor: number } {
     this.assertHealthy();
-    if (!Number.isSafeInteger(after) || after < 0 || after > this.state.sequence) {
+    if (!Number.isSafeInteger(after) || after < 0 || after > this.read(() => this.storage.cursor())) {
       throw new EnsoCliError("invalid_cursor", "Cursor must be an existing sequence in this runner's durable history");
     }
-    if (after < this.base) throw new EnsoCliError("cursor_expired", "Events before this cursor were compacted; read a new snapshot and continue from its cursor");
-    return structuredClone({ events: this.history.slice(after - this.base), cursor: this.state.sequence });
+    if (after < this.read(() => this.storage.expiredThrough())) {
+      throw new EnsoCliError("cursor_expired", "Retention deleted events after this cursor; take a new snapshot");
+    }
+    const events = this.read(() => this.storage.events(after, eventPageBytes));
+    return { events, cursor: events.at(-1)?.sequence ?? after };
   }
   session(id: string): Session {
     this.assertHealthy();
-    const session = this.state.sessions.get(id);
+    const session = this.read(() => this.storage.session(id));
     if (!session) throw new EnsoCliError("session_not_found", "Session not found");
-    return structuredClone(session);
+    return session;
   }
   run(id: string): Run {
     this.assertHealthy();
-    const run = this.state.runs.get(id);
+    const run = this.read(() => this.storage.run(id));
     if (!run) throw new EnsoCliError("run_not_found", "Run not found");
-    return structuredClone(run);
+    return run;
   }
 
   cancel(id: string): Run {
@@ -117,8 +127,45 @@ export class RunnerEngine {
     return this.run(id);
   }
 
+  /**
+   * Retention: deletes finished runs last updated before `cutoff`, with their events, and returns how many. Yields
+   * between batches so requests are served meanwhile, and stops once the runner stops accepting. Each batch is still
+   * chosen and committed without yielding, and a finished run never changes, so interleaving is safe.
+   *
+   * Then, once at least `reclaimMinimum` pages are free, returns them all to the file system in bounded steps, also
+   * yielding between them. It goes by the pages actually free rather than by what this pass deleted, so a pass cut
+   * short by shutdown is finished by the next one. A failure there fails the runner closed, like any durable write:
+   * an I/O or corruption error is a fault the next commit would meet anyway.
+   */
+  async deleteFinishedBefore(cutoff: Date): Promise<number> {
+    this.assertAccepting();
+    let deleted = 0;
+    for (;;) {
+      if (deleted) await yieldTurn();
+      if (!this.accepting) return deleted;
+      const requestIDs = this.read(() => this.storage.finishedBefore(cutoff.toISOString(), retentionBatch));
+      if (requestIDs.length) this.commit([{ type: "runs_deleted", requestIDs }]);
+      deleted += requestIDs.length;
+      // A short batch drained the backlog.
+      if (requestIDs.length < retentionBatch) break;
+    }
+    const step = this.options.reclaimStep ?? reclaimStep;
+    // Stops below the minimum and on a step that released nothing, which could otherwise repeat forever. Each step
+    // measures only itself, so pages that commits free between steps are drained too.
+    for (let minimum = reclaimMinimum; this.accepting; minimum = 1) {
+      this.assertHealthy();
+      let released: number;
+      try { released = this.storage.reclaim(step, minimum); }
+      catch { throw this.fail("Returning freed space failed; runner stopped. Restart and inspect durable state"); }
+      if (!released) break;
+      await yieldTurn();
+    }
+    return deleted;
+  }
+
   dispatchAccepted(): void {
-    for (const run of this.unfinished()) if (run.status === "accepted") this.dispatch(run.request.requestID);
+    if (!this.healthy) return;
+    for (const run of this.read(() => this.storage.unfinished())) if (run.status === "accepted") this.dispatch(run.request.requestID);
   }
 
   shutdown(): Promise<void> {
@@ -127,7 +174,7 @@ export class RunnerEngine {
     this.shutdownTask = (async () => {
       // A failed cancel commit aborts every provider; still await them before storage is released.
       try {
-        const changes = this.healthy ? this.unfinished().flatMap(run => this.cancelling(run)) : [];
+        const changes = this.healthy ? this.read(() => this.storage.unfinished()).flatMap(run => this.cancelling(run)) : [];
         if (changes.length) {
           this.commit(changes);
           for (const active of this.active.values()) active.controller.abort();
@@ -139,7 +186,8 @@ export class RunnerEngine {
 
   private dispatch(id: string): void {
     if (!this.accepting || !this.healthy || this.active.has(id)) return;
-    const run = this.state.runs.get(id);
+    let run: Run | undefined;
+    try { run = this.read(() => this.storage.run(id)); } catch { return; }
     if (run?.status !== "accepted") return;
     // Write-ahead dispatch marker: a crash from here onward must never redispatch.
     try { this.commit([this.update(id, "running")]); }
@@ -151,11 +199,12 @@ export class RunnerEngine {
       try {
         // An outcome that fails validation is unconfirmed and falls through to interrupted.
         const outcome = outcomeSchema.parse(await this.provider.execute({
-          session: this.session(run.request.sessionID), prompt: structuredClone(run.request), signal: controller.signal,
+          session: this.session(run.request.sessionID), prompt: run.request, signal: controller.signal,
           wait: pending => this.wait(id, pendingSchema.parse(pending), controller.signal)
         }));
         if (!this.healthy) return;
         const { status, ...fields } = outcome;
+        // The result and the session's conversation checkpoint commit together or not at all.
         this.commit([this.update(id, status, fields), ...(outcome.status === "completed" && outcome.providerState !== undefined
           ? [{ type: "session_updated" as const, sessionID: run.request.sessionID, providerState: outcome.providerState }] : [])]);
       } catch {
@@ -180,34 +229,34 @@ export class RunnerEngine {
     });
   }
 
-  private unfinished(): Run[] { return [...this.state.busy.values()].map(id => this.state.runs.get(id)!); }
   private cancelling(run: Run): Change[] {
     return terminal(run.status) || run.status === "stopping" ? [] : [this.update(run.request.requestID, run.status === "accepted" ? "cancelled" : "stopping")];
   }
   private update(requestID: string, status: Run["status"], fields: Fields = {}): Change {
     return { type: "run_updated", requestID, status, updatedAt: new Date().toISOString(), ...fields };
   }
-  /** Validates via the reducer, appends one log line, then keeps the result; a failure there leaves memory untouched and
-   * fails the service closed. Compaction afterwards cannot undo the durable transaction, so its failure is not reported:
-   * storage keeps every line and retries later, and a log it may have replaced fails the next append instead. */
+  /** One durable transaction. If it fails (rolled back, or a commit whose outcome is unknown), the service fails
+   * closed: nothing further is served or dispatched, and a restart shows which state is durable. */
   private commit(changes: Change[]): void {
     this.assertHealthy();
     if (!changes.length) return;
-    const events = changes.map((change, index) => ({ sequence: this.state.sequence + index + 1, ...change }) as RunnerEvent);
-    try { transact(this.state, events, () => this.storage.append(events)); }
-    catch {
-      this.healthy = false;
-      this.accepting = false;
-      for (const active of this.active.values()) active.controller.abort();
-      this.options.onFatal?.();
-      throw new EnsoCliError("runner_storage_failure", "Durable write failed; runner stopped. Reconnect after restart to inspect the outcome");
+    try { this.storage.commit(changes); }
+    catch { throw this.fail("Durable write failed; runner stopped. Reconnect after restart to inspect the outcome"); }
+  }
+  private read<T>(statement: () => T): T {
+    this.assertHealthy();
+    try { return statement(); }
+    catch (error) {
+      if (error instanceof EnsoCliError) throw error;
+      throw this.fail("Durable read failed; runner stopped. Restart and inspect durable state");
     }
-    for (const event of events) this.history.push(event);
-    if (!this.storage.compactionDue()) return;
-    let base: number;
-    try { base = this.storage.compact(this.state); } catch { return; }
-    this.history = this.history.slice(base - this.base);
-    this.base = base;
+  }
+  private fail(message: string): EnsoCliError {
+    this.healthy = false;
+    this.accepting = false;
+    for (const active of this.active.values()) active.controller.abort();
+    this.options.onFatal?.();
+    return new EnsoCliError("runner_storage_failure", message);
   }
   private assertHealthy(): void {
     if (!this.healthy) throw new EnsoCliError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");

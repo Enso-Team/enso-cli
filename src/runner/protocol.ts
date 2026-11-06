@@ -53,9 +53,25 @@ export const pendingSchema = z.object({
   id: pendingID, kind: z.enum(["permission", "input"]), message: z.string(), choices: z.array(z.string()).optional()
 }).strict();
 export const answerSchema = z.object({ pendingID, value: z.string() }).strict();
-export const runStatusSchema = z.enum(["accepted", "running", "waiting_permission", "waiting_input", "stopping", "completed", "failed", "cancelled", "interrupted"]);
+/** The storage schema's CHECK, index and triggers are built from these lists. */
+export const activeStatuses = ["accepted", "running", "waiting_permission", "waiting_input", "stopping"] as const;
+export const terminalStatuses = ["completed", "failed", "cancelled", "interrupted"] as const;
+export const runStatusSchema = z.enum([...activeStatuses, ...terminalStatuses]);
 // JSON data is deliberately opaque at the runner/provider boundary.
-const json: z.ZodType<Json> = z.lazy(() => z.union([z.string(), z.number().finite(), z.boolean(), z.null(), z.array(json), z.record(json)]));
+// Checked by hand: a recursive z.union builds an error for every failed branch at every node, and made each read of a
+// stored run ~150µs. Only values JSON.stringify writes as-is pass, so a committed value reloads unchanged.
+function isJson(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) if (!(index in value) || !isJson(value[index])) return false;
+    return true;
+  }
+  if (typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJson);
+}
+const json = z.custom<Json>(isJson, "Expected a JSON value");
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 export const errorSchema = z.object({ code: z.string(), message: z.string(), details: z.record(json).optional() }).strict();
 // Provider output is validated before commit so a durable write can never produce state that fails to reload.
@@ -79,26 +95,20 @@ export const eventSchema = z.discriminatedUnion("type", [
   z.object({ sequence, type: z.literal("session_created"), session: sessionSchema }).strict(),
   z.object({ sequence, type: z.literal("session_updated"), sessionID, providerState: json.optional() }).strict(),
   z.object({ sequence, type: z.literal("run_accepted"), run: runSchema }).strict(),
-  runSchema.omit({ request: true, createdAt: true }).extend({ sequence, type: z.literal("run_updated"), requestID: id })
+  runSchema.omit({ request: true, createdAt: true }).extend({ sequence, type: z.literal("run_updated"), requestID: id }),
+  // Retention removed these finished runs and their events.
+  z.object({ sequence, type: z.literal("runs_deleted"), requestIDs: z.array(id).min(1) }).strict()
 ]);
-/** One log line: every event of one transaction. */
-export const transactionSchema = z.object({ events: z.array(eventSchema).min(1) }).strict();
-export const storageVersion = 2;
-export const snapshotSchema = z.object({
-  storageVersion: z.literal(storageVersion), sequence: z.number().int().nonnegative(),
-  sessions: z.array(sessionSchema), runs: z.array(runSchema)
-}).strict();
 export type Binding = z.infer<typeof bindingSchema>;
 export type Session = z.infer<typeof sessionSchema>;
 export type Prompt = z.infer<typeof promptSchema>;
 export type Pending = z.infer<typeof pendingSchema>;
 export type Answer = z.infer<typeof answerSchema>;
 export type Run = z.infer<typeof runSchema>;
-export type Snapshot = z.infer<typeof snapshotSchema>;
 export type RunnerEvent = z.infer<typeof eventSchema>;
 export type Change = RunnerEvent extends infer E ? E extends RunnerEvent ? Omit<E, "sequence"> : never : never;
 export function terminal(status: Run["status"]): boolean {
-  return ["completed", "failed", "cancelled", "interrupted"].includes(status);
+  return (terminalStatuses as readonly string[]).includes(status);
 }
 export function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   const result = schema.safeParse(value);

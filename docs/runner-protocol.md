@@ -6,6 +6,14 @@ navigate, perform bridge operations, import project configuration, or attach to 
 terminal. Only the deterministic fake provider is implemented. Keep the service
 running in its own terminal or arrange supervision separately.
 
+The runner stores state in SQLite through the `better-sqlite3` native module, an
+optional dependency loaded only by runner commands. npm 12 skips dependency install
+scripts by default, which leaves the module without its binary; install with
+`npm install -g @enso-app/cli --allow-scripts=better-sqlite3`. Prebuilt binaries
+cover Node 22, 24, 25 and 26; other versions, including Node 20, build the module
+from source (Xcode command line tools). Without it, `runner serve` fails with
+`runner_storage_unavailable` before creating any file, and other commands still work.
+
 From a checkout, replace `enso` with `npm run dev --`:
 
 ```sh
@@ -65,8 +73,8 @@ A live runner atomically publishes `connection.json`:
 
 Native clients must read this file locally and connect with HTTP/1.1 over that
 Unix domain socket. There is no TCP listener or unauthenticated discovery route.
-The directory is owner-only (`0700`); the socket, connection file, snapshot and
-log are `0600`. The directory must be owned by the current user and must not itself
+The directory is owner-only (`0700`); the socket, connection file and database
+(`runner.sqlite` with its `-wal`/`-shm` files) are `0600`. The directory must be owned by the current user and must not itself
 be a symlink. The connection token is random and rotates at every startup. It
 is unrelated to app bridge pairing and is never placed in runner state, returned
 in normal CLI output, or logged. Same-user processes with filesystem access are
@@ -88,7 +96,8 @@ version. Missing or incompatible version returns HTTP 426
 `incompatible_runner_version` with `details.supportedVersions: [1]`. Responses
 include `Enso-Runner-Version: 1` and `Cache-Control: no-store`. This protocol
 version is independent of bridge contract 3 and the CLI package version.
-Unsupported storage versions fail startup without migration or overwriting data.
+Unsupported or unrecognized stores fail startup without migration or overwriting
+data (see Persistence).
 
 If connection fails, reread discovery and reconnect. Do not infer anything about
 execution from a disconnect, PID, HTTP error, or a missing submission response.
@@ -114,7 +123,7 @@ be percent-encoded when they contain reserved URL characters.
 | POST `/v1/prompts` | Prompt below | Existing or newly accepted run (HTTP 200) |
 | GET `/v1/runs/:requestID` | — | Full run, including persisted terminal result/error |
 | GET `/v1/snapshot` | — | `{sessions, runs, cursor}` |
-| GET `/v1/events?after=N` | — | `{events, cursor}`; poll to observe changes (HTTP 410 `cursor_expired`: take a new snapshot) |
+| GET `/v1/events?after=N` | — | `{events, cursor}`, one page; poll to observe changes (HTTP 410 `cursor_expired`: take a new snapshot) |
 | POST `/v1/runs/:requestID/cancel` | — | Current cancelled/stopping/terminal run |
 | POST `/v1/runs/:requestID/respond` | `{pendingID, value}` | Run after accepting response |
 | POST `/v1/shutdown` | — | `{stopped:true}` after active providers confirm outcomes |
@@ -163,7 +172,8 @@ version, not a general provider configuration interface.
 Request IDs are **global to a store**, not scoped to a session. After schema
 normalization (including defaults), object key order is ignored; text and array
 order must agree exactly. Equivalent resubmissions return the current original
-run before busy checks, including terminal and interrupted runs. A different
+run before busy checks, including terminal and interrupted runs, until retention
+deletes it (see Retention); after that the ID is free and a submission is new. A different
 payload or session under the same ID returns HTTP 409 `request_conflict`.
 Concurrent calls obey the same rule. Different IDs compete for the single active
 slot in a session: losers receive HTTP 409 `session_busy`. There is no queue or
@@ -211,7 +221,8 @@ response, inspect the run instead of assuming it is still waiting.
 ## Snapshot/event ordering and reconnect
 
 Every durable change is an event with a `sequence` and a `type`. Sequences are
-monotonic, gap-free, and retained across restarts. One transaction (a shutdown
+monotonic and retained across restarts, and gap-free after any cursor that has
+not expired: retention deletes events only below the expired cursor. One transaction (a shutdown
 cancelling several runs, restart recovery, or a completed turn together with its
 session checkpoint) commits all of its events or none of them. Events are deltas:
 
@@ -221,6 +232,7 @@ session checkpoint) commits all of its events or none of them. Events are deltas
 | `session_updated` | `sessionID`, `providerState?` | Replace the session's `providerState`; absent removes it |
 | `run_accepted` | `run` (full run, status `accepted`) | Add the run |
 | `run_updated` | `requestID`, `status`, `updatedAt`, `pending?`, `result?`, `error?`, `providerState?` | Replace the run's `status`, `updatedAt`, `pending`, `result`, `error` and `providerState` with the event's; an absent field is removed |
+| `runs_deleted` | `requestIDs` | Remove those runs (retention deleted them, finished); ignore IDs you do not hold |
 
 Only `run_accepted` carries the request and its captured context; `request` and
 `createdAt` never change afterwards, and terminal runs receive no further updates.
@@ -233,79 +245,99 @@ also clears the `pending` request that a previous `waiting_input` update set.
    cursor with local client state if needed, or start with a new snapshot.
 4. On HTTP 410 `cursor_expired`, discard the local copy and return to step 1.
 
+A reply is one page: events after the cursor in order, stopping before the one
+that would take it past 1 MiB of UTF-8 event JSON (a page always holds at least
+one event when any are newer). The returned `cursor` is the sequence of the last
+event in the page, or the requested cursor when there are none, so a client that
+is behind repeats the query until `events` is empty.
+
 State reads and transactions are serialized synchronously in one service process.
 A transition concurrent with a snapshot is either in that snapshot, or has a
 larger sequence and appears in subsequent events. Events never announce an
-uncommitted change. Repeating an event query is safe. The runner retains the
-events in its log (below): every event since the last compaction, preceded by the
-transaction that triggered it and earlier ones within 1 MiB of log (an eighth
-of the 8 MiB compaction size). The same window applies before and after a restart;
-an older cursor returns `cursor_expired`. A caught-up client can therefore always
-poll across a compaction; one further behind may not, so every client must
-handle it. A cursor ahead of the durable history,
+uncommitted change. Repeating an event query is safe. Without retention the
+runner keeps every event and never returns `cursor_expired`. With retention, a
+cursor below the last event it deleted returns `cursor_expired`, since replaying
+from it would miss changes; a snapshot's cursor never has. A cursor ahead of the durable history,
 negative/noninteger cursor, or omitted cursor returns `invalid_cursor`; get a new
 snapshot if the store was replaced. There is no subscription socket to keep alive.
 
 ## Persistence, restart, and crash uncertainty
 
 Storage is runner-owned and never writes notes, Canvas records, CRDT data, or
-vault metadata. It consists of two files:
+vault metadata. It is one SQLite database, `runner.sqlite`, identified by
+`PRAGMA application_id` (`0x456E736F`, "Enso") and schema version 1
+(`PRAGMA user_version`):
 
-- `log.jsonl`: one line per transaction, `{"events":[...]}` with the events
-  above. A transaction is appended with `O_APPEND` and fsynced before it is
-  applied in memory or any reply is sent; the directory is fsynced when the log
-  is created. Each write is proportional to that transaction alone: a run update
-  never repeats the request or its context.
-- `state.json`: a compacted snapshot
-  `{"storageVersion":2,"sequence":N,"sessions":[...],"runs":[...]}` covering
-  every event through sequence N. It holds no event history; the log does.
+- `events`: every event above, keyed by `sequence`, with the session or run it
+  belongs to. Events are the record: each payload (captured context, result,
+  error, pending request, checkpoint) is stored once, in its event. A trigger
+  refuses any insert that is not the next sequence, and events are never updated;
+  only retention deletes them.
+- `sessions` and `runs`: one row per session and per accepted request (keyed by
+  the global `requestID`), indexing its events: the event that created it, its
+  latest event, and the keys and run status the constraints need. A row reads as
+  its first event with its latest event applied. Triggers let a row be created or
+  changed only in the transaction that appends its event, and only as that event
+  says; terminal runs cannot change, and a partial unique index allows at most
+  one non-terminal run per session.
+- `retention`: the expired cursor, which only advances.
+
+Every state change is one `BEGIN IMMEDIATE` transaction that appends its events
+and applies them to the session/run rows. It commits before any reply or dispatch
+depends on it; if any statement fails it rolls back entirely. Acceptance
+commits before dispatch, the `running` dispatch marker commits before the provider
+is called, and a completed result commits together with its session checkpoint.
+A transaction carries only its own changes: a run update never repeats the request
+or its context (only `run_accepted` carries the captured context, stored once).
+
+Commits are durable when they return, including across sudden power loss on
+macOS, provided the drive honors `F_FULLFSYNC` (Apple internal storage does; some
+external enclosures do not). The database uses `journal_mode=WAL` with `synchronous=FULL`, so every
+commit syncs the write-ahead log before returning, and `fullfsync=ON` /
+`checkpoint_fullfsync=ON`, so each sync is `F_FULLFSYNC`, which also flushes the
+drive's volatile cache. (`synchronous=NORMAL` syncs only at checkpoints and plain
+`fsync` stops at the drive cache; either would lose acknowledged commits on power
+loss.) Startup reads these settings back and refuses to run (`unsafe_storage`) if
+SQLite did not apply them, and a macOS test counts the `F_FULLFSYNC` calls a real
+runner process makes per commit. The database file is created `0600` with a
+directory fsync; SQLite gives its `-wal` and `-shm` files the same mode.
 
 Each state change, idempotency decision and active slot check runs without
-yielding. When the log has grown by the larger of 8 MiB and the current
-snapshot's size since the last compaction, the runner compacts: it writes a new
-snapshot through a private temporary file, file fsync, atomic rename, and
-directory fsync, then replaces the log the same way with its newest lines (the
-retained event window above). Snapshot rewrites therefore cost a constant amount
-per logged byte. Compaction follows a transaction that is already durable and
-applied, so its failure is not that transaction's failure: the request still
-succeeds, the full log is kept, and compaction is retried after the log grows by
-another threshold. If the log replacement may have landed, the next append finds
-the log shorter than acknowledged and fails the service closed.
+yielding, and storage calls are synchronous. SQLite's locks only serialize
+statements: they do not establish service ownership (below), which is taken
+before the database is opened.
 
-Startup reads the snapshot (none means an empty store at sequence 0), then the
-log. Only newline-terminated lines were ever acknowledged: a final line without
-its newline is an unacknowledged, torn transaction. It is ignored and truncated
-before the next append, so none of its events apply. Lines entirely at or below
-the snapshot's sequence are already covered: they are not replayed, only served
-as retained events. The next line must continue at the following sequence. The
-remaining lines are replayed through the same reducer that applies live
-transactions. A crash at any compaction step therefore recovers exactly the
-acknowledged state: before the snapshot rename, the old snapshot plus the whole
-log; after it, the new snapshot with the whole log covered; after the log
-replacement, the new snapshot with its covered tail. A damaged complete line,
-a sequence gap or overlap, a log that ends before its snapshot, or a failed store
-invariant fails startup with `invalid_runner_storage`; nothing is rewritten.
-`storageVersion` must be 2; earlier unreleased stores are refused, not migrated.
+Startup checks the store before serving or dispatching anything: identity and
+version, `PRAGMA quick_check`, a gap-free event sequence above the expired
+cursor, foreign keys, the schema of every event, and that every row points at the
+right events (its creating event, its latest event and its status) and every
+event at a row.
 
-"Durable" here means surviving a process crash or kernel panic. It does not
-cover sudden power loss on macOS: `fsync` hands data to the drive but does not
-issue `F_FULLFSYNC`, so the drive's volatile cache may drop the latest
-transactions. After power loss the store may roll back to an earlier valid
-state, or keep a damaged log that startup refuses. A run whose `running` marker
-was lost reappears as `accepted` and is dispatched again. That replay is
-harmless for the fake provider. A real provider with external effects must close
-this gap first (`F_FULLFSYNC`, or a store that issues it, such as SQLite with
-`fullfsync`).
+`enso runner check [--directory]` goes further: it runs the startup checks, then
+rebuilds every session and run from the event history alone, applying events as a
+client does, and compares the result with what the rows read. It catches history
+the rows hide, such as an update to a finished run. It is read-only and runs in
+one read transaction, so it is safe beside a live runner. It reports
+`{cursor, expiredThrough, events, sessions, runs}`, or fails with
+`invalid_runner_storage` and up to 50 `details.differences`. It refuses what
+startup refuses beside the database (pre-SQLite files, orphaned `-wal`/`-shm`),
+and reports an empty `runner.sqlite`, which startup initializes, as an empty
+store with `empty: true`. With no store in the
+directory, or a file where the directory should be, it fails with
+`runner_storage_not_found`, and creates nothing; a store it cannot reach (an
+unsearchable directory, a dangling symlink) fails with `runner_storage_failure`
+instead.
 
-The store retains every session and run, including captured context and
-results, without bounds. Compaction rewrites the whole snapshot synchronously, so
-requests wait while it runs; pagination, streaming, and run retention need a
-later design.
+Only these checks failing on the store's contents refuse it (`invalid_runner_storage`):
+any other error while judging or initializing it, such as I/O, is reported as a
+`runner_storage_failure` with its cause.
 
-Startup validates schema and store invariants. It recovers terminal records
-unchanged, dispatches only accepted work, and converts all previous running,
-waiting, or stopping work to durable `interrupted` records with
-`error.code: "restart_uncertain"`. In particular:
+Once its checks pass, startup recovers terminal records unchanged, dispatches
+only accepted work (none if `serve` received SIGINT or SIGTERM while starting:
+shutdown cancels it instead), and converts all previous running, waiting, or stopping work
+to durable `interrupted` records with `error.code: "restart_uncertain"` in one
+transaction. A crash part way through a
+transaction leaves no trace of it. In particular:
 
 - Crash after acceptance, before the dispatch marker: safe to dispatch once.
 - Crash after the marker, even before execute was actually called: uncertain.
@@ -319,9 +351,58 @@ external conversation/effects before continuing an uncertain session.
 
 A persistence error fails the process closed: no further state is served or work
 dispatched, active waits are aborted, and the service shuts down with an error
-exit status. An HTTP error or disconnect during this failure is ambiguous;
-restart and inspect state. Unsupported/damaged records fail closed and are never
-reset automatically.
+exit status. A statement failure rolls its transaction back, but an I/O error
+while committing can leave the transaction durable anyway; restart and inspect
+state. An HTTP error or disconnect during this failure is ambiguous in the same
+way. Unsupported/damaged records fail closed and are never reset
+automatically.
+
+Existing stores are handled explicitly, never discarded:
+
+- No `runner.sqlite`: an empty store is created.
+- An empty `runner.sqlite` (a crash right after creating it): initialized.
+- `runner.sqlite-wal` or `-shm` with no `runner.sqlite`, or beside an empty one:
+  refused, listing them in `details.journalFiles`. They belong to a store that
+  was moved or deleted, and SQLite would discard the commits they hold. Move
+  them back beside their store, or delete them to start empty. A
+  `runner.sqlite-journal` beside an empty file is left by a crash while
+  initializing it; SQLite discards it and the file is initialized.
+- `state.json`, `log.jsonl` or their `.tmp` files from the earlier JSONL store
+  (unreleased storage version 2): startup fails with `invalid_runner_storage`,
+  listing them in `details.legacyFiles`. They are not migrated, modified, or
+  shadowed by a new database. Keep them with the runner build that wrote them,
+  or move them out of the directory to start empty.
+- A file that is not SQLite, another application's database, a runner database
+  of a different version, or a damaged runner database: refused. An existing
+  file is judged through a read-only connection, so the database and any
+  `-wal` left by a crash stay byte-for-byte unchanged (SQLite may rebuild the
+  `-shm` index).
+
+### Retention
+
+By default the store retains every session, run and event, including captured
+context and results, without bounds. `enso runner serve --retain-days N` deletes
+finished runs (`completed`, `failed`, `cancelled`, `interrupted`) whose last update
+is more than N days old, in a pass that starts once the runner is ready and then
+hourly; startup does not wait for it, and stopping ends it. Each deletion is one
+transaction, of at most 500 runs, that appends a `runs_deleted` event naming them,
+advances the expired cursor to their last event, and deletes the run rows and all
+their events. The same transaction deletes each session's `session_updated`
+checkpoints at or below the expired cursor except its latest: each replaces every
+mutable field, so only an expired cursor could need the older ones. `runs_deleted`
+events are kept. Passes serve requests between transactions. Once at least 256
+pages (1 MiB at SQLite's default 4 KiB page) are free, a pass then releases them
+all (`auto_vacuum = INCREMENTAL`) in steps of 2048 pages (8 MiB), serving
+requests between them; less is left for later writes to reuse. In WAL mode the
+file shrinks at the next checkpoint, which an open `runner check` read
+transaction can hold back. A pass goes by the pages actually
+free, not by what it deleted, so space left by a pass that shutdown stopped is
+returned by the next; meanwhile later writes reuse it. A failure while releasing
+pages stops the runner like any failed durable write (`runner_storage_failure`);
+the deletions it follows are already committed. Sessions, and runs that are still active, are
+never deleted.
+After deletion, the run's `requestID` is unknown (`run_not_found`) and free for a
+new submission. Pagination of snapshots needs a later design.
 
 `owner` is an atomic PID symlink that prevents multiple service writers per
 store. Startup reclaims it only after the old PID is no longer alive. PID reuse
@@ -331,9 +412,9 @@ leave that guard behind; startup returns `runner_locked`. After verifying no
 runner is starting or using that directory, remove the orphaned `acquiring/`
 directory and retry. Never remove an owner record for a live process. Stale
 connection/socket files are replaced only after acquiring storage ownership.
-Crash-left temporary snapshot files are ignored; they may be removed while the
-runner is stopped. Never edit or truncate `state.json` or `log.jsonl` by hand.
-No daemon/supervisor installation is included.
+The database may be inspected read-only (for example with `sqlite3 -readonly`)
+while the runner is live, which can leave `-wal`/`-shm` files after it stops.
+Never write to it by hand. No daemon/supervisor installation is included.
 
 ## Handoff to PRs 4 and 5
 
