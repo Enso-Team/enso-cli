@@ -1,8 +1,9 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { Command } from "commander";
 import { EnsoCliError, printEnvelope, printsOwnOutput } from "../errors.js";
 import { ClaudeProvider, claudePermissionModes, loadClaudeQuery } from "../runner/claude.js";
+import { CodexProvider, codexApprovalPolicies, codexSandboxModes, loadCodexConnect } from "../runner/codex.js";
 import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
 import { FakeProvider, type RunnerProvider } from "../runner/provider.js";
@@ -16,8 +17,8 @@ function parseTimeout(value: string): number {
   if (!/^\d+$/.test(value) || timeout <= 0 || timeout > 2 ** 31 - 1) throw new EnsoCliError("invalid_input", "--timeout must be a positive integer of milliseconds");
   return timeout;
 }
-function parseProvider(value: string): "fake" | "claude" {
-  if (value !== "fake" && value !== "claude") throw new EnsoCliError("invalid_input", "--provider must be fake or claude");
+function parseProvider(value: string): "fake" | "claude" | "codex" {
+  if (value !== "fake" && value !== "claude" && value !== "codex") throw new EnsoCliError("invalid_input", "--provider must be fake, claude or codex");
   return value;
 }
 function parsePermissionMode(value: string): (typeof claudePermissionModes)[number] {
@@ -30,28 +31,55 @@ function parseDays(value: string): number {
   if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", `--retain-days must be a whole number of days from 1 to ${maxRetainDays}`);
   return days;
 }
-/** The SDK spawns Claude in each session's working directory, so a relative path must be fixed against this one. */
-function parseExecutable(value: string): string {
-  const path = resolve(value);
-  try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path; }
-  catch { /* missing or not executable; refused below */ }
-  throw new EnsoCliError("invalid_input", "--claude-executable must be an executable file");
+function choice<T extends string>(option: string, values: readonly T[]): (value: string) => T {
+  return value => {
+    const found = values.find(candidate => candidate === value);
+    if (!found) throw new EnsoCliError("invalid_input", `--${option} must be one of ${values.join(", ")}`);
+    return found;
+  };
+}
+function executable(path: string): boolean {
+  try { accessSync(path, constants.X_OK); return statSync(path).isFile(); }
+  catch { return false; }
+}
+/** Providers spawn in each session's working directory, so a relative path must be fixed against this one. */
+function parseExecutable(option: string): (value: string) => string {
+  return value => {
+    const path = resolve(value);
+    if (executable(path)) return path;
+    throw new EnsoCliError("invalid_input", `--${option} must be an executable file`);
+  };
+}
+/** `codex` on PATH, resolved once at startup so every session runs the same executable whatever its directory. */
+function codexOnPath(): string {
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    const path = join(directory, "codex");
+    if (executable(path)) return path;
+  }
+  throw new EnsoCliError("runner_provider_unavailable", "The Codex provider needs the Codex CLI: install it so `codex` is on PATH, or pass --codex-executable");
 }
 
 export function registerRunner(program: Command): void {
-  const runner = withoutUpdateNotice(program.command("runner")).description("Durable local prompt runner (fake or Claude provider)");
+  const runner = withoutUpdateNotice(program.command("runner")).description("Durable local prompt runner (fake, Claude or Codex provider)");
   printsOwnOutput(runner.command("serve"))
     .description("Run an independent foreground service; stop with runner shutdown, SIGINT or SIGTERM (a third signal force-exits)")
-    .requiredOption("--provider <name>", "execution provider: fake (deterministic test provider) or claude (Claude Agent SDK)", parseProvider)
+    .requiredOption("--provider <name>", "execution provider: fake (deterministic test provider), claude (Claude Agent SDK) or codex (Codex app-server)", parseProvider)
     .option("--claude-model <model>", "Claude model for new and resumed turns (default: Claude Code's default)")
     .option("--claude-permission-mode <mode>", `Claude permission mode: ${claudePermissionModes.join(", ")} (default: default, which asks through the runner)`, parsePermissionMode)
-    .option("--claude-executable <path>", "Claude Code executable to run instead of the SDK's bundled one", parseExecutable)
+    .option("--claude-executable <path>", "Claude Code executable to run instead of the SDK's bundled one", parseExecutable("claude-executable"))
+    .option("--codex-model <model>", "Codex model for new and resumed turns (default: Codex's configured default)")
+    .option("--codex-approval-policy <policy>", `Codex approval policy: ${codexApprovalPolicies.join(", ")} (default: on-request, which asks through the runner)`, choice("codex-approval-policy", codexApprovalPolicies))
+    .option("--codex-sandbox <mode>", `Codex sandbox: ${codexSandboxModes.join(", ")} (default: workspace-write)`, choice("codex-sandbox", codexSandboxModes))
+    .option("--codex-executable <path>", "Codex CLI to run as `<path> app-server` (default: codex on PATH)", parseExecutable("codex-executable"))
     .option("--directory <path>", "private runner storage directory")
     .option("--retain-days <days>", "delete finished runs and their events this many days after their last update (default: keep everything)", parseDays)
     .action(async function (this: Command) {
       const options = this.opts();
       const claudeOptions = ["claudeModel", "claudePermissionMode", "claudeExecutable"].filter(key => options[key] !== undefined);
       if (options.provider !== "claude" && claudeOptions.length) throw new EnsoCliError("invalid_input", "--claude-* options require --provider claude");
+      const codexOptions = ["codexModel", "codexApprovalPolicy", "codexSandbox", "codexExecutable"].filter(key => options[key] !== undefined);
+      if (options.provider !== "codex" && codexOptions.length) throw new EnsoCliError("invalid_input", "--codex-* options require --provider codex");
       if (currentRequestContext()?.bound || this.optsWithGlobals().canvas) {
         throw new EnsoCliError("target_conflict", "Runner sessions carry their own explicit binding; omit global target options and unset ENSO_VAULT_ID/ENSO_CANVAS_ID when starting the service");
       }
@@ -70,14 +98,24 @@ export function registerRunner(program: Command): void {
       try {
         // Sessions carry their own binding; requests and runs must not inherit this invocation's context.
         const { directory, retainDays } = options;
-        // The SDK loads before any runner file is touched, so a missing optional package refuses startup cleanly.
-        const provider: RunnerProvider = options.provider === "claude"
-          ? new ClaudeProvider(await loadClaudeQuery(), {
+        // The SDK or transport loads, and Codex is found, before any runner file is touched, so a missing one refuses
+        // startup cleanly.
+        let provider: RunnerProvider;
+        if (options.provider === "claude") {
+          provider = new ClaudeProvider(await loadClaudeQuery(), {
             permissionMode: options.claudePermissionMode ?? "default",
             ...(options.claudeModel ? { model: options.claudeModel } : {}),
             ...(options.claudeExecutable ? { executable: options.claudeExecutable } : {})
-          })
-          : new FakeProvider();
+          });
+        } else if (options.provider === "codex") {
+          const executable = options.codexExecutable ?? codexOnPath();
+          provider = new CodexProvider(await loadCodexConnect(), {
+            executable,
+            approvalPolicy: options.codexApprovalPolicy ?? "on-request",
+            sandbox: options.codexSandbox ?? "workspace-write",
+            ...(options.codexModel ? { model: options.codexModel } : {})
+          });
+        } else provider = new FakeProvider();
         service = await withoutRequestContext(() => startRunner({ directory, retainDays, provider, signal: stopping.signal }));
         if (signals) void service.stop();
         else printEnvelope({ ok: true, data: { ready: true, protocolVersion: runnerVersion, provider: provider.name, directory: service.directory } }, Boolean(this.optsWithGlobals().pretty));

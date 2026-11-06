@@ -43,7 +43,8 @@ export const bindingSchema = z.object({
   canvasTarget: target,
   workingDirectory: z.string().min(1)
 }).strict();
-export const providerNames = ["fake", "claude"] as const;
+/** Adding a name is additive within protocol 2, but a store holding such a session is refused by runner builds that predate it. */
+export const providerNames = ["fake", "claude", "codex"] as const;
 export const providerNameSchema = z.enum(providerNames);
 /** `provider` is optional and must name the runner's provider: a client can assert which one will run the session. */
 export const sessionInputSchema = z.object({ binding: bindingSchema, provider: providerNameSchema.optional() }).strict();
