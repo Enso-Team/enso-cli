@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { EnsoCliError, printEnvelope } from "../errors.js";
 import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
-import { startRunner, type RunnerService } from "../runner/service.js";
+import { maxRetainDays, startRunner, type RunnerService } from "../runner/service.js";
 import { RunnerStorage } from "../runner/storage.js";
 import { currentRequestContext, withoutRequestContext } from "../targeting.js";
 import { withoutUpdateNotice } from "../update.js";
@@ -14,7 +14,7 @@ function parseTimeout(value: string): number {
 }
 function parseDays(value: string): number {
   const days = Number(value);
-  if (!/^\d+$/.test(value) || days <= 0 || days > 36_500) throw new EnsoCliError("invalid_input", "--retain-days must be a positive integer of days");
+  if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", "--retain-days must be a positive integer of days");
   return days;
 }
 

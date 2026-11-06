@@ -576,8 +576,34 @@ describe("retention", () => {
     let passes = 0;
     vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore").mockImplementation(() => { passes++; return new Promise<number>(() => {}); });
     const service = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    // Not even the first batch runs before startRunner returns.
+    expect(passes).toBe(0);
+    await new Promise(resolve => setImmediate(resolve));
     expect(passes).toBe(1);
     await service.stop();
+  });
+
+  it("serve --retain-days dispatches accepted runs before its first pass", async () => {
+    const order: string[] = [];
+    vi.spyOn(RunnerEngine.prototype, "dispatchAccepted").mockImplementation(() => { order.push("dispatch"); });
+    vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore").mockImplementation(async () => { order.push("retention"); return 0; });
+    const service = await startRunner({ directory, retainDays: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(order).toEqual(["dispatch", "retention"]);
+    await service.stop();
+  });
+
+  it("does not run a first pass for a service stopped before it starts", async () => {
+    const pass = vi.spyOn(RunnerEngine.prototype, "deleteFinishedBefore");
+    const service = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    await service.stop();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(pass).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 36_501])("refuses retainDays %s before taking the store", async retainDays => {
+    await expect(startRunner({ directory, retainDays })).rejects.toMatchObject({ body: { code: "invalid_input" } });
+    expect(readdirSync(directory)).toEqual([]);
   });
 
   it("serve --retain-days deletes expired runs at startup", async () => {
@@ -592,6 +618,7 @@ describe("retention", () => {
     expect(service.engine.snapshot().runs).toHaveLength(1);
     await service.stop();
     const later = await startRunner({ directory, retainDays: 1, autoDispatch: false });
+    await new Promise(resolve => setImmediate(resolve));
     expect(later.engine.snapshot().runs).toEqual([]);
     await later.stop();
   });
