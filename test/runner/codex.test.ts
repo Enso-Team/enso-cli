@@ -433,6 +433,35 @@ describe("approvals and user input", () => {
 });
 
 describe("cancellation", () => {
+  it.each(["cancel", "shutdown"])("closes a connection opened during %s without initializing it", async action => {
+    const simple = transcript("simple");
+    const unopened = derive(simple, "cancelled during connect", entries => [entries[0], closeEntry, exitEntry()]);
+    let connected!: () => void;
+    const connecting = new Promise<void>(resolve => { connected = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let connection: CodexConnection | undefined;
+    const codex = start(unopened, { wrap: connect => async options => {
+      connection = await connect(options);
+      connected();
+      await held;
+      return connection;
+    } });
+    const session = engine!.createSession({ binding: binding() });
+    submit(session.id, "turn", simple);
+    await connecting;
+    const shutdown = action === "shutdown" ? engine!.shutdown() : undefined;
+    if (action === "cancel") engine!.cancel("turn");
+    try {
+      release();
+      await vi.waitFor(() => expect(engine!.run("turn").status).toBe("cancelled"), { timeout: 2000 });
+      await shutdown;
+      expect(codex.processes[0]).toMatchObject({ written: [{ type: "stdin.close" }], exited: true, signals: [] });
+      expect(engine!.session(session.id).uncertain).toBeUndefined();
+      expect(persisted("turn").status).toBe("cancelled");
+    } finally { release(); await connection?.close(); await shutdown; }
+  });
+
   it.each(["initialize", "thread/start", "thread/resume", "turn/start"].flatMap(method =>
     ["cancel", "shutdown"].map(action => [method, action] as const)
   ))("finishes %s with no RPC answer during %s", async (method, action) => {
@@ -706,6 +735,34 @@ describe("uncertain sessions", () => {
     expect(persisted("next")).toEqual(next);
     expect(engine!.session(session.id).providerState).toEqual({ threadID: thread });
     expect(engine!.session(session.id).uncertain).toBeUndefined();
+  });
+
+  it("resumes the original thread after repeated recovery crashes before native identifiers were recorded", async () => {
+    const simple = transcript("simple");
+    const thread = threadID(simple);
+    const { session, lost } = await lose(lostThen(resuming(simple.entries, thread)));
+    await engine!.shutdown();
+    const provider = new CodexProvider(replay!.connect, defaults, { stopTimeoutMs: 50, exitGraceMs: 50 });
+    engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+    let after = "lost";
+    for (const requestID of ["recovery-1", "recovery-2"]) {
+      submit(session.id, requestID, simple, 0, { recovery: { after, mode: "resume" } });
+      // Crash after dispatch is durable, before execute() records a thread. Reopen the durable store on restart.
+      storage.commit([{ type: "run_updated", requestID, status: "running", updatedAt: new Date().toISOString() }]);
+      storage.release(); storage.acquire();
+      engine = new RunnerEngine(storage, provider, { autoDispatch: false });
+      expect(engine.run(requestID)).toMatchObject({ status: "interrupted", error: { code: "restart_uncertain" } });
+      expect(engine.run(requestID).native).toBeUndefined();
+      expect(engine.session(session.id).uncertain).toEqual({ requestID, native: lost.native });
+      expect(engine.session(session.id).providerState).toBeUndefined();
+      after = requestID;
+    }
+    submit(session.id, "next", simple, 0, { recovery: { after, mode: "resume" } });
+    engine.dispatchAccepted();
+    expect((await commits.reached("next", "completed")).native).toMatchObject({ threadID: thread, resume: true });
+    expect(engine.session(session.id).providerState).toEqual({ threadID: thread });
+    expect(engine.session(session.id).uncertain).toBeUndefined();
+    expect(persisted("next").status).toBe("completed");
   });
 
   it("starts a new thread for fresh, and moves the session to it even if that turn fails", async () => {

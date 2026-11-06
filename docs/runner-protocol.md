@@ -408,6 +408,12 @@ outcome, an unconfirmed stop) also sets the session's `uncertain` to
 `{requestID, native?}`: the uncertain run and the identifiers it recorded. While it
 is set, a prompt without `recovery`, or whose `recovery.after` names another run,
 fails with HTTP 409 `session_uncertain` and `details: {requestID, modes:["resume","fresh"]}`.
+
+If a `resume` recovery is interrupted before recording native identifiers, its
+marker inherits the previous marker's identifiers so another resume still targets
+the same conversation. The interrupted run's own `native` stays absent. Newly
+recorded identifiers take precedence; a `fresh` recovery never inherits them.
+
 The client decides, preferably with the user, how to continue:
 
 - `resume`: continue the provider conversation the uncertain run used, with

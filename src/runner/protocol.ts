@@ -101,7 +101,7 @@ export const outcomeSchema = z.union([
   z.object({ status: z.literal("cancelled"), providerState: json.optional() }).strict(),
   z.object({ status: z.literal("interrupted"), error: errorSchema }).strict()
 ]);
-/** Set while the session's latest uncertain run is unreconciled: the run and the native identifiers it recorded. */
+/** The latest unreconciled run and its native identifiers, inherited from the previous marker if resume never recorded any. */
 export const uncertainSchema = z.object({ requestID: id, native: json.optional() }).strict();
 export const sessionSchema = z.object({
   id: sessionID, binding: bindingSchema, provider: providerNameSchema, createdAt: z.string(),

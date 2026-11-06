@@ -284,10 +284,14 @@ export class RunnerEngine {
     if (terminal(run.status)) throw new Error("Provider contract violation: record() after the run finished");
     this.commit([this.update(id, run.status, { ...(run.pending ? { pending: run.pending } : {}), native })]);
   }
-  /** The run becomes interrupted and its session uncertain, carrying the native identifiers the run recorded. */
+  /** The run becomes interrupted and its session uncertain, preserving a resume target until the provider replaces it. */
   private uncertain(run: Run, error: NonNullable<Run["error"]>): Change[] {
     const session = this.read(() => this.storage.session(run.request.sessionID))!;
-    const uncertain = { requestID: run.request.requestID, ...(run.native !== undefined ? { native: run.native } : {}) };
+    // A resume can crash after dispatch but before record(). Its target is still the previous uncertain conversation,
+    // which may be newer than the checkpoint. Keep that target in the session only; this run recorded nothing itself.
+    const native = run.native !== undefined ? run.native :
+      (run.request.recovery?.mode === "resume" ? session.uncertain?.native : undefined);
+    const uncertain = { requestID: run.request.requestID, ...(native !== undefined ? { native } : {}) };
     return [this.update(run.request.requestID, "interrupted", { error }), this.sessionUpdate(session.id, session.providerState, uncertain)];
   }
   private sessionUpdate(sessionID: string, providerState: Json | undefined, uncertain: Session["uncertain"]): Change {

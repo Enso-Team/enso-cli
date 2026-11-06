@@ -162,8 +162,12 @@ class Turn {
     });
     const stop = () => this.stop();
     signal.addEventListener("abort", stop, { once: true });
-    try { return await this.drive(connection); }
-    finally {
+    try {
+      // Abort events are not replayed: cancellation during connect() predates the listener above. Nothing has been
+      // sent yet, so close the connection without waiting for initialization or needing the stop deadline.
+      if (signal.aborted) return { status: "cancelled" };
+      return await this.drive(connection);
+    } finally {
       signal.removeEventListener("abort", stop);
       clearTimeout(this.timer);
       this.finished = true;
