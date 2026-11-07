@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import Module from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,11 +33,15 @@ const transcript = (name: string) => claudeTranscript(name, codebase);
 const none = () => nothing("no queries", "claude", claudeProtocol);
 const store = () => durable(join(directory, "store"));
 
-/** A runner whose Claude provider talks to the replayed SDK. */
+/** Pairing tokens the provider looked up, by bridge origin; a test that pins a session sets what they return. */
+let tokenReads: string[];
+let pairingToken: string | undefined;
+/** A runner whose Claude provider talks to the replayed SDK. No bridge or app is contacted. */
 function start(transcripts: Transcript | Transcript[], options: { newID?: () => string; config?: Partial<ClaudeConfig>; wrap?: (query: ClaudeQuery) => ClaudeQuery; autoDispatch?: boolean; stopTimeoutMs?: number } = {}) {
   replay = claudeReplay(transcripts);
   const query = options.wrap ? options.wrap(replay.query) : replay.query;
-  const provider = new ClaudeProvider(query, { permissionMode: "default", ...options.config }, { stopTimeoutMs: options.stopTimeoutMs ?? 50, newID: options.newID ?? ids() });
+  const bridgeToken = async (bridgeUrl: string) => { tokenReads.push(bridgeUrl); return pairingToken; };
+  const provider = new ClaudeProvider(query, { permissionMode: "default", ...options.config }, { stopTimeoutMs: options.stopTimeoutMs ?? 50, newID: options.newID ?? ids(), bridgeToken });
   engine = new RunnerEngine(storage, provider, { autoDispatch: options.autoDispatch });
   return replay;
 }
@@ -75,6 +79,7 @@ beforeEach(() => {
   storage = new RunnerStorage(join(directory, "store"));
   storage.acquire();
   commits = observeCommits(storage);
+  tokenReads = []; pairingToken = undefined;
 });
 afterEach(async () => {
   try {
@@ -736,11 +741,121 @@ describe("the replay harness fails clearly", () => {
 });
 
 describe("bridge access from runner agents", () => {
+  // Synthetic transcripts (test/runner/fixtures/claude/bridge_*): no app, bridge or model took part, so these prove the
+  // provider's side of the binding, not compatibility with a live app or Claude Code.
+  const instance = "fixture-instance-1";
+  const pinned = (name: string) => {
+    pairingToken ??= "pairing-token";
+    const recorded = transcript(name);
+    const sdk = start(recorded, { newID: ids(nativeSessionID(recorded)) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    return { recorded, sdk, session };
+  };
+
   it("refuses every bridge request when the runner disabled it for the agent's process", async () => {
     vi.stubEnv("ENSO_RUNNER_BRIDGE", "disabled");
     const fetch = vi.spyOn(globalThis, "fetch");
     await expect(new BridgeClient("http://127.0.0.1:17650", "token").request("/v1/status")).rejects.toMatchObject({ body: { code: "bridge_unavailable" } });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("binds a pinned session's agent to its bridge, instance and canvas; bridge calls mid-turn leave the outcome to the turn's result", async () => {
+    pairingToken = "pairing-token-for-this-turn";
+    const { recorded, sdk, session } = pinned("bridge_bound_read_write");
+    expect(session.binding).toEqual({ ...binding(), bridgeInstanceID: instance });
+    const result = sdk.replays[0].hold("result");
+    submit(session.id, "turn", recorded);
+    await result.reached;
+    // Both canvas calls succeeded and Claude said it is done, but only the result frame ends the turn.
+    expect(engine!.run("turn").status).toBe("running");
+    result.release();
+    const done = await commits.reached("turn", "completed");
+    expect(done.result).toMatchObject({ text: "Marked the Auth note as reviewed.", numTurns: 3 });
+    const { options } = sdk.queries[0];
+    expect(options.env).toMatchObject({
+      ENSO_RUNNER_BRIDGE: "bound", ENSO_BRIDGE_URL: "http://127.0.0.1:17650", ENSO_BRIDGE_INSTANCE_ID: instance,
+      ENSO_VAULT_ID: binding().canvasTarget.vaultID, ENSO_CANVAS_ID: binding().canvasTarget.canvasID, ENSO_BRIDGE_TOKEN: pairingToken
+    });
+    const append = (options.systemPrompt as { append: string }).append;
+    expect(append).toContain(`canvas ${binding().canvasTarget.canvasID}`);
+    expect(append).toMatch(/target_not_active[\s\S]*bridge_instance_mismatch[\s\S]*Do not retry it, navigate, or work around it/);
+    expect(append).not.toContain("not available");
+    expect(tokenReads).toEqual(["http://127.0.0.1:17650"]);
+    expect(JSON.stringify(store())).not.toContain(pairingToken);
+  });
+
+  it("completes a turn whose canvas read was refused as target_not_active: the agent reported it, and nothing was retried", async () => {
+    const { recorded, session } = pinned("bridge_target_not_active");
+    submit(session.id, "turn", recorded);
+    const done = await commits.reached("turn", "completed");
+    expect(done.result).toMatchObject({ text: expect.stringContaining("another canvas open") });
+    expect(statuses("turn")).toEqual(["accepted", "running", "running", "completed"]);
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+  });
+
+  it("leaves a turn interrupted when a canvas write succeeded but the stream ended without the turn's result", async () => {
+    const { recorded, session } = pinned("bridge_write_then_disconnect");
+    submit(session.id, "turn", recorded);
+    const run = await commits.reached("turn", "interrupted");
+    expect(run.error).toMatchObject({ code: "claude_ended_without_result" });
+    expect(engine!.session(session.id).uncertain).toMatchObject({ requestID: "turn" });
+  });
+
+  it("keeps the pairing token out of runner state when the agent repeats it in a tool input and its reply", async () => {
+    pairingToken = transcript("bridge_token_echo").metadata.pairingToken as string;
+    const { recorded, session } = pinned("bridge_token_echo");
+    submit(session.id, "turn", recorded);
+    const waiting = await commits.reached("turn", "waiting_permission");
+    expect(waiting.pending?.message).toBe("curl -H 'Authorization: Bearer [redacted]' http://127.0.0.1:17650/v1/status");
+    expect(JSON.stringify(waiting.pending)).not.toContain(pairingToken);
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: "deny" });
+    const done = await commits.reached("turn", "completed");
+    expect(done.result).toMatchObject({ text: "The pairing token is [redacted]; I did not use it." });
+    expect(replay!.queries[0].options.env?.ENSO_BRIDGE_TOKEN).toBe(pairingToken);
+    await engine!.shutdown();
+    const snapshot = JSON.stringify(engine!.snapshot()), events = JSON.stringify(engine!.events(0));
+    expect(snapshot).not.toContain(pairingToken);
+    expect(events).not.toContain(pairingToken);
+    for (const name of readdirSync(join(directory, "store"))) {
+      const path = join(directory, "store", name);
+      if (lstatSync(path).isFile()) expect(readFileSync(path, "latin1"), name).not.toContain(pairingToken);
+    }
+  });
+
+  it("keeps the bridge disabled for a session that pinned no instance, as every protocol 2 session did", async () => {
+    pairingToken = "never-read";
+    const simple = transcript("simple");
+    const sdk = start(simple, { newID: ids(nativeSessionID(simple)) });
+    const session = engine!.createSession({ binding: binding() });
+    expect(session.binding).not.toHaveProperty("bridgeInstanceID");
+    submit(session.id, "turn", simple);
+    await commits.reached("turn", "completed");
+    // The transcript pins ENSO_RUNNER_BRIDGE=disabled and no other binding variable.
+    expect(sdk.queries[0].options.env).not.toHaveProperty("ENSO_BRIDGE_TOKEN");
+    expect((sdk.queries[0].options.systemPrompt as { append: string }).append).toContain("The Enso app bridge is not available to this session");
+    expect(tokenReads).toEqual([]);
+  });
+
+  it("clears binding variables the runner itself inherited before binding the agent", async () => {
+    for (const [name, value] of Object.entries({ ENSO_VAULT_ID: uuid(9), ENSO_CANVAS_ID: uuid(8), ENSO_BRIDGE_URL: "http://127.0.0.1:1", ENSO_BRIDGE_TOKEN: "runner-token", ENSO_BRIDGE_INSTANCE_ID: "other" })) vi.stubEnv(name, value);
+    const simple = transcript("simple");
+    const sdk = start(simple, { newID: ids(nativeSessionID(simple)) });
+    submit(engine!.createSession({ binding: binding() }).id, "turn", simple);
+    await commits.reached("turn", "completed");
+    for (const name of ["ENSO_VAULT_ID", "ENSO_CANVAS_ID", "ENSO_BRIDGE_URL", "ENSO_BRIDGE_TOKEN", "ENSO_BRIDGE_INSTANCE_ID"]) expect(sdk.queries[0].options.env).not.toHaveProperty(name);
+  });
+
+  it("creates a session only with the instance a client expects, and only when the runner pins one", () => {
+    start(none());
+    const expected = { binding: { ...binding(), bridgeInstanceID: "instance-B" } };
+    expect(() => engine!.createSession(expected, "instance-A")).toThrow(expect.objectContaining({ body: expect.objectContaining({
+      code: "bridge_instance_mismatch", details: { bridgeUrl: "http://127.0.0.1:17650", expectedInstanceID: "instance-B", instanceID: "instance-A" }
+    }) }));
+    expect(() => engine!.createSession(expected)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_input" }) }));
+    expect(() => engine!.createSession({ binding: binding() }, "has a space")).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_input" }) }));
+    expect(engine!.snapshot().sessions).toEqual([]);
+    expect(engine!.createSession({ binding: { ...binding(), bridgeInstanceID: "instance-A" } }, "instance-A").binding.bridgeInstanceID).toBe("instance-A");
+    expect(engine!.bridgeToPin({ binding: binding() })).toBe("http://127.0.0.1:17650");
   });
 });
 

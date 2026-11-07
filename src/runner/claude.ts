@@ -3,8 +3,9 @@ import { statSync } from "node:fs";
 import type { CanUseTool, Options, PermissionResult, SDKMessage, SDKResultMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { EnsoCliError } from "../errors.js";
 import { cliVersion } from "../version.js";
+import { bridgeEnvironment, readBridgeToken, type BridgeTokenReader } from "./bridge.js";
 import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
-import type { Answer, Json, Pending, Prompt, Session } from "./protocol.js";
+import type { Answer, Binding, Json, Pending, Prompt, Session } from "./protocol.js";
 import type { Execution, ProviderOutcome, RunnerProvider } from "./provider.js";
 
 /** The part of the SDK's `query()` the provider uses; tests replace it with a scripted exchange. */
@@ -23,13 +24,28 @@ export type ClaudeState = { conversationID: string };
 /** Recorded on the run before the query starts. */
 export type ClaudeNative = { conversationID: string; resume: boolean; promptUUID: string; model: string | null; permissionMode: ClaudeConfig["permissionMode"] };
 
-/** Child processes inherit this; the `enso` CLI refuses bridge requests while it is set (see src/client.ts). */
-export const runnerBridgeEnv = "ENSO_RUNNER_BRIDGE";
-const instructions = [
+/** Child processes inherit the session's binding; the `enso` CLI enforces it (see src/bridge-binding.ts, src/client.ts). */
+export { runnerBridgeEnv } from "../bridge-binding.js";
+const preamble = [
   "You are running for Enso's local runner, on behalf of a user working on an Enso canvas.",
-  "The selected canvas nodes in the prompt were captured when the prompt was submitted; treat them as the selection.",
-  "The Enso app bridge is not available to this session: do not use the `enso` CLI or the app's HTTP bridge to read or change canvases."
-].join(" ");
+  "The selected canvas nodes in the prompt were captured when the prompt was submitted; treat them as the selection."
+];
+/** What the session's agent is told about the bridge: what it is bound to, and what to do when a request is refused. */
+export function sessionInstructions(binding: Readonly<Binding>): string {
+  if (binding.bridgeInstanceID === undefined) {
+    return [...preamble, "The Enso app bridge is not available to this session: do not use the `enso` CLI or the app's HTTP bridge to read or change canvases."].join(" ");
+  }
+  const { vaultID, canvasID } = binding.canvasTarget;
+  return [...preamble,
+    `This session is bound to one Enso canvas (vault ${vaultID}, canvas ${canvasID}) in the Enso app instance it was created with.`,
+    "The `enso` CLI in this environment is already bound to that canvas: run its commands without --canvas, --vault-id or --canvas-id, and leave the ENSO_* environment variables as they are.",
+    "You cannot open, create, switch or delete vaults or canvases, open portals, or link the CLI; those commands are refused.",
+    "Every `enso` command is checked against this canvas and app instance.",
+    "If one fails with target_not_active (the user has another canvas open in Enso), bridge_instance_mismatch (Enso restarted, or another app answers at its address), or another binding error, stop using the canvas and tell the user which command failed and why.",
+    "Do not retry it, navigate, or work around it, for example by calling the bridge's HTTP API directly.",
+    "Canvas changes that succeeded before a refusal stay made."
+  ].join(" ");
+}
 const detailsLimit = 32 * 1024;
 const stderrTail = 2048;
 
@@ -64,13 +80,18 @@ export class ClaudeProvider implements RunnerProvider {
   constructor(
     private readonly query: ClaudeQuery,
     private readonly config: ClaudeConfig = { permissionMode: "default" },
-    private readonly options: { stopTimeoutMs?: number; newID?: () => string } = {}
+    /** `bridgeToken`: finds the pairing token for a pinned session's bridge at each turn (default: readBridgeToken). */
+    private readonly options: { stopTimeoutMs?: number; newID?: () => string; bridgeToken?: BridgeTokenReader } = {}
   ) {}
+  readonly pinsBridge = true;
 
   async execute({ session, prompt, signal, record, wait }: Execution): Promise<ProviderOutcome> {
     const cwd = session.binding.workingDirectory;
     try { if (!statSync(cwd).isDirectory()) throw new Error(); }
     catch { return { status: "failed", error: { code: "working_directory_unavailable", message: "The session's working directory no longer exists; the runner does not substitute another", details: { workingDirectory: cwd } } }; }
+    // Read for this turn only, and passed to Claude's process tree in its environment; never recorded.
+    const token = session.binding.bridgeInstanceID === undefined ? undefined
+      : await (this.options.bridgeToken ?? readBridgeToken)(session.binding.bridgeUrl).catch(() => undefined);
     // Nothing has started yet, so stopping here is a confirmed cancellation.
     if (signal.aborted) return { status: "cancelled" };
     const newID = this.options.newID ?? randomUUID;
@@ -80,7 +101,14 @@ export class ClaudeProvider implements RunnerProvider {
     const native: ClaudeNative = { conversationID, resume, promptUUID, model: this.config.model ?? null, permissionMode: this.config.permissionMode };
     // Durable before the query can create or advance the conversation under these identifiers.
     record(native);
-    return new Turn(this.query, this.config, { cwd, conversationID, resume, promptUUID, prompt, signal, wait, stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs }).run();
+    const scrub = redactor(token);
+    const outcome = await new Turn(this.query, this.config, {
+      cwd, conversationID, resume, promptUUID, prompt, signal, stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs,
+      env: bridgeEnvironment(session.binding, token), instructions: sessionInstructions(session.binding),
+      // Claude can see its own environment, so a tool input or result can repeat the token: it never reaches runner state.
+      wait: (pending, withdrawn) => wait(scrub(pending), withdrawn)
+    }).run();
+    return scrub(outcome);
   }
 
   /**
@@ -107,6 +135,7 @@ function conversationOf(value: Json | undefined): string | undefined {
 type TurnInput = {
   cwd: string; conversationID: string; resume: boolean; promptUUID: string; prompt: Readonly<Prompt>;
   signal: AbortSignal; wait: Execution["wait"]; stopTimeoutMs: number;
+  env: Record<string, string | undefined>; instructions: string;
 };
 
 class Turn {
@@ -239,8 +268,8 @@ class Turn {
       ...(this.config.model ? { model: this.config.model } : {}),
       ...(this.config.executable ? { pathToClaudeCodeExecutable: this.config.executable } : {}),
       canUseTool,
-      systemPrompt: { type: "preset", preset: "claude_code", append: instructions },
-      env: { ...process.env, [runnerBridgeEnv]: "disabled", CLAUDE_AGENT_SDK_CLIENT_APP: `enso-cli/${cliVersion}` },
+      systemPrompt: { type: "preset", preset: "claude_code", append: this.input.instructions },
+      env: { ...this.input.env, CLAUDE_AGENT_SDK_CLIENT_APP: `enso-cli/${cliVersion}` },
       stderr: data => { this.stderr = (this.stderr + data).slice(-stderrTail); }
     };
   }
@@ -306,6 +335,18 @@ class Turn {
       throw error;
     }
   }
+}
+
+/** Replaces every occurrence of `secret` in a JSON value's strings; the identity without one. */
+function redactor(secret: string | undefined): <T>(value: T) => T {
+  if (!secret) return value => value;
+  const scrub = (value: unknown): unknown => {
+    if (typeof value === "string") return value.split(secret).join("[redacted]");
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [scrub(key) as string, scrub(item)]));
+    return value;
+  };
+  return value => scrub(value) as never;
 }
 
 function cancelled(toolUseID: string): PermissionResult {

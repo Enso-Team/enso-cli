@@ -1,6 +1,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { bridgeInstanceHeader } from "../../src/bridge-binding.js";
 import { readConfig } from "../../src/config.js";
 import { contractHeader, contractVersion, oldestSupportedContractVersion } from "../../src/contract.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
@@ -126,5 +127,140 @@ describe("file-based link", () => {
 
     expect(result.code).not.toBe(0);
     expect(readConfig()).toBeNull();
+  });
+});
+
+describe("discovery with an expected bridge instance", () => {
+  const instance = "expected-instance";
+  const origin = "http://127.0.0.1:17650";
+  const paths = () => calls.map(call => new URL(call.url).pathname);
+  const headers = () => calls.map(call => call.init.headers as Record<string, string>);
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    { args: ["status"], advertised: "another-instance", code: "bridge_instance_mismatch" },
+    { args: ["auth", "link"], advertised: "another-instance", code: "bridge_instance_mismatch" },
+    { args: ["status"], advertised: undefined, code: "bridge_instance_unavailable" },
+    { args: ["auth", "link"], advertised: undefined, code: "bridge_instance_unavailable" }
+  ])("refuses $args with $code before pairing", async ({ args, advertised, code }) => {
+    rmSync(join(tempDir, "config.json"));
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token" }));
+    stubBridge(tokenPath, { bridgeInstanceID: advertised });
+
+    const result = await run(args);
+
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe(code);
+    expect(paths()).toEqual(["/v1/health"]);
+    expect(headers()).toEqual([{ Accept: "application/json", [bridgeInstanceHeader]: instance }]);
+    expect(readConfig()).toBeNull();
+  });
+
+  it.each([["status"], ["auth", "link"]])("pairs $0 only after verifying its instance", async (...args) => {
+    rmSync(join(tempDir, "config.json"));
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token" }));
+    stubBridge(tokenPath, { bridgeInstanceID: instance });
+
+    const result = await run(args);
+
+    expect(result.code).toBe(0);
+    expect(paths().slice(0, 2)).toEqual(["/v1/health", "/v1/status"]);
+    expect(headers().every(header => header[bridgeInstanceHeader] === instance)).toBe(true);
+    expect(headers()[0].Authorization).toBeUndefined();
+    expect(headers()[1].Authorization).toBe("Bearer file-token");
+    expect(readConfig()?.token).toBe("file-token");
+  });
+
+  it("checks an alternate token-file origin before sending credentials there", async () => {
+    rmSync(join(tempDir, "config.json"));
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const destination = "http://127.0.0.1:17651";
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token", bridgeUrl: destination }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json({ ok: true, data: { contractVersion: 3, tokenPath,
+        bridgeInstanceID: new URL(String(url)).origin === origin ? instance : "another-instance" } });
+    }));
+
+    const result = await run(["auth", "link"]);
+
+    expect(JSON.parse(result.stderr).error.code).toBe("bridge_instance_mismatch");
+    expect(calls.map(call => call.url)).toEqual([`${origin}/v1/health`, `${destination}/v1/health`]);
+    expect(headers().every(header => header.Authorization === undefined && header[bridgeInstanceHeader] === instance)).toBe(true);
+    expect(readConfig()).toBeNull();
+  });
+
+  it("relinks a stale token on the same verified instance with the pin on every request", async () => {
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token" }));
+    stubBridge(tokenPath, { bridgeInstanceID: instance });
+
+    const result = await run(["status"]);
+
+    expect(result.code).toBe(0);
+    expect(paths()).toEqual(["/v1/health", "/v1/status", "/v1/health", "/v1/status", "/v1/status"]);
+    expect(headers().every(header => header[bridgeInstanceHeader] === instance)).toBe(true);
+    expect(readConfig()?.token).toBe("file-token");
+  });
+
+  it("refuses a changed instance during stale-token recovery without replacing stored pairing", async () => {
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const previous = readConfig();
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token" }));
+    let healthReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (new URL(String(url)).pathname === "/v1/health") {
+        return Response.json({ ok: true, data: { contractVersion: 3, tokenPath,
+          bridgeInstanceID: ++healthReads === 1 ? instance : "another-instance" } });
+      }
+      return Response.json({ ok: false, error: { code: "invalid_token", message: "Pairing changed" } });
+    }));
+
+    const result = await run(["status"]);
+
+    expect(JSON.parse(result.stderr).error.code).toBe("bridge_instance_mismatch");
+    expect(paths()).toEqual(["/v1/health", "/v1/status", "/v1/health"]);
+    expect(headers().filter(header => header.Authorization).map(header => header.Authorization)).toEqual(["Bearer test-token"]);
+    expect(readConfig()).toEqual(previous);
+  });
+
+  it("surfaces an instance refusal between discovery health and token verification without pairing", async () => {
+    rmSync(join(tempDir, "config.json"));
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json(new URL(String(url)).pathname === "/v1/health"
+        ? { ok: true, data: { contractVersion: 3, tokenPath, bridgeInstanceID: instance } }
+        : { ok: false, error: { code: "bridge_instance_mismatch", message: "App restarted", details: { instanceID: "another-instance" } } });
+    }));
+
+    const result = await run(["auth", "link"]);
+
+    expect(JSON.parse(result.stderr).error).toMatchObject({ code: "bridge_instance_mismatch", message: "App restarted", details: { instanceID: "another-instance" } });
+    expect(paths()).toEqual(["/v1/health", "/v1/status"]);
+    expect(headers().every(header => header[bridgeInstanceHeader] === instance)).toBe(true);
+    expect(readConfig()).toBeNull();
+  });
+
+  it("auth link does not retry an instance mismatch from the existing pairing", async () => {
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const previous = readConfig();
+    stubBridge(join(tempDir, "unused-token.json"), { bridgeInstanceID: "another-instance" });
+
+    const result = await run(["auth", "link"]);
+
+    expect(JSON.parse(result.stderr).error.code).toBe("bridge_instance_mismatch");
+    expect(paths()).toEqual(["/v1/health"]);
+    expect(readConfig()).toEqual(previous);
   });
 });

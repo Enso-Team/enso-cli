@@ -46,7 +46,7 @@ async function command(args: string[]) {
 it("runs the standalone CLI service without an app and gracefully shuts down", async () => {
   const output = await serve();
   const { directory } = output;
-  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 2, provider: "fake" });
+  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 3, provider: "fake" });
   const created = await command(["runner", "call", "POST", "/v1/sessions", "--directory", directory, "--json", JSON.stringify({ binding: {
     bridgeUrl: "http://127.0.0.1:17650", canvasTarget: {
       vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
@@ -193,26 +193,47 @@ it("refuses a Claude executable that is missing, not executable, or a directory 
   expect(leftovers(path)).toEqual([]);
 }, 15_000);
 
-it("serves the Claude provider when selected and refuses sessions that assert another provider", async () => {
-  const output = await serve(["--provider", "claude", "--claude-permission-mode", "acceptEdits"]);
-  expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 2, provider: "claude" });
-  const binding = { bridgeUrl: "http://127.0.0.1:17650", canvasTarget: {
-    vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
-  }, workingDirectory: output.directory };
-  const refused = await command(["runner", "call", "POST", "/v1/sessions", "--directory", output.directory, "--json", JSON.stringify({ binding, provider: "fake" })]);
-  expect(JSON.parse(refused.stderr).error).toMatchObject({ code: "provider_mismatch", details: { provider: "fake", runnerProvider: "claude" } });
-  const created = await command(["runner", "call", "POST", "/v1/sessions", "--directory", output.directory, "--json", JSON.stringify({ binding, provider: "claude" })]);
-  expect(JSON.parse(created.stdout).data).toMatchObject({ provider: "claude" });
-  expect((await command(["runner", "shutdown", "--directory", output.directory])).code).toBe(0);
-  await output.exited;
-}, 20_000);
+it("serves the Claude provider when selected, pins each session's bridge instance, and refuses sessions it cannot pin", async () => {
+  // A stand-in for the app's bridge health route. No real app is contacted, so this proves no live app compatibility.
+  let health: Record<string, unknown> = { contractVersion: 3, bridgeInstanceID: "instance-A" };
+  const bridge = createServer((_, response) => { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify({ ok: true, data: health })); });
+  await new Promise<void>(resolve => bridge.listen(0, "127.0.0.1", resolve));
+  const bridgeUrl = `http://127.0.0.1:${(bridge.address() as { port: number }).port}`;
+  try {
+    const output = await serve(["--provider", "claude", "--claude-permission-mode", "acceptEdits"]);
+    expect(JSON.parse(output.stdout).data).toMatchObject({ ready: true, protocolVersion: 3, provider: "claude" });
+    const binding = { bridgeUrl, canvasTarget: {
+      vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222"
+    }, workingDirectory: output.directory };
+    const create = (body: unknown) => command(["runner", "call", "POST", "/v1/sessions", "--directory", output.directory, "--json", JSON.stringify(body)]);
+    const refused = await create({ binding, provider: "fake" });
+    expect(JSON.parse(refused.stderr).error).toMatchObject({ code: "provider_mismatch", details: { provider: "fake", runnerProvider: "claude" } });
+    const created = await create({ binding, provider: "claude" });
+    expect(JSON.parse(created.stdout).data).toMatchObject({ provider: "claude", binding: { ...binding, workingDirectory: realpathSync(output.directory), bridgeInstanceID: "instance-A" } });
+    // The client may assert the instance it expects; another one creates nothing.
+    const expected = await create({ binding: { ...binding, bridgeInstanceID: "instance-B" } });
+    expect(JSON.parse(expected.stderr).error).toMatchObject({ code: "bridge_instance_mismatch", details: { expectedInstanceID: "instance-B", instanceID: "instance-A" } });
+    health = { contractVersion: 3 };
+    expect(JSON.parse((await create({ binding })).stderr).error).toMatchObject({ code: "bridge_instance_unavailable" });
+    health = { contractVersion: 3, bridgeInstanceID: "instance-A", agentAccess: "disabled" };
+    expect(JSON.parse((await create({ binding })).stderr).error).toMatchObject({ code: "access_disabled" });
+    health = { contractVersion: 2, bridgeInstanceID: "instance-A" };
+    expect(JSON.parse((await create({ binding })).stderr).error).toMatchObject({ code: "app_outdated" });
+    await new Promise(resolve => bridge.close(resolve));
+    expect(JSON.parse((await create({ binding })).stderr).error).toMatchObject({ code: "app_unavailable", details: { bridgeUrl } });
+    expect((await command(["runner", "shutdown", "--directory", output.directory])).code).toBe(0);
+    await output.exited;
+    // Only the pinned session was created.
+    expect(durable(output.directory).sessions.map(session => session.binding.bridgeInstanceID)).toEqual(["instance-A"]);
+  } finally { bridge.closeAllConnections(); bridge.close(); }
+}, 30_000);
 
 it("fails runner calls whose socket reply is not an envelope", async () => {
   const path = directory = mkdtempSync(join(tmpdir(), "enso-cli-runner-"));
   const replies = ['{"error":"x"}', "[]", '{"ok":false,"error":{"code":"route_not_found","message":"missing"}}'];
   const server = createServer((_, response) => { response.end(replies.shift()); });
   await new Promise<void>(resolve => server.listen(join(path, "control.sock"), resolve));
-  writeFileSync(join(path, "connection.json"), JSON.stringify({ socketPath: join(path, "control.sock"), token: "t", protocolVersion: 2, pid: process.pid }));
+  writeFileSync(join(path, "connection.json"), JSON.stringify({ socketPath: join(path, "control.sock"), token: "t", protocolVersion: 3, pid: process.pid }));
   try {
     for (const method of ["GET", "POST"]) {
       const result = await command(["runner", "call", method, "/v1/snapshot", "--directory", path]);

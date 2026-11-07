@@ -43,7 +43,8 @@ export function registerAuth(program: Command): void {
             }
           };
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof EnsoCliError && ["bridge_instance_mismatch", "bridge_instance_unavailable"].includes(error.body.code)) throw error;
         // An unavailable or invalid existing configuration does not block a fresh pairing attempt.
       }
     }

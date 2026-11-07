@@ -1,17 +1,27 @@
-# Local runner protocol v2
+# Local runner protocol v3
 
 `enso runner serve --provider <fake|claude>` runs a foreground service independent
 of the Enso app. It needs Node 20+ and is intended for macOS. It does not launch
-Enso, navigate, perform bridge operations, import project configuration, or attach
-to a terminal. Two providers exist: `fake`, a deterministic test provider, and
+Enso, navigate, import project configuration, or attach to a terminal. Its only
+bridge request is the health read that pins a Claude session's bridge instance;
+the bridge operations a Claude session makes are its agent's `enso` CLI calls,
+bound to the session (see Bridge). Two providers exist: `fake`, a deterministic test provider, and
 `claude`, which runs each prompt through the Claude Agent SDK (see Claude provider).
 One runner serves one provider; restart it to switch. Keep the service running in
 its own terminal or arrange supervision separately.
 
-Protocol 2 is incompatible with protocol 1: it adds Claude sessions, provider
+Protocol 3 adds the bridge instance a session pins, `binding.bridgeInstanceID`
+(see Bridge). Clients must send `Enso-Runner-Version: 3`; a protocol 2 client is
+refused with `incompatible_runner_version`, since the sessions it reads may carry
+a field it does not know. A protocol 3 runner opens protocol 2 stores (the same
+`runner/v2/` directory and SQLite schema version 2) without changing them: their
+sessions have no pinned instance and keep the bridge disabled. A protocol 2 runner
+refuses a store that holds a pinned session (`invalid_runner_storage`) and leaves
+it unchanged.
+
+Protocol 2 was incompatible with protocol 1: it added Claude sessions, provider
 execution identifiers recorded on runs, session uncertainty with explicit recovery,
-and structured input requests. Its default store lives in a new directory, and a
-protocol 1 store is refused rather than migrated.
+and structured input requests. A protocol 1 store is refused rather than migrated.
 
 The runner stores state in SQLite through the `better-sqlite3` native module, an
 optional dependency loaded only by runner commands. npm 12 skips dependency install
@@ -61,16 +71,19 @@ enso runner call POST /v1/runs/turn-1/cancel
 enso runner shutdown
 ```
 
-The fake provider does not require an app or an existing vault. UUIDs above only
-exercise identity validation. A real client must use the identities discovered
+The fake provider does not require an app or an existing vault, and pins no bridge
+instance. UUIDs above only exercise identity validation. A Claude runner pins the
+session's bridge instance, so creating a Claude session needs the Enso app running
+at `bridgeUrl` (see Bridge). A real client must use the identities discovered
 by bridge contract 3, and capture context in the app before submission. The
 runner preserves the captured text; it never rereads notes to replace it.
 
 ## Discovery, authentication and compatibility
 
 Default private directory:
-`~/Library/Application Support/Enso CLI/runner/v2/` (protocol 1 used `runner/v1/`;
-neither runner opens the other's store).
+`~/Library/Application Support/Enso CLI/runner/v2/`, named for its storage
+format, which protocols 2 and 3 share (protocol 1 used `runner/v1/`; neither
+opens the other's store).
 `ENSO_CLI_CONFIG_DIR` changes the parent CLI directory. Every runner command also
 accepts `--directory /absolute/private/path` to select a separate runner store.
 Use a runner-owned directory outside the vault and codebase. macOS Unix socket
@@ -79,7 +92,7 @@ paths must fit in 103 bytes; choose a shorter directory if needed.
 A live runner atomically publishes `connection.json`:
 
 ```json
-{"protocolVersion":2,"socketPath":"/absolute/private/path/control.sock","token":"<secret>","pid":12345}
+{"protocolVersion":3,"socketPath":"/absolute/private/path/control.sock","token":"<secret>","pid":12345}
 ```
 
 Native clients must read this file locally and connect with HTTP/1.1 over that
@@ -95,7 +108,7 @@ Every request, including reads and shutdown, requires:
 
 ```http
 Authorization: Bearer <connection.json token>
-Enso-Runner-Version: 2
+Enso-Runner-Version: 3
 Content-Type: application/json
 ```
 
@@ -104,9 +117,10 @@ limit; a larger body is read and discarded, then rejected with HTTP 413
 `payload_too_large`. Browser Origin headers are rejected; CORS is not enabled.
 Missing/wrong authentication returns HTTP 401 `unauthorized` before checking
 version. Missing or incompatible version returns HTTP 426
-`incompatible_runner_version` with `details.supportedVersions: [2]`. Responses
-include `Enso-Runner-Version: 2` and `Cache-Control: no-store`. This protocol
-version is independent of bridge contract 3 and the CLI package version.
+`incompatible_runner_version` with `details.supportedVersions: [3]`. Responses
+include `Enso-Runner-Version: 3` and `Cache-Control: no-store`. This protocol
+version is independent of the bridge contract version (3) and the CLI package
+version.
 Unsupported or unrecognized stores fail startup without migration or overwriting
 data (see Persistence).
 
@@ -129,7 +143,7 @@ be percent-encoded when they contain reserved URL characters.
 
 | Method and path | Body | Successful data |
 | --- | --- | --- |
-| POST `/v1/sessions` | `{binding, provider?}` | Created session (HTTP 201) |
+| POST `/v1/sessions` | `{binding, provider?}` | Created session (HTTP 201); a Claude runner pins its bridge instance first (see Bridge) |
 | GET `/v1/sessions/:sessionID` | — | Persisted session |
 | POST `/v1/prompts` | Prompt below | Existing or newly accepted run (HTTP 200) |
 | GET `/v1/runs/:requestID` | — | Full run, including persisted terminal result/error |
@@ -156,6 +170,12 @@ their `/v1/` prefix; the protocol version is the header. Creating a session with
 - `workingDirectory`: a separate existing absolute codebase directory,
   canonicalized with realpath at session creation and retained across restarts.
   It is never inferred from the vault, and the runner does not change its own cwd.
+- `bridgeInstanceID` (protocol 3): the bridge instance the session is pinned to,
+  an opaque string of 1 to 256 visible ASCII characters without spaces. The
+  runner reads it from the bridge when it creates the session; a client may send
+  it to assert which instance it expects (see Bridge). Absent on sessions that
+  pinned none: fake sessions, and every session created before protocol 3. Their
+  bridge stays disabled; the runner never adds a pin to an existing session.
 
 Prompt shape:
 
@@ -548,24 +568,120 @@ CLI does). Every turn is a paid agent call.
   that ends without a result is `interrupted` with `cancel_unconfirmed` and
   `details.interrupt` (`pending`, `acknowledged` or `failed`). The query is closed
   in every case, which ends the CLI process and any background shell it started.
-- **Bridge.** No Enso bridge operation is exposed to Claude. The bridge
-  identifies an app only by origin and pairing token; it advertises no stable
-  instance identity, so a runner cannot tell the paired app from another process
-  reusing the origin after a restart. Until it can, the runner sets
-  `ENSO_RUNNER_BRIDGE=disabled` for Claude's process tree, and the `enso` CLI
-  refuses every bridge request under it with `bridge_unavailable` (including
-  linking). This does not stop a same-user process from contacting the bridge by
-  other means; the system prompt also tells Claude the bridge is unavailable.
+- **Bridge.** See Bridge below. The system prompt names the session's canvas,
+  says it cannot navigate, and tells Claude to stop and report a
+  `target_not_active`, `bridge_instance_mismatch` or other binding refusal rather
+  than retry or work around it. A session with no pinned instance is told the
+  bridge is unavailable.
+
+## Bridge
+
+The runner pins a Claude session to one app bridge instance, vault and canvas for
+the session's whole life, and gives Claude's process tree an `enso` CLI bound to
+them. The pin is never changed, re-read or migrated.
+
+**Pinning at creation.** For a runner whose provider gives its agent the bridge
+(`claude`), `POST /v1/sessions` validates the request, then reads
+`GET <bridgeUrl>/v1/health` (3 second timeout, no credentials) and stores the
+`bridgeInstanceID` it advertises in the binding, all before committing anything.
+If the instance cannot be pinned, no session is created:
+
+| Code | HTTP | When |
+| --- | --- | --- |
+| `app_unavailable` | 503 | Nothing answers at `bridgeUrl` |
+| `invalid_response` | 502 | The health reply is not a bridge envelope |
+| `access_disabled` | 409 | Local agent access is off in Enso's Settings |
+| `app_outdated` | 409 | The app speaks a bridge contract below 3 (no explicit canvas targets) |
+| `bridge_instance_unavailable` | 409 | The app advertises no valid `bridgeInstanceID` |
+| `bridge_instance_mismatch` | 409 | The request's `binding.bridgeInstanceID` differs from the advertised one (`details: {bridgeUrl, expectedInstanceID, instanceID}`) |
+
+Creation fails rather than creating a session with the bridge disabled because a
+binding never changes: such a session could never use the bridge, and a client
+would have to notice that to recover. The client retries creation once the app is
+available. A native client should send the instance it knows it is (its own
+`bridgeInstanceID`), so the runner cannot pin another process that answers at the
+address. `binding.bridgeInstanceID` on a fake runner's session is `invalid_input`.
+
+**The agent's environment.** Each Claude turn starts with the runner's own
+environment minus every binding variable, then, for a pinned session:
+
+| Variable | Value |
+| --- | --- |
+| `ENSO_RUNNER_BRIDGE` | `bound` |
+| `ENSO_BRIDGE_URL` | The binding's `bridgeUrl` |
+| `ENSO_BRIDGE_INSTANCE_ID` | The binding's `bridgeInstanceID` |
+| `ENSO_VAULT_ID`, `ENSO_CANVAS_ID` | The binding's `canvasTarget` |
+| `ENSO_BRIDGE_TOKEN` | The bridge pairing token, when the runner finds one |
+
+A session without a pinned instance gets only `ENSO_RUNNER_BRIDGE=disabled`.
+
+The pairing token is looked up for each turn, in the token file the app at
+`bridgeUrl` names on `/v1/health` (accepted only if it names no other origin), then
+in the CLI's stored pairing if it is for the same origin. It is passed only in
+the environment: it is not written to the runner's state, events, snapshots,
+results or output, and the runner neither links the CLI nor changes its stored
+pairing. Claude can read its own environment, so it can repeat the token; the
+provider replaces it with `[redacted]` in pending requests and outcomes before the
+runner commits them. Claude's own transcript, which Claude Code keeps, is outside
+the runner and is not redacted.
+
+**What the bound CLI does.** With `ENSO_RUNNER_BRIDGE=bound` the `enso` CLI uses
+only that bridge and token (no configuration file, discovery or relinking), and:
+
+- Reads `/v1/health` once per invocation, before any other request, and refuses
+  the invocation unless the advertised `bridgeInstanceID` is the expected one
+  (`bridge_instance_mismatch`, or `bridge_instance_unavailable` when none is
+  advertised), so an app that would not enforce the header gets nothing.
+- Sends `Enso-Bridge-Instance: <bridgeInstanceID>` on every request, so the app
+  can refuse a mismatch in the same request that does the work. The CLI does the
+  same whenever `ENSO_BRIDGE_INSTANCE_ID` is set, inside the runner or not.
+- Binds every canvas request to the session's `canvasTarget` (bridge contract 3).
+  The app refuses it with `target_not_active` when the user has another canvas
+  open, and `wrong_vault` for another vault.
+- Refuses before contacting the bridge: navigation (opening, creating or deleting
+  canvases, opening vaults or portals, vault changes) with
+  `explicit_navigation_required`; linking, unlinking and pairing
+  (`explicit_navigation_required` for the commands, `runner_bridge_refused` for
+  discovery); `--canvas` selectors, other `--vault-id`/`--canvas-id` values, or a
+  request to another origin with `target_conflict`; and a request without the
+  session's binding (`ENSO_VAULT_ID`/`ENSO_CANVAS_ID` unset, or any binding
+  variable missing) with `runner_binding_required`. A missing token is
+  `auth_required`.
+- Reports every refusal, the app's included, with its code, message and details
+  unchanged, and adds a `details.hint` (when the app gave none) telling the agent
+  to stop and tell the user. Nothing is navigated, retargeted, re-pinned or
+  retried.
+
+With `ENSO_RUNNER_BRIDGE` set to anything else (`disabled`), the CLI refuses
+every bridge request, linking included, with `bridge_unavailable`.
+
+These checks guard against mistakes. A same-user process that rewrites its own
+environment, or calls the bridge without the CLI, is not stopped by them; the
+app's token and access rules still apply.
+
+**Outcomes.** A canvas operation, successful or refused, is a tool call within the
+turn. It never ends the turn by itself: the outcome still comes only from the
+turn's result frame (or its absence, which is `interrupted`). Canvas changes made
+before a refusal or an interrupted turn stay made; the runner does not inspect or
+undo them.
+
+**Expected bridge contract.** The runner and CLI rely on the app to advertise
+`bridgeInstanceID` on `/v1/health`, to change it when a different app process
+answers at the address (at least once per app launch), and, when it advertises
+one, to refuse any request whose `Enso-Bridge-Instance` header names another
+instance with `bridge_instance_mismatch`, in the request itself and without doing
+the work. The CLI treats the advertised field as the capability; it does not
+require a newer bridge contract version. These names are the CLI's side of that
+contract, and must match the app's.
 
 ## Remaining prerequisites
 
-- Bridge operations for agents need a bridge instance identity (or a pairing
-  identity the runner can pin per session) from the app, checked on every request
-  together with the session's immutable `canvasTarget`. Only then should the
-  runner expose bridge tools, and the `ENSO_RUNNER_BRIDGE` guard be relaxed for
-  them. The app bridge is not in this repository.
-- The native client should create sessions with explicit UUIDs and a separately
-  chosen codebase directory, capture selected node content before submitting,
+- The app must advertise and enforce the bridge instance (see Expected bridge
+  contract). Until an app build does, Claude sessions cannot be created against
+  it (`bridge_instance_unavailable`). The app bridge is not in this repository.
+- The native client should create sessions with explicit UUIDs, its own
+  `bridgeInstanceID`, and a separately chosen codebase directory, handle the
+  pinning errors above, capture selected node content before submitting,
   generate and retain request IDs before sending, and recover via snapshot plus
   cursor polling. A disconnected UI is not a stopped turn. It should render
   pending requests (including `details` and `questions`) from the run, stop by

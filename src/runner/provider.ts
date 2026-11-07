@@ -33,6 +33,8 @@ export type Execution = {
  */
 export interface RunnerProvider {
   readonly name: ProviderName;
+  /** The provider gives its agent the session's bridge, so each new session pins the bridge instance it is bound to. */
+  readonly pinsBridge?: boolean;
   execute(execution: Execution): Promise<ProviderOutcome>;
 }
 

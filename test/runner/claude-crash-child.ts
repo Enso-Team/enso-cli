@@ -33,5 +33,7 @@ process.on("SIGTERM", () => {
   writeSync(2, `Replay of ${fixture} stopped at ${at}${replay.failure ? `: ${replay.failure.message}` : ""}\n`);
   kill();
 });
-await startRunner({ directory, provider: new ClaudeProvider(sdk.query, { permissionMode: "default" }, { stopTimeoutMs: 50, newID: () => first.shift()! }) });
+const claude = new ClaudeProvider(sdk.query, { permissionMode: "default" }, { stopTimeoutMs: 50, newID: () => first.shift()! });
+// Pins no bridge, so the recorded transcripts' bridge-disabled environment holds and no app is contacted.
+await startRunner({ directory, provider: { name: claude.name, execute: execution => claude.execute(execution) } });
 process.stdout.write("ready\n");

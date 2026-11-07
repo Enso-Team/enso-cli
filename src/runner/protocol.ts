@@ -1,10 +1,14 @@
 import { z } from "zod/v3";
+import { isBridgeInstanceID } from "../bridge-binding.js";
 import { isLoopbackBridgeUrl } from "../client.js";
 import { EnsoCliError } from "../errors.js";
 import { parseTarget } from "../targeting.js";
 
-/** Version 2 added Claude sessions, durable native execution identifiers, session uncertainty and structured input. */
-export const runnerVersion = 2;
+/**
+ * Version 2 added Claude sessions, durable native execution identifiers, session uncertainty and structured input.
+ * Version 3 added the bridge instance a session pins (`binding.bridgeInstanceID`). It reads version 2 stores unchanged.
+ */
+export const runnerVersion = 3;
 export const runnerVersionHeader = "Enso-Runner-Version";
 const id = z.string().min(1).max(128);
 const pendingID = z.string().min(1).max(256);
@@ -41,7 +45,13 @@ export const bindingSchema = z.object({
     return !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
   }, "Expected a loopback HTTP bridge origin without credentials").transform(value => new URL(value).origin),
   canvasTarget: target,
-  workingDirectory: z.string().min(1)
+  workingDirectory: z.string().min(1),
+  /**
+   * Stored: the instance the runner read from the bridge's /v1/health when it created the session; absent on sessions
+   * that pinned none (the bridge stays disabled for them). On creation: optional, the instance the client expects the
+   * runner to pin.
+   */
+  bridgeInstanceID: z.string().refine(isBridgeInstanceID, "Expected the bridge instance ID the app advertises on /v1/health").optional()
 }).strict();
 export const providerNames = ["fake", "claude"] as const;
 export const providerNameSchema = z.enum(providerNames);
@@ -124,6 +134,7 @@ export const eventSchema = z.discriminatedUnion("type", [
 ]);
 export type Binding = z.infer<typeof bindingSchema>;
 export type Session = z.infer<typeof sessionSchema>;
+export type SessionInput = z.infer<typeof sessionInputSchema>;
 export type Prompt = z.infer<typeof promptSchema>;
 export type Pending = z.infer<typeof pendingSchema>;
 export type Answer = z.infer<typeof answerSchema>;
