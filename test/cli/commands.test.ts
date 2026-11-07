@@ -1,10 +1,11 @@
-import { writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { writeConfig } from "../../src/config.js";
+import * as skill from "../../src/commands/skill.js";
 import { buildProgram } from "../../src/index.js";
-import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
+import { fixtureTarget, requestPath, requestBody, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -47,11 +48,11 @@ describe("commands", () => {
     [["canvas", "fit", "Flow Map", "--dry-run"], "/v1/canvases/Flow%20Map/fit?dryRun=true", "POST"],
     [["canvas", "create", "Roadmap"], "/v1/canvases?dryRun=false", "POST"],
     [["canvas", "open", "Roadmap"], "/v1/canvases/Roadmap/open?dryRun=false", "POST"],
-    [["canvas", "inspect", "Roadmap"], "/v1/canvases/Roadmap/inspect", "GET"],
     [["node", "list", "--canvas", "current"], "/v1/nodes?canvas=current", "GET"],
     [["node", "place", "Auth"], "/v1/nodes?dryRun=false", "POST"],
     [["node", "move", "Auth", "--x", "1", "--y", "2"], "/v1/nodes/Auth?dryRun=false", "PUT"],
     [["node", "remove", "Auth"], "/v1/nodes/Auth?dryRun=false", "DELETE"],
+    [["node", "rename", "Auth", "Identity"], "/v1/nodes/Auth/rename?dryRun=false", "POST"],
     [["node", "neighbors", "Auth", "--depth", "2"], "/v1/nodes/Auth/neighbors?depth=2", "GET"],
     [["portal", "create", "--title", "Auth Detail", "--subcanvas-ref", "Canvases/Auth%20Detail.json"], "/v1/nodes?dryRun=false", "POST"],
     [["portal", "open", "Auth Detail"], "/v1/nodes/Auth%20Detail/subcanvas/open?dryRun=false", "POST"],
@@ -67,9 +68,6 @@ describe("commands", () => {
     [["primitive", "region", "--x", "10", "--y", "20", "--width", "400", "--height", "240"], "/v1/diagram-primitives?dryRun=false", "POST"],
     [["primitive", "update", "abc", "--title", "Identity"], "/v1/diagram-primitives/abc?dryRun=false", "PUT"],
     [["primitive", "delete", "abc"], "/v1/diagram-primitives/abc?dryRun=false", "DELETE"],
-    [["graph", "inspect"], "/v1/context", "POST"],
-    [["graph", "broken"], "/v1/context", "POST"],
-    [["graph", "path", "A", "B"], "/v1/context", "POST"],
     [["context", "--query", "auth"], "/v1/context", "POST"]
   ];
 
@@ -79,16 +77,16 @@ describe("commands", () => {
     expect(result.code).toBe(0);
     expect(calls).toHaveLength(1);
     const request = calls[0];
-    expect(new URL(request.url).pathname + new URL(request.url).search).toBe(path);
+    expect(requestPath(request)).toBe(path.replace(/\/canvases\/(current|Flow%20Map)\/fit/, `/canvases/${fixtureTarget.canvasID}/fit`).replace("canvas=current", `canvas=${fixtureTarget.canvasID}`));
     expect(request.init.method ?? "GET").toBe(method);
     expect((request.init.headers as Record<string, string>).Authorization).toBe("Bearer test-token");
   });
 
   it("opens a resolved vault folder and passes dry-run", async () => {
     await run(["vault", "open", tempDir, "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ path: tempDir, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ path: tempDir, dryRun: true });
     await run(["vault", "open", "~"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ path: homedir(), dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ path: homedir(), dryRun: false });
   });
 
   it("rejects files and missing vault folders before contacting the app", async () => {
@@ -102,17 +100,118 @@ describe("commands", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("creates a vault folder and sends every flag", async () => {
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder, "--name", "Research", "--sync", "--team", "team-1"]);
+    expect(result.code).toBe(0);
+    expect(statSync(folder).isDirectory()).toBe(true);
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0].url);
+    expect(url.pathname + url.search).toBe("/v1/vault/create?dryRun=false");
+    expect(calls[0].init.method).toBe("POST");
+    expect(requestBody(calls[0])).toEqual({ path: folder, name: "Research", sync: true, team: "team-1", dryRun: false });
+  });
+
+  it("passes an existing folder through as a local vault by default", async () => {
+    const result = await run(["vault", "create", tempDir]);
+    expect(result.code).toBe(0);
+    expect(requestBody(calls[0])).toEqual({ path: tempDir, sync: false, dryRun: false });
+  });
+
+  it("leaves a missing vault folder uncreated on dry-run", async () => {
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(existsSync(folder)).toBe(false);
+    expect(new URL(calls[0].url).search).toBe("?dryRun=true");
+    expect(requestBody(calls[0])).toEqual({ path: folder, sync: false, dryRun: true });
+  });
+
+  it("rejects a file, a missing parent, and --team without --sync before contacting the app", async () => {
+    const file = join(tempDir, "note.md");
+    writeFileSync(file, "# Note");
+    const attempts = [
+      [file],
+      [join(tempDir, "missing", "Research")],
+      [join(tempDir, "Research"), "--team", "team-1"]
+    ];
+    for (const args of attempts) {
+      const result = await run(["vault", "create", ...args]);
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.stderr).error.code).toBe("invalid_input");
+    }
+    expect(calls).toHaveLength(0);
+    expect(existsSync(join(tempDir, "missing"))).toBe(false);
+    expect(existsSync(join(tempDir, "Research"))).toBe(false);
+  });
+
+  it("removes the folder it created when the app refuses", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "vault_name_taken", message: "A vault named Research exists", details: {} } }));
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder, "--name", "Research"]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("vault_name_taken");
+    expect(existsSync(folder)).toBe(false);
+  });
+
+  it("keeps an existing folder when the app refuses it", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "vault_exists", message: "Research already has a vault", details: {} } }));
+    const folder = join(tempDir, "Research");
+    mkdirSync(folder);
+    const result = await run(["vault", "create", folder]);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr).error.code).toBe("vault_exists");
+    expect(statSync(folder).isDirectory()).toBe(true);
+  });
+
+  it("reports a vault folder this terminal may not use as folder_access_denied", async () => {
+    const readOnly = join(tempDir, "read-only");
+    const unreadable = join(tempDir, "unreadable");
+    mkdirSync(readOnly);
+    mkdirSync(unreadable);
+    chmodSync(readOnly, 0o555);
+    chmodSync(unreadable, 0o000);
+    try {
+      const attempts = [
+        ["create", join(readOnly, "Research")],
+        ["create", join(unreadable, "Research")],
+        ["open", join(unreadable, "Research")]
+      ];
+      for (const args of attempts) {
+        const result = await run(["vault", ...args]);
+        expect(result.code).toBe(1);
+        expect(JSON.parse(result.stderr).error.code).toBe("folder_access_denied");
+      }
+    } finally {
+      chmodSync(readOnly, 0o755);
+      chmodSync(unreadable, 0o755);
+    }
+    expect(calls).toHaveLength(0);
+    expect(existsSync(join(readOnly, "Research"))).toBe(false);
+  });
+
+  it("reports an app without vault creation as outdated", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ ok: false, error: { code: "not_found", message: "Bridge route not found" } }));
+    const folder = join(tempDir, "Research");
+    const result = await run(["vault", "create", folder]);
+    expect(result.code).toBe(1);
+    const error = JSON.parse(result.stderr).error;
+    expect(error.code).toBe("app_outdated");
+    expect(error.details.hint).toBe("Update the Enso app, or create the vault from Enso's vault menu");
+    expect(existsSync(folder)).toBe(false);
+  });
+
   it("passes Appearance on node place", async () => {
     const result = await run(["node", "place", "API", "--appearance", "api", "--dry-run"]);
     expect(result.code).toBe(0);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ title: "API", placeExisting: true, appearance: "api", dryRun: true });
+    expect(requestBody(calls[0])).toMatchObject({ title: "API", placeExisting: true, appearance: "api", dryRun: true });
   });
 
   it("resets Appearance through node update", async () => {
     const result = await run(["node", "update", "API", "--appearance", "card", "--dry-run"]);
     expect(result.code).toBe(0);
     expect(calls[0].init.method).toBe("PUT");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ appearance: "card", dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ appearance: "card", dryRun: true });
   });
 
   it("rejects unsupported Appearance before contacting the bridge", async () => {
@@ -122,16 +221,16 @@ describe("commands", () => {
 
   it("sets icon and title sizes separately and clears the explicit icon size", async () => {
     await run(["node", "update", "API", "--glyph-size", "72", "--font-size", "24", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ glyphSize: 72, fontSize: 24, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ glyphSize: 72, fontSize: 24, dryRun: true });
     await run(["node", "update", "API", "--clear-glyph-size"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ glyphSize: null, dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ glyphSize: null, dryRun: false });
   });
 
   it("sets and clears the whole-Node ratio lock", async () => {
     await run(["node", "update", "API", "--lock-ratio", "true", "--title-gap", "12", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ isResizeLocked: true, titleGap: 12, dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ isResizeLocked: true, titleGap: 12, dryRun: true });
     await run(["node", "update", "API", "--lock-ratio", "false"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ isResizeLocked: false, dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ isResizeLocked: false, dryRun: false });
   });
 
   it("rejects malformed ratio settings before sending a request", async () => {
@@ -142,7 +241,7 @@ describe("commands", () => {
 
   it("passes size fields on placement", async () => {
     await run(["node", "place", "API", "--appearance", "api", "--glyph-size", "80", "--font-size", "20"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });
+    expect(requestBody(calls[0])).toMatchObject({ appearance: "api", glyphSize: 80, fontSize: 20 });
   });
 
   it.each(["0", "161", "NaN"])("rejects invalid glyph size %s", async (value) => {
@@ -154,22 +253,22 @@ describe("commands", () => {
     await run(["node", "move", "Auth", "--x", "1", "--y", "2", "--dry-run"]);
     const request = calls[0];
     expect(new URL(request.url).searchParams.get("dryRun")).toBe("true");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({ x: 1, y: 2, dryRun: true });
+    expect(requestBody(request)).toMatchObject({ x: 1, y: 2, dryRun: true });
   });
 
   it("passes from-note in body on link delete", async () => {
     await run(["link", "delete", "abc"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: true });
+    expect(requestBody(calls[0])).toMatchObject({ fromNote: true });
   });
 
   it("defaults from-note to false on link delete", async () => {
     await run(["link", "remove", "abc"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ fromNote: false });
+    expect(requestBody(calls[0])).toMatchObject({ fromNote: false });
   });
 
   it("emits null for primitive clear-title and clear-color", async () => {
     await run(["primitive", "update", "abc", "--clear-title", "--clear-color"]);
-    const body = JSON.parse(String(calls[0].init.body));
+    const body = requestBody(calls[0]);
     expect(body.title).toBeNull();
     expect(body.color).toBeNull();
   });
@@ -216,14 +315,14 @@ describe("commands", () => {
 
   it("places a Vault Note by path and never sends content", async () => {
     await run(["node", "place", "docs/Auth.md", "--dry-run"]);
-    const body = JSON.parse(String(calls[0].init.body));
-    expect(body).toMatchObject({ kind: "note", title: "docs/Auth.md", placeExisting: true, canvas: "current", dryRun: true });
+    const body = requestBody(calls[0]);
+    expect(body).toMatchObject({ kind: "note", title: "docs/Auth.md", placeExisting: true, canvas: fixtureTarget.canvasID, dryRun: true });
     expect(body).not.toHaveProperty("content");
   });
 
   it("places nodes with world-space x/y", async () => {
     await run(["node", "place", "Placed", "--x", "2700", "--y", "2850", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       kind: "note",
       title: "Placed",
       placeExisting: true,
@@ -235,7 +334,7 @@ describe("commands", () => {
 
   it("omits x/y when not provided on place", async () => {
     await run(["node", "place", "Auto"]);
-    const body = JSON.parse(String(calls[0].init.body));
+    const body = requestBody(calls[0]);
     expect(body).not.toHaveProperty("x");
     expect(body).not.toHaveProperty("y");
   });
@@ -243,33 +342,33 @@ describe("commands", () => {
   it("passes portal operations", async () => {
     await run(["portal", "create", "--title", "Auth Detail", "--subcanvas-ref", "Canvases/Auth Detail.json", "--dry-run"]);
     expect(new URL(calls[0].url).pathname + new URL(calls[0].url).search).toBe("/v1/nodes?dryRun=true");
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       kind: "portal",
       title: "Auth Detail",
       subcanvasRef: "Canvases/Auth Detail.json",
-      canvas: "current",
+      canvas: fixtureTarget.canvasID,
       dryRun: true
     });
 
     await run(["portal", "open", "Auth Detail", "--dry-run"]);
     expect(new URL(calls[1].url).pathname + new URL(calls[1].url).search).toBe("/v1/nodes/Auth%20Detail/subcanvas/open?dryRun=true");
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ dryRun: true });
+    expect(requestBody(calls[1])).toMatchObject({ dryRun: true });
 
     await run(["portal", "change-subcanvas", "Auth Detail", "Canvases/New Detail.json"]);
     expect(new URL(calls[2].url).pathname + new URL(calls[2].url).search).toBe("/v1/nodes/Auth%20Detail?dryRun=false");
-    expect(JSON.parse(String(calls[2].init.body))).toMatchObject({
+    expect(requestBody(calls[2])).toMatchObject({
       subcanvasRef: "Canvases/New Detail.json",
       dryRun: false
     });
 
     await run(["portal", "remove", "Auth Detail", "--dry-run"]);
     expect(new URL(calls[3].url).pathname + new URL(calls[3].url).search).toBe("/v1/nodes/Auth%20Detail?dryRun=true");
-    expect(JSON.parse(String(calls[3].init.body))).toMatchObject({ dryRun: true });
+    expect(requestBody(calls[3])).toMatchObject({ dryRun: true });
   });
 
   it("passes link direction and color on create and update", async () => {
     await run(["link", "create", "A", "B", "--label", "uses", "--color", "#3B82F6", "--direction", "bidirectional"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       source: "A",
       target: "B",
       label: "uses",
@@ -280,7 +379,7 @@ describe("commands", () => {
 
     await run(["link", "update", "abc", "--color", "green", "--direction", "undirected", "--dry-run"]);
     expect(new URL(calls[1].url).pathname + new URL(calls[1].url).search).toBe("/v1/links/abc?dryRun=true");
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({
+    expect(requestBody(calls[1])).toMatchObject({
       color: "green",
       direction: "undirected",
       dryRun: true
@@ -296,7 +395,7 @@ describe("commands", () => {
 
   it("sends a Link label size and rejects one out of range", async () => {
     await run(["link", "update", "abc", "--label-font-size", "12"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ labelFontSize: 12, dryRun: false });
+    expect(requestBody(calls[0])).toMatchObject({ labelFontSize: 12, dryRun: false });
     calls.length = 0;
     const tooBig = await run(["link", "update", "abc", "--label-font-size", "40"]);
     expect(tooBig.code).not.toBe(0);
@@ -305,7 +404,7 @@ describe("commands", () => {
 
   it("sends a label-only link update", async () => {
     await run(["link", "update", "abc", "--label", "queries"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+    expect(requestBody(calls[0])).toEqual({
       label: "queries",
       dryRun: false
     });
@@ -315,7 +414,7 @@ describe("commands", () => {
 
   it("sends null label when clearing canvas label", async () => {
     await run(["link", "update", "abc", "--clear-label"]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({
+    expect(requestBody(calls[0])).toMatchObject({
       label: null,
       dryRun: false
     });
@@ -326,27 +425,27 @@ describe("commands", () => {
 
   it("re-sources a link with --source", async () => {
     await run(["link", "update", "abc", "--source", "Cache"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ source: "Cache", dryRun: false });
+    expect(requestBody(calls[0])).toEqual({ source: "Cache", dryRun: false });
   });
 
   it("re-targets a link with --target", async () => {
     await run(["link", "update", "abc", "--target", "Database", "--dry-run"]);
     expect(new URL(calls[0].url).search).toBe("?dryRun=true");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: "Database", dryRun: true });
+    expect(requestBody(calls[0])).toEqual({ target: "Database", dryRun: true });
   });
 
   it("delinks with a null target and carries the dangling head position", async () => {
     await run(["link", "update", "abc", "--delink"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: null, dryRun: false });
-    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("targetPosition");
+    expect(requestBody(calls[0])).toEqual({ target: null, dryRun: false });
+    expect(requestBody(calls[0])).not.toHaveProperty("targetPosition");
 
     await run(["link", "update", "abc", "--delink", "--target-position", "320,-180"]);
-    expect(JSON.parse(String(calls[1].init.body))).toEqual({ target: null, targetPosition: { x: 320, y: -180 }, dryRun: false });
+    expect(requestBody(calls[1])).toEqual({ target: null, targetPosition: { x: 320, y: -180 }, dryRun: false });
   });
 
   it("keeps a style change on the same request as an endpoint move", async () => {
     await run(["link", "update", "abc", "--target", "Database", "--label", "reads", "--color", "blue"]);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ target: "Database", label: "reads", color: "blue", dryRun: false });
+    expect(requestBody(calls[0])).toEqual({ target: "Database", label: "reads", color: "blue", dryRun: false });
   });
 
   it("rejects a malformed --target-position before sending", async () => {
@@ -472,28 +571,105 @@ describe("commands", () => {
   it("omits vision context by default", async () => {
     await run(["context", "--canvas", "current"]);
     const request = calls[0];
-    expect(JSON.parse(String(request.init.body))).toMatchObject({
-      canvas: "current",
+    expect(requestBody(request)).toMatchObject({
+      canvas: fixtureTarget.canvasID,
       depth: 1
     });
-    expect(JSON.parse(String(request.init.body))).not.toHaveProperty("vision");
+    expect(requestBody(request)).not.toHaveProperty("vision");
   });
 
-  it("projects default context to compact structural fields", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      return Response.json({ ok: true, data: {
-        nodes: [{ id: "n1", title: "Auth", ref: "Files/Auth.md", markdownContent: "# very long", createdAt: "yesterday", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false }],
-        links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12, path: [] }],
-        diagramPrimitives: [{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]
-      } });
-    }));
-    const result = await run(["context", "--canvas", "current"]);
-    const data = JSON.parse(result.stdout).data;
-    expect(data.nodes[0]).toEqual({ id: "n1", title: "Auth", ref: "Files/Auth.md", position: { x: 1, y: 2 }, appearance: "api", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false });
-    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "reads from", mentions: ["Auth reads from [[B]]."], labelFontSize: 12 });
-    expect(JSON.parse(String(calls[0].init.body)).includeContent).toBe(false);
-    expect(data.diagramPrimitives).toEqual([{ id: "p1", kind: "line", start: { x: 10, y: 20 }, end: { x: 100, y: 20 } }, { id: "p2", kind: "group", position: { x: 30, y: 40 }, bounds: { width: 100, height: 80 } }]);
+  const canvas = {
+    canvas: { id: "C1", name: "Proposed" },
+    nodes: [
+      { id: "n1", kind: "note", title: "Entry", ref: "DBS/Entry.md", subcanvasRef: null, appearance: "mobileApp", glyphSize: null, fontSize: 14, titleGap: 8, isResizeLocked: false, position: { x: 100, y: 100 }, bounds: { x: 50, y: 60, width: 100, height: 80 } },
+      { id: "n2", kind: "note", title: "Face ID", ref: "DBS/Face ID.md", subcanvasRef: null, appearance: "auth", glyphSize: 48, fontSize: 14, position: { x: 400, y: 100 }, bounds: { x: 350, y: 60, width: 100, height: 80 } },
+      { id: "n3", kind: "portal", title: "Detail", ref: null, subcanvasRef: "Canvases/Detail.json", appearance: "card", fontSize: 17, position: { x: 900, y: 100 } }
+    ],
+    links: [{ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", label: null, displayLabel: "asks for", mentions: ["Entry asks for [[Face ID]]."], color: "orange", direction: "directed", lineStyle: "solid", arrowheadStyle: "filled", labelFontSize: 12 }],
+    diagramPrimitives: [
+      { id: "p1", kind: "group", title: "Signed out", color: "blue", lineStyle: "solid", strokeWidth: 1.5, fillOpacity: 0.07, bounds: { x: 0, y: 0, width: 500, height: 200 } },
+      { id: "p2", kind: "line", title: "Session boundary", color: "gray", lineStyle: "dashed", strokeWidth: 1, x1: 0, y1: 300, x2: 1000, y2: 300 },
+      { id: "p3", kind: "line", color: "red", x1: 0, y1: 400, x2: 10, y2: 400 }
+    ],
+    marks: [{ id: "m1", kind: "typed", text: "Orange links ask for authentication.", textRuns: [], fontSize: 17, textAlignment: "left", connectedNodeIDs: ["n2"], strokeIDs: [], position: { x: 10, y: 220 }, width: 300 }],
+    excerpts: [{ id: "e1", noteID: "note-1", linkedNodeID: "n1", text: "OCR text the Note already holds", fontSize: 14, bounds: { x: 20, y: 500, width: 200, height: 40 }, connectedNodeIDs: [] }]
+  };
+  const respondWith = (data: unknown) => vi.mocked(fetch).mockImplementation(async (url, init) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return Response.json({ ok: true, data });
+  });
+
+  it("projects default context to identity, meaning, and geometry", async () => {
+    respondWith(canvas);
+    const data = JSON.parse((await run(["context", "--canvas", "Proposed"])).stdout).data;
+    expect(data.nodes[1]).toEqual({ id: "n2", kind: "note", title: "Face ID", ref: "DBS/Face ID.md", appearance: "auth", position: { x: 400, y: 100 }, bounds: { x: 350, y: 60, width: 100, height: 80 } });
+    expect(data.links[0]).toEqual({ id: "l1", sourceNodeID: "n1", targetNodeID: "n2", displayLabel: "asks for", color: "orange", direction: "directed", lineStyle: "solid" });
+    expect(data.diagramPrimitives[0]).toEqual({ id: "p1", kind: "group", title: "Signed out", color: "blue", lineStyle: "solid", bounds: { x: 0, y: 0, width: 500, height: 200 } });
+    expect(data.marks[0]).toEqual({ id: "m1", kind: "typed", text: "Orange links ask for authentication.", connectedNodeIDs: ["n2"], position: { x: 10, y: 220 }, width: 300, bounds: expect.objectContaining({ x: 10, y: 220, width: 300 }) });
+    expect(data.excerpts[0]).toEqual({ id: "e1", linkedNodeID: "n1", connectedNodeIDs: [], bounds: { x: 20, y: 500, width: 200, height: 40 } });
+  });
+
+  it("returns the spec view by title", async () => {
+    respondWith(canvas);
+    const data = JSON.parse((await run(["context", "--canvas", "Proposed", "--spec"])).stdout).data;
+    expect(data).toEqual({
+      canvas: "Proposed",
+      members: [
+        { title: "Entry", note: "DBS/Entry.md", appearance: "mobileApp" },
+        { title: "Face ID", note: "DBS/Face ID.md", appearance: "auth" },
+        { title: "Detail", portal: "Canvases/Detail.json" }
+      ],
+      edges: [{ from: "Entry", to: "Face ID", label: "asks for", color: "orange", direction: "directed" }],
+      clusters: [{ name: "Signed out", color: "blue", members: ["Entry", "Face ID"] }],
+      lines: [{ title: "Session boundary", color: "gray", lineStyle: "dashed" }],
+      marks: [{ text: "Orange links ask for authentication.", about: ["Face ID"] }],
+      excerpts: [{ on: "Entry" }]
+    });
+  });
+
+  it("names spec members that share a title by Note path", async () => {
+    respondWith({ ...canvas, nodes: [canvas.nodes[0], { ...canvas.nodes[1], title: "Entry", ref: "Other/Entry.md" }] });
+    const data = JSON.parse((await run(["context", "--spec"])).stdout).data;
+    expect(data.edges[0]).toMatchObject({ from: "DBS/Entry.md", to: "Other/Entry.md" });
+    expect(requestBody(calls[0])).toMatchObject({ includeContent: false });
+  });
+
+  it("places spec cluster members for a region that stores its center apart from its size", async () => {
+    respondWith({ ...canvas, diagramPrimitives: [{ id: "p1", kind: "group", title: "Signed out", position: { x: 250, y: 100 }, bounds: { width: 500, height: 200 } }] });
+    const data = JSON.parse((await run(["context", "--canvas", "Proposed", "--spec"])).stdout).data;
+    expect(data.clusters).toEqual([{ name: "Signed out", members: ["Entry", "Face ID"] }]);
+  });
+
+  it("returns every stored field with --full", async () => {
+    respondWith(canvas);
+    expect(JSON.parse((await run(["context", "--canvas", "Proposed", "--full"])).stdout).data).toEqual(canvas);
+    expect(new URL(calls[0].url).pathname).toBe(`/v1/canvases/${fixtureTarget.canvasID}/inspect`);
+  });
+
+  it.each([["--spec", "--full"], ["--spec", "--vision"], ["--full", "--diagnostics"], ["--spec", "--node", "Entry"]])("rejects %s with %s", async (...flags) => {
+    expect(JSON.parse((await run(["context", ...flags])).stderr).error.code).toBe("invalid_input");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("lists Canvases by what an agent can select and read", async () => {
+    const entry = { id: "Plan", name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", path: "/Users/me/Library/Containers/app/Canvases/Plan.json" };
+    respondWith({ canvases: [entry, { ...entry, id: "UUID-1" }] });
+    expect(JSON.parse((await run(["canvas", "list"])).stdout).data.canvases).toEqual([
+      { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md" },
+      { id: "UUID-1", name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md" }
+    ]);
+    respondWith({ ...entry, nodes: 3, links: 2, diagramPrimitives: 1 });
+    expect(JSON.parse((await run(["canvas", "current"])).stdout).data).toEqual({ name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3, links: 2, diagramPrimitives: 1 });
+    vi.spyOn(skill, "staleSkillCopies").mockReturnValue(["/home/.claude/skills/enso"]);
+    respondWith({ app: "Enso", vaultPath: "/vault", currentCanvas: { ...entry, nodes: 3 } });
+    expect(JSON.parse((await run(["status"])).stdout).data).toEqual({ app: "Enso", vaultPath: "/vault", currentCanvas: { name: "Plan", ref: "Canvases/Plan.json", outlinePath: "/vault/Canvases/Plan.md", nodes: 3 },
+      skill: { stale: ["/home/.claude/skills/enso"], hint: "Run `enso skill install` to copy the skill bundled with this CLI" } });
+  });
+
+  it("reads Canvases through context alone", () => {
+    const program = buildProgram();
+    expect(program.commands.map((command) => command.name())).not.toContain("graph");
+    expect(program.commands.find((command) => command.name() === "canvas")?.commands.map((command) => command.name())).not.toContain("inspect");
   });
 
   it("returns Canvas identity, viewport metadata, diagnostics, and issue repair bounds", async () => {
@@ -504,7 +680,7 @@ describe("commands", () => {
     });
     const result = await run(["context", "--diagnostics"]);
     expect(JSON.parse(result.stdout).data).toEqual({ canvas: { id: "Trial" }, vision: { viewport: { scale: 1 }, diagnostics } });
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ includeContent: false, vision: { enabled: true } });
+    expect(requestBody(calls[0])).toMatchObject({ includeContent: false, vision: { enabled: true } });
   });
 
   it("reports unavailable diagnostics and preserves bridge errors", async () => {
@@ -517,11 +693,11 @@ describe("commands", () => {
 
   it("passes optional-extension paths on Note placement and Link line styles", async () => {
     await run(["node", "place", "DBS/Entry", "--dry-run"]);
-    expect(JSON.parse(String(calls[0].init.body)).title).toBe("DBS/Entry.md");
+    expect(requestBody(calls[0]).title).toBe("DBS/Entry.md");
     await run(["link", "create", "A", "B", "--line-style", "dotted"]);
-    expect(JSON.parse(String(calls[1].init.body)).lineStyle).toBe("dotted");
+    expect(requestBody(calls[1]).lineStyle).toBe("dotted");
     await run(["link", "update", "link", "--line-style", "dashed"]);
-    expect(JSON.parse(String(calls[2].init.body)).lineStyle).toBe("dashed");
+    expect(requestBody(calls[2]).lineStyle).toBe("dashed");
   });
 
   it("requests content for focused context and omits it for focused diagnostics", async () => {
@@ -533,7 +709,7 @@ describe("commands", () => {
     await run(["context", "--query", "Entry"]);
     await run(["context", "--node", "Entry", "--diagnostics"]);
     expect(calls.map(call => JSON.parse(String(call.init.body)).includeContent)).toEqual([true, true, false]);
-    expect(JSON.parse(String(calls[2].init.body))).not.toHaveProperty("node");
+    expect(requestBody(calls[2])).not.toHaveProperty("node");
   });
 
   it("requests file-backed viewport vision context", async () => {
@@ -541,8 +717,8 @@ describe("commands", () => {
     const request = calls[0];
     expect(new URL(request.url).pathname).toBe("/v1/context");
     expect(request.init.method).toBe("POST");
-    expect(JSON.parse(String(request.init.body))).toMatchObject({
-      canvas: "current",
+    expect(requestBody(request)).toMatchObject({
+      canvas: fixtureTarget.canvasID,
       depth: 1,
       vision: {
         enabled: true,

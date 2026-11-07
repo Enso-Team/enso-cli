@@ -6,32 +6,45 @@ import { registerAuth } from "./commands/auth.js";
 import { registerCanvas } from "./commands/canvas.js";
 import { registerCheck } from "./commands/check.js";
 import { registerContext } from "./commands/context.js";
+import { registerExcerpt } from "./commands/excerpt.js";
 import { registerPrimitive } from "./commands/primitive.js";
-import { registerGraph } from "./commands/graph.js";
 import { registerLayout } from "./commands/layout.js";
 import { registerLink } from "./commands/link.js";
-import { registerMark, registerExcerpt } from "./commands/mark.js";
+import { registerMark } from "./commands/mark.js";
 import { registerNode } from "./commands/node.js";
 import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSkill } from "./commands/skill.js";
+import { registerRunner } from "./commands/runner.js";
 import { registerStatus } from "./commands/status.js";
 import { registerSetup } from "./commands/setup.js";
 import { registerUpdate } from "./commands/update.js";
-import { notifyUpdate } from "./update.js";
+import { notifyUpdate, wantsUpdateNotice } from "./update.js";
 import { registerVault } from "./commands/vault.js";
-import { errorEnvelope, printEnvelope, type EnsoEnvelope } from "./errors.js";
+import { EnsoCliError, errorEnvelope, hasOwnOutput, printEnvelope, type EnsoEnvelope } from "./errors.js";
+import { withRequestContext, currentRequestContext, type TargetOptions } from "./targeting.js";
 import { cliVersion } from "./version.js";
+
+function immutableOption(value: string, previous?: string): string {
+  if (previous !== undefined && previous !== value) throw new EnsoCliError("target_conflict", "Repeated target options must agree");
+  return value;
+}
 
 export function buildProgram(): Command {
   const program = new Command();
   program
+    .configureHelp({ showGlobalOptions: true })
     .name("enso")
     .description("Local CLI for the Enso Mac app")
     .version(cliVersion, "-v, --version", "print the installed CLI version")
     .option("--pretty", "format JSON output")
+    .option("--canvas <selector>", "resolve one canvas name, ref or stable canvasID for this invocation", immutableOption)
+    .option("--vault-id <uuid>", "immutable binding: stable vault UUID; requires --canvas-id", immutableOption)
+    .option("--canvas-id <uuid>", "immutable binding: stable canvas UUID; requires --vault-id", immutableOption)
+    .addHelpText("after", "\nCanvas requests require Enso bridge contract 3. Selection never navigates.\nBinding: supply both --vault-id/--canvas-id or ENSO_VAULT_ID/ENSO_CANVAS_ID.\nA binding rejects selector overrides and navigation; target errors are never replayed.")
     .exitOverride();
 
+  registerRunner(program);
   registerStatus(program);
   registerSetup(program);
   registerAuth(program);
@@ -46,7 +59,6 @@ export function buildProgram(): Command {
   registerPrimitive(program);
   registerMark(program);
   registerExcerpt(program);
-  registerGraph(program);
   registerContext(program);
   registerSkill(program);
   registerUpdate(program);
@@ -56,7 +68,7 @@ export function buildProgram(): Command {
     if (result) {
       const pretty = Boolean(thisCommand.optsWithGlobals().pretty);
       printEnvelope(result, pretty, result.ok ? process.stdout : process.stderr);
-      if (result.ok && actionCommand.name() !== "update") await notifyUpdate();
+      if (result.ok && wantsUpdateNotice(actionCommand)) await notifyUpdate();
     }
   });
 
@@ -77,9 +89,24 @@ function wrapActions(command: Command): void {
     const program = rootCommand(command);
     try {
       const processedArgs = (command as unknown as { processedArgs: unknown[] }).processedArgs ?? args;
-      const result = (await action(processedArgs)) as EnsoEnvelope;
+      const options = command.optsWithGlobals() as TargetOptions;
+      const rootCanvas = program.opts().canvas as string | undefined;
+      const localCanvas = command.opts().canvas as string | undefined;
+      if (rootCanvas && localCanvas && rootCanvas !== localCanvas) throw new EnsoCliError("target_conflict", "Conflicting canvas selectors");
+      if (options.canvas !== undefined) command.setOptionValue("canvas", options.canvas);
+      const result = await withRequestContext(options, async () => {
+        const context = currentRequestContext()!;
+        const group = command.parent?.name();
+        if (context.bound && ((group === "vault" && ["open", "create"].includes(command.name())) ||
+          (group === "canvas" && ["open", "create", "delete"].includes(command.name())) ||
+          (group === "portal" && command.name() === "open") ||
+          (group === "auth" && ["link", "unlink"].includes(command.name())))) context.rejectNavigation();
+        return await action(processedArgs) as EnsoEnvelope | undefined;
+      });
+      // A missing envelope is a bug, not a silent success, unless the command printed its own output.
+      if (result === undefined && !hasOwnOutput(command)) throw new EnsoCliError("internal_error", `${command.name()} returned no result`);
       command.setOptionValue("__ensoResult", result);
-      process.exitCode = result.ok ? 0 : 1;
+      process.exitCode = result === undefined || result.ok ? 0 : 1;
     } catch (error) {
       const envelope = errorEnvelope(error);
       printEnvelope(envelope, Boolean(program.optsWithGlobals().pretty), process.stderr);

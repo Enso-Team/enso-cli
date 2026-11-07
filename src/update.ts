@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { z } from "zod";
+import type { Command } from "commander";
+import { z } from "zod/v3";
 import { configDir } from "./config.js";
 import { EnsoCliError } from "./errors.js";
 import { inspectInstallation, type Installation } from "./installation.js";
@@ -16,6 +17,18 @@ const dayMs = 24 * 60 * 60 * 1000;
 const stableVersion = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
 const cacheSchema = z.object({ checkedAt: z.number().finite(), latest: stableVersion.optional() });
 const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+const noticeExempt = new WeakSet<Command>();
+
+/** Exempts a command and its subcommands from the post-success update notice. */
+export function withoutUpdateNotice<T extends Command>(command: T): T {
+  noticeExempt.add(command);
+  return command;
+}
+
+export function wantsUpdateNotice(command: Command): boolean {
+  for (let current: Command | null = command; current; current = current.parent) if (noticeExempt.has(current)) return false;
+  return true;
+}
 
 export function isNewerVersion(latest: string, installed: string): boolean {
   if (!stableVersion.safeParse(latest).success || !stableVersion.safeParse(installed).success) return false;
@@ -93,10 +106,17 @@ export async function updateCli(checkOnly: boolean): Promise<{ installedVersion:
 
   if (!installation.automatic) throw new EnsoCliError("update_install_location", "Use the installation's local update action", { ...installation, hint: installation.updateCommand });
   try {
-    const binary = installation.owner === "bun" ? "bun" : "npm";
-    const args = binary === "bun" ? ["add", "--global", `${packageName}@${latest}`, "--registry", registry]
-      : ["install", "--global", `${packageName}@${latest}`, "--registry", registry, "--engine-strict"];
-    await execute(binary, args, { cwd: dirname(packageDirectory), timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+    if (installation.owner === "bun") {
+      await execute("bun", ["add", "--global", `${packageName}@${latest}`, "--registry", registry], { cwd: dirname(packageDirectory), timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+    } else {
+      const { stdout: npmVersion } = await execute("npm", ["--version"], { timeout: 5000 });
+      const npmMajor = Number(/^(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.exec(npmVersion.trim())?.[1]);
+      if (!Number.isSafeInteger(npmMajor)) throw new Error("npm returned an invalid version");
+      const installArgs = ["install", "--global", `${packageName}@${latest}`, "--registry", registry, "--engine-strict"];
+      // Global installs ignore package.json's allowScripts; npm 12 requires explicit approval for the native binding.
+      if (npmMajor >= 12) installArgs.push("--allow-scripts=better-sqlite3");
+      await execute("npm", installArgs, { cwd: dirname(packageDirectory), timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+    }
     const installed = z.object({ version: stableVersion }).parse(JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")));
     if (installed.version !== latest) throw new Error("The installed version differs from the requested version");
     return { installedVersion: installed.version, latestVersion: latest, updateAvailable: false, updated: true, installation };

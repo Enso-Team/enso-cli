@@ -5,11 +5,20 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # Runtime dependencies, grouped so one PR a week carries the lot.
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns: ["*"]
+  # npm dependencies. Minor and patch updates share one weekly PR.
+  # Each major update gets its own PR so a breaking change is reviewed alone.
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       dependencies:
         patterns: ["*"]
+        update-types: ["minor", "patch"]

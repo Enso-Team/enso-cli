@@ -151,20 +151,3 @@ export function registerMark(program: Command): void {
     .option("--dry-run", "validate without mutating")
     .action(nodeAction("drop-to-note"));
 }
-
-export function registerExcerpt(program: Command): void {
-  const excerpt = program.command("excerpt").description("Inspect and size note-owned canvas writing");
-  excerpt.command("list").action(async () => request("/v1/excerpts"));
-  excerpt.command("get").argument("<excerpt-id>").action(async (id: string) => request(`/v1/excerpts/${encodeURIComponent(id)}`));
-  excerpt.command("update").argument("<excerpt-id>")
-    .option("--align <alignment>", "Whole-placement alignment: left, center, right, or justified", parseAlignment)
-    .option("--font-size <points>", "Placement text size in world points, 8–96", parseFontSize)
-    .option("--reset-size", "Reset placement text size to 17 world points, retaining wrap width")
-    .option("--width <points>", "Wrap width in world points", parseWidth)
-    .option("--at <x,y>", "World-space top-left", parseAt)
-    .option("--dry-run", "validate without mutating")
-    .action(async (id: string, options: MarkWriteOptions) => {
-      if (options.fontSize === undefined && options.align === undefined && !options.resetSize && options.width === undefined && !options.at) throw new InvalidArgumentError("Provide font-size, align, reset-size, width, or at");
-      return request(`/v1/excerpts/${encodeURIComponent(id)}`, { method: "PUT", body: markBody(undefined, options), dryRun: Boolean(options.dryRun) });
-    });
-}

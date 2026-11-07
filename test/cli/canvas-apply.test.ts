@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
 import { describe, expect, it, vi } from "vitest";
-import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
+import { fixtureTarget, requestBody, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
 
@@ -41,7 +41,7 @@ describe("canvas apply", () => {
     }), "--dry-run"]);
     expect(result.code).toBe(0);
     const request = calls.find((call) => new URL(call.url).pathname === "/v1/apply")!;
-    expect(JSON.parse(String(request.init.body))).toEqual({
+    expect(requestBody(request)).toEqual({
       operations: [{ type: "node.update", selector: "API", appearance: "card" }], dryRun: true
     });
   });
@@ -191,7 +191,7 @@ describe("canvas apply", () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const pathname = new URL(String(url)).pathname;
-      if (pathname === "/v1/canvases/Roadmap/inspect") {
+      if (pathname === `/v1/canvases/${fixtureTarget.canvasID}/inspect`) {
         inspections += 1;
         return Response.json({ ok: true, data: { nodes: inspections === 1 ? [] : [{ id: "node-1", title: "API", position: { x: 25000, y: 25000 } }], links: [], diagramPrimitives: [] } });
       }
@@ -205,7 +205,7 @@ describe("canvas apply", () => {
       nodes: [{ kind: "note", mode: "place", note: "API", x: 10, y: 20 }]
     })]);
     expect(result.code).toBe(0);
-    expect(calls.filter((call) => new URL(call.url).pathname === "/v1/canvases/Roadmap/inspect")).toHaveLength(2);
+    expect(calls.filter((call) => new URL(call.url).pathname === `/v1/canvases/${fixtureTarget.canvasID}/inspect`)).toHaveLength(2);
     expect(calls.some((call) => new URL(call.url).pathname === "/v1/context")).toBe(false);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
@@ -376,7 +376,7 @@ describe("canvas apply", () => {
     });
   });
 
-  it("defers bridge validation for a named Canvas instead of validating the open Canvas", async () => {
+  it("bridge-validates a named target on dry run without opening it", async () => {
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ ok: true, data: { nodes: [], links: [], diagramPrimitives: [] } });
@@ -385,11 +385,11 @@ describe("canvas apply", () => {
       canvas: "Roadmap",
       nodes: [{ kind: "note", mode: "place", note: "A", x: 1, y: 2 }]
     }), "--dry-run"]);
-    expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/canvases/Roadmap/inspect", "/v1/search"]);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([`/v1/canvases/${fixtureTarget.canvasID}/inspect`, "/v1/search", "/v1/apply"]);
     expect(JSON.parse(result.stdout).data.validation).toEqual({
       local: "complete",
-      bridgeValidated: [],
-      deferredUntilApply: ["nodePortalWrites"]
+      bridgeValidated: ["nodePortalWrites"],
+      deferredUntilApply: []
     });
   });
 
@@ -648,7 +648,7 @@ describe("canvas apply", () => {
     let inspections = 0;
     vi.mocked(fetch).mockImplementation(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
-      if (new URL(String(url)).pathname === "/v1/canvases/Sync%20Server/inspect") {
+      if (new URL(String(url)).pathname === `/v1/canvases/${fixtureTarget.canvasID}/inspect`) {
         inspections += 1;
         return Response.json({ ok: true, data: {
           nodes: [{ id: "portal-1", title: "Sync Detail", position: { x: 1450, y: 2000 }, subcanvasRef: inspections === 1 ? "Canvases/Sync Detail.json" : "Canvases/New Detail.json" }],

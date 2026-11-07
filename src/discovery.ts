@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
-import { z } from "zod";
-import { isLoopbackBridgeUrl } from "./client.js";
+import { z } from "zod/v3";
+import { assertBridgeAllowed, envelopeSchema, isLoopbackBridgeUrl } from "./client.js";
+import { assertExpectedBridgeInstance, bridgeInstanceHeader, expectedBridgeInstance } from "./bridge-binding.js";
 import { writeConfig, type EnsoConfig } from "./config.js";
 import { assertCompatibleContract } from "./contract.js";
 import { EnsoCliError } from "./errors.js";
 
-const tokenFileSchema = z.object({
+export const tokenFileSchema = z.object({
   token: z.string().min(1),
   bridgeUrl: z.string().url().optional()
 });
@@ -21,9 +22,11 @@ export async function discoverAndLink(
   candidates: string[] = candidateBridgeUrls(),
   { stay = false }: { stay?: boolean } = {}
 ): Promise<EnsoConfig | null> {
+  assertBridgeAllowed();
+  const instance = expectedBridgeInstance();
   for (const bridgeUrl of candidates) {
     if (!isLoopbackBridgeUrl(bridgeUrl)) continue;
-    const config = await tryLink(bridgeUrl, stay);
+    const config = await tryLink(bridgeUrl, stay, instance);
     if (config) return config;
   }
   return null;
@@ -39,12 +42,13 @@ function candidateBridgeUrls(): string[] {
   return urls;
 }
 
-async function tryLink(bridgeUrl: string, stay: boolean): Promise<EnsoConfig | null> {
-  const health = await fetchEnvelope(new URL("/v1/health", bridgeUrl));
+async function tryLink(bridgeUrl: string, stay: boolean, instance: string | undefined): Promise<EnsoConfig | null> {
+  const health = await fetchEnvelope(new URL("/v1/health", bridgeUrl), undefined, instance);
   const data =
     health?.ok === true
       ? (health.data as { tokenPath?: unknown; agentAccess?: unknown; bridgeUrl?: unknown; contractVersion?: unknown })
       : undefined;
+  if (health?.ok === true) assertExpectedBridgeInstance(data, bridgeUrl, instance);
   if (data) assertCompatibleContract(data.contractVersion, bridgeUrl);
   if (data?.agentAccess === "disabled") {
     throw new EnsoCliError("access_disabled", "Local agent access is turned off in Enso's Settings", {
@@ -70,7 +74,13 @@ async function tryLink(bridgeUrl: string, stay: boolean): Promise<EnsoConfig | n
         : bridgeUrl;
   if (stay && new URL(discoveredBridgeUrl).origin !== new URL(bridgeUrl).origin) return null;
 
-  const status = await fetchEnvelope(new URL("/v1/status", discoveredBridgeUrl), tokenFile.token);
+  // A token file may name another bridge origin. Check that destination too before sending it any credentials.
+  if (instance !== undefined && new URL(discoveredBridgeUrl).origin !== new URL(bridgeUrl).origin) {
+    const destination = await fetchEnvelope(new URL("/v1/health", discoveredBridgeUrl), undefined, instance);
+    if (destination?.ok !== true) return null;
+    assertExpectedBridgeInstance(destination.data, discoveredBridgeUrl, instance);
+  }
+  const status = await fetchEnvelope(new URL("/v1/status", discoveredBridgeUrl), tokenFile.token, instance);
   if (status?.ok !== true) return null;
 
   const config: EnsoConfig = {
@@ -82,13 +92,23 @@ async function tryLink(bridgeUrl: string, stay: boolean): Promise<EnsoConfig | n
   return config;
 }
 
-async function fetchEnvelope(url: URL, token?: string): Promise<{ ok?: unknown; data?: unknown } | null> {
+async function fetchEnvelope(url: URL, token?: string, instance?: string): Promise<{ ok?: unknown; data?: unknown } | null> {
+  let envelope: { ok?: unknown; data?: unknown };
   try {
     const headers: Record<string, string> = { Accept: "application/json" };
+    if (instance !== undefined) headers[bridgeInstanceHeader] = instance;
     if (token) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(url, { headers });
-    return (await response.json()) as { ok?: unknown; data?: unknown };
+    envelope = (await response.json()) as { ok?: unknown; data?: unknown };
   } catch {
     return null;
   }
+  // In particular, do not hide a mismatch if the app restarts between the health check and token verification.
+  if (instance !== undefined) {
+    const parsed = envelopeSchema.safeParse(envelope);
+    if (parsed.success && !parsed.data.ok) {
+      throw new EnsoCliError(parsed.data.error.code, parsed.data.error.message, parsed.data.error.details);
+    }
+  }
+  return envelope;
 }
