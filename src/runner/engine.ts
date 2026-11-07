@@ -251,7 +251,7 @@ export class RunnerEngine {
         // An outcome that fails validation is unconfirmed and falls through to interrupted.
         const outcome = outcomeSchema.parse(await this.provider.execute({
           session: this.session(sessionID), prompt: run.request, signal: controller.signal,
-          record: native => this.record(id, native),
+          record: (native, providerState) => this.record(id, native, providerState),
           wait: (pending, withdrawn) => this.wait(id, pendingSchema.parse(pending), controller.signal, withdrawn)
         }));
         if (!this.healthy) return;
@@ -310,10 +310,14 @@ export class RunnerEngine {
   }
 
   /** Commits the provider's native identifiers, keeping the run's status and pending request. */
-  private record(id: string, native: Json): void {
+  private record(id: string, native: Json, providerState?: Json): void {
     const run = this.run(id);
     if (terminal(run.status)) throw new Error("Provider contract violation: record() after the run finished");
-    this.commit([this.update(id, run.status, { ...(run.pending ? { pending: run.pending } : {}), native })]);
+    const session = this.session(run.request.sessionID);
+    this.commit([
+      this.update(id, run.status, { ...(run.pending ? { pending: run.pending } : {}), native }),
+      ...(providerState === undefined ? [] : [this.sessionUpdate(session.id, providerState, session.uncertain)])
+    ]);
   }
   /** The run becomes interrupted and its session uncertain, carrying the native identifiers the run recorded. */
   private uncertain(run: Run, error: NonNullable<Run["error"]>): Change[] {

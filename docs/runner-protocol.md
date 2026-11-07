@@ -516,7 +516,8 @@ CLI does). Every turn is a paid agent call.
   `selectedNodes` (node and note identities and content), sent as submitted
   except that `<enso_node` and `</enso_node` in content are escaped as `&lt;`, so
   content cannot break out of its node's framing; the canvas is never reread.
-- **Conversations.** A session's `providerState` is `{conversationID}`. A turn
+- **Conversations.** A session's `providerState` holds `conversationID` and, for a
+  pinned session, historical token redaction metadata (see Bridge). A turn
   continues it with the SDK's `resume`; a session without one starts a new
   conversation under a runner-allocated UUID (`sessionId`). Before the query
   starts, the run records `native: {conversationID, resume, promptUUID, model,
@@ -622,8 +623,18 @@ the environment: it is not written to the runner's state, events, snapshots,
 results or output, and the runner neither links the CLI nor changes its stored
 pairing. Claude can read its own environment, so it can repeat the token; the
 provider replaces it with `[redacted]` in pending requests and outcomes before the
-runner commits them. Claude's own transcript, which Claude Code keeps, is outside
-the runner and is not redacted.
+runner commits them. Non-plaintext fingerprints (token length, a rolling hash and
+a SHA-256 digest) are recorded atomically with the native execution identifiers
+and session metadata before starting Claude. They survive credential changes,
+lookup failures, interrupted turns and runner restarts, so a resumed conversation
+can repeat an earlier token without putting it in runner state. A rolling hash
+screens output windows; SHA-256 confirms each candidate match. Fingerprints also
+record which conversations have complete historical coverage. A bound conversation
+created before this metadata existed cannot safely resume: the turn fails with
+`conversation_redaction_unavailable` before querying Claude. Create a new session,
+or choose `fresh` recovery when the session is uncertain. Unpinned protocol 2
+sessions still resume normally with the bridge disabled. Claude's own transcript,
+which Claude Code keeps, is outside the runner and is not redacted.
 
 **What the bound CLI does.** With `ENSO_RUNNER_BRIDGE=bound` the `enso` CLI uses
 only that bridge and token (no configuration file, discovery or relinking), and:

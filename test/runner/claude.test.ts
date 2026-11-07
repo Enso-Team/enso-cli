@@ -822,6 +822,151 @@ describe("bridge access from runner agents", () => {
     }
   });
 
+  it.each([
+    { nextToken: undefined, restart: false, interrupted: false },
+    { nextToken: "replacement-pairing-token", restart: false, interrupted: false },
+    { nextToken: undefined, restart: true, interrupted: false },
+    { nextToken: "replacement-pairing-token", restart: true, interrupted: true }
+  ])("redacts historical tokens in pending requests and outcomes after resume ($nextToken, restart=$restart, interrupted=$interrupted)", async ({ nextToken, restart, interrupted }) => {
+    const echo = transcript("bridge_token_echo"), sid = nativeSessionID(echo);
+    const originalToken = echo.metadata.pairingToken as string;
+    pairingToken = originalToken;
+    const first = interrupted ? variant(echo, "interrupted", entries => [...entries.slice(0, labelled(entries, "result")), exit(), close]) : echo;
+    const second = variant(echo, "resumed", entries => entries.map(entry => {
+      let resumed = reopen(entry, { resume: sid });
+      if (resumed.label === "query.open" && resumed.type === "expect_outbound" && nextToken === undefined) {
+        const frame = resumed.frame as { options: { env: Record<string, string> } };
+        delete frame.options.env.ENSO_BRIDGE_TOKEN;
+      }
+      if (nextToken && resumed.type === "emit_inbound") resumed = JSON.parse(JSON.stringify(resumed).replaceAll(originalToken, `${originalToken} / ${nextToken}`)) as Entry;
+      return resumed;
+    }));
+    start(restart ? first : variant(first, "two turns", entries => [...entries, ...second.entries]), { newID: ids(sid) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "first", first);
+    const waiting = await commits.reached("first", "waiting_permission");
+    engine!.answer("first", { pendingID: waiting.pending!.id, value: "deny" });
+    await commits.reached("first", interrupted ? "interrupted" : "completed");
+    if (restart) {
+      await engine!.shutdown();
+      replay!.complete();
+      storage.release();
+      storage = new RunnerStorage(join(directory, "store"));
+      storage.acquire();
+      commits = observeCommits(storage);
+      start(second);
+    }
+    pairingToken = nextToken;
+    submit(session.id, "second", second, 0, interrupted ? { recovery: { after: "first", mode: "resume" } } : {});
+    const resumed = await commits.reached("second", "waiting_permission");
+    expect(resumed.pending!.message).toContain("[redacted]");
+    expect(JSON.stringify(store())).not.toContain(originalToken);
+    if (nextToken) expect(JSON.stringify(store())).not.toContain(nextToken);
+    engine!.answer("second", { pendingID: resumed.pending!.id, value: "deny" });
+    const done = await commits.reached("second", "completed");
+    expect(done.result).toMatchObject({ text: expect.stringContaining("[redacted]") });
+    for (const text of [JSON.stringify(store()), JSON.stringify(engine!.events(0))]) {
+      expect(text).not.toContain(originalToken);
+      if (nextToken) expect(text).not.toContain(nextToken);
+    }
+    for (const name of readdirSync(join(directory, "store"))) {
+      const path = join(directory, "store", name);
+      if (lstatSync(path).isFile()) expect(readFileSync(path, "latin1")).not.toContain(originalToken);
+    }
+  });
+
+  it("maps redacted question identifiers back to the SDK's original answer keys", async () => {
+    pairingToken = "question-pairing-token";
+    const questions = transcript("ask_user_question");
+    const authored = variant(questions, "token in question", entries => entries.map(entry => {
+      const changed = JSON.parse(JSON.stringify(entry).replaceAll("Which layout?", `Which layout for ${pairingToken}?`)) as Entry;
+      if (changed.label === "query.open" && changed.type === "expect_outbound") {
+        const frame = changed.frame as { options: { env: Record<string, string> } };
+        frame.options.env = {
+          ENSO_RUNNER_BRIDGE: "bound", ENSO_BRIDGE_URL: binding().bridgeUrl, ENSO_BRIDGE_INSTANCE_ID: instance,
+          ENSO_VAULT_ID: binding().canvasTarget.vaultID, ENSO_CANVAS_ID: binding().canvasTarget.canvasID, ENSO_BRIDGE_TOKEN: "<token>"
+        };
+      }
+      return changed;
+    }));
+    start(authored, { newID: ids(nativeSessionID(authored)) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "turn", authored);
+    const waiting = await commits.reached("turn", "waiting_input");
+    expect(waiting.pending!.questions![0]).toMatchObject({ id: "enso-question-0", question: "Which layout for [redacted]?" });
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: { "enso-question-0": "Grid", "enso-question-1": ["node-a", "node-b"] } });
+    await commits.reached("turn", "completed");
+    expect(JSON.stringify(store())).not.toContain(pairingToken);
+  });
+
+  it("retains newly exposed token fingerprints when a confirmed failure does not advance the conversation checkpoint", async () => {
+    const echo = transcript("bridge_token_echo"), sid = nativeSessionID(echo);
+    const originalToken = echo.metadata.pairingToken as string, replacement = "replacement-pairing-token";
+    const resumed = variant(echo, "resumed", entries => entries.map(entry => reopen(entry, { resume: sid })));
+    const failed = variant(resumed, "no conversation frame", entries => entries.map(entry => {
+      if (entry.type !== "emit_inbound") return entry;
+      const frame = entry.frame as Record<string, unknown>;
+      return { ...entry, frame: { ...frame, session_id: uuid(999), ...(entry.label === "result" ? { is_error: true, api_error_status: 429 } : {}) } };
+    }));
+    start(variant(echo, "confirmed failure", entries => [...entries, ...failed.entries]), { newID: ids(sid) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    for (const [requestID, currentToken, script, status] of [
+      ["first", originalToken, echo, "completed"], ["failed", replacement, failed, "failed"]
+    ] as const) {
+      pairingToken = currentToken;
+      submit(session.id, requestID, script);
+      const waiting = await commits.reached(requestID, "waiting_permission");
+      engine!.answer(requestID, { pendingID: waiting.pending!.id, value: "deny" });
+      const done = await commits.reached(requestID, status);
+      if (requestID === "failed") expect(done.providerState).toBeUndefined();
+    }
+    expect(engine!.session(session.id)).toMatchObject({ providerState: { conversationID: sid } });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+    await engine!.shutdown(); replay!.complete(); storage.release();
+    storage = new RunnerStorage(join(directory, "store")); storage.acquire(); commits = observeCommits(storage);
+    const remembering = variant(resumed, "remember failed turn token", entries => (JSON.parse(JSON.stringify(entries).replaceAll(originalToken, replacement)) as Entry[]).map(entry => {
+      if (entry.label === "query.open" && entry.type === "expect_outbound") {
+        delete (entry.frame as { options: { env: Record<string, string> } }).options.env.ENSO_BRIDGE_TOKEN;
+      }
+      return entry;
+    }));
+    start(remembering);
+    pairingToken = undefined;
+    submit(session.id, "after", remembering);
+    const waiting = await commits.reached("after", "waiting_permission");
+    expect(waiting.pending!.message).toContain("[redacted]");
+    engine!.answer("after", { pendingID: waiting.pending!.id, value: "deny" });
+    await commits.reached("after", "completed");
+    expect(JSON.stringify(store())).not.toContain(replacement);
+    expect(JSON.stringify(engine!.events(0))).not.toContain(replacement);
+  });
+
+  it("refuses to resume a bound pre-fix conversation whose historical token fingerprints are unknown", async () => {
+    start(none());
+    const session = engine!.createSession({ binding: binding() }, instance);
+    storage.commit([{ type: "session_updated", sessionID: session.id, providerState: { conversationID: uuid(99) } }]);
+    submit(session.id, "turn", transcript("simple"));
+    const done = await commits.reached("turn", "failed");
+    expect(done.error).toMatchObject({ code: "conversation_redaction_unavailable" });
+    expect(done.native).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: uuid(99) });
+  });
+
+  it("does not certify a legacy uncertain conversation when fresh recovery fails before creating a checkpoint", async () => {
+    const failure = Object.assign(new Error("missing Claude executable"), { code: "ENOENT" });
+    const provider = new ClaudeProvider(() => { throw failure; }, { permissionMode: "default" }, { newID: ids(uuid(101)), bridgeToken: async () => "fresh-token" });
+    engine = new RunnerEngine(storage, provider);
+    const session = engine.createSession({ binding: binding() }, instance);
+    const uncertain = { requestID: "legacy-lost", native: { conversationID: uuid(99) } };
+    storage.commit([{ type: "session_updated", sessionID: session.id, providerState: { conversationID: uuid(99) }, uncertain }]);
+    submit(session.id, "fresh", transcript("simple"), 0, { recovery: { after: "legacy-lost", mode: "fresh" } });
+    expect((await commits.reached("fresh", "failed")).error).toMatchObject({ code: "claude_unavailable" });
+    expect(engine.session(session.id)).toMatchObject({ providerState: { conversationID: uuid(99) }, uncertain });
+    submit(session.id, "resume", transcript("simple"), 0, { recovery: { after: "legacy-lost", mode: "resume" } });
+    expect((await commits.reached("resume", "failed")).error).toMatchObject({ code: "conversation_redaction_unavailable" });
+    expect(engine.run("resume").native).toBeUndefined();
+  });
+
   it("keeps the bridge disabled for a session that pinned no instance, as every protocol 2 session did", async () => {
     pairingToken = "never-read";
     const simple = transcript("simple");

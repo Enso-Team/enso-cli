@@ -7,6 +7,7 @@ import { bridgeEnvironment, readBridgeToken, type BridgeTokenReader } from "./br
 import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
 import type { Answer, Binding, Json, Pending, Prompt, Session } from "./protocol.js";
 import type { Execution, ProviderOutcome, RunnerProvider } from "./provider.js";
+import { fingerprintToken, redactedConversations, tokenFingerprints, tokenRedactor, type TokenFingerprint } from "./redaction.js";
 
 /** The part of the SDK's `query()` the provider uses; tests replace it with a scripted exchange. */
 export type ClaudeQueryHandle = AsyncIterable<SDKMessage> & { interrupt(): Promise<unknown>; close(): void };
@@ -20,9 +21,9 @@ export type ClaudeConfig = {
   executable?: string;
 };
 /** The session's conversation checkpoint. */
-export type ClaudeState = { conversationID: string };
+export type ClaudeState = { conversationID: string; bridgeTokenRedactions?: TokenFingerprint[]; bridgeTokenRedactionConversations?: string[] };
 /** Recorded on the run before the query starts. */
-export type ClaudeNative = { conversationID: string; resume: boolean; promptUUID: string; model: string | null; permissionMode: ClaudeConfig["permissionMode"] };
+export type ClaudeNative = ClaudeState & { resume: boolean; promptUUID: string; model: string | null; permissionMode: ClaudeConfig["permissionMode"] };
 
 /** Child processes inherit the session's binding; the `enso` CLI enforces it (see src/bridge-binding.ts, src/client.ts). */
 export { runnerBridgeEnv } from "../bridge-binding.js";
@@ -96,18 +97,56 @@ export class ClaudeProvider implements RunnerProvider {
     if (signal.aborted) return { status: "cancelled" };
     const newID = this.options.newID ?? randomUUID;
     const { conversationID, resume } = this.conversation(session, prompt, newID);
+    const pinned = session.binding.bridgeInstanceID !== undefined;
+    const historical = [session.providerState, session.uncertain?.native].map(tokenFingerprints);
+    const covered = new Set([session.providerState, session.uncertain?.native].flatMap(redactedConversations));
+    if (pinned && resume && !covered.has(conversationID)) {
+      return { status: "failed", error: {
+        code: "conversation_redaction_unavailable",
+        message: "This saved conversation predates historical token redaction, so its earlier credentials cannot be safely removed from runner output",
+        details: { conversationID, hint: "Create a new runner session, or choose fresh recovery for an uncertain session; the saved conversation was not resumed" }
+      } };
+    }
+    // Fingerprints survive restart and credential rotation; plaintext credentials never enter durable metadata.
+    const fingerprints = [...new Map([...historical.flatMap(value => value ?? []), ...(token ? [fingerprintToken(token)] : [])]
+      .map(value => [value.sha256, value])).values()];
+    covered.add(conversationID);
+    const redaction = pinned ? { bridgeTokenRedactions: fingerprints, bridgeTokenRedactionConversations: [...covered] } : {};
     const promptUUID = newID();
     if (!isPromptUUID(promptUUID)) throw new Error("Claude prompt uuids must be UUIDs");
-    const native: ClaudeNative = { conversationID, resume, promptUUID, model: this.config.model ?? null, permissionMode: this.config.permissionMode };
+    const native: ClaudeNative = { conversationID, resume, promptUUID, model: this.config.model ?? null, permissionMode: this.config.permissionMode, ...redaction };
     // Durable before the query can create or advance the conversation under these identifiers.
-    record(native);
-    const scrub = redactor(token);
+    const state = session.providerState && typeof session.providerState === "object" && !Array.isArray(session.providerState) ? session.providerState : {};
+    record(native, pinned ? plain({ ...state, ...redaction }) : undefined);
+    const scrub = tokenRedactor(fingerprints);
     const outcome = await new Turn(this.query, this.config, {
       cwd, conversationID, resume, promptUUID, prompt, signal, stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs,
       env: bridgeEnvironment(session.binding, token), instructions: sessionInstructions(session.binding),
       // Claude can see its own environment, so a tool input or result can repeat the token: it never reaches runner state.
-      wait: (pending, withdrawn) => wait(scrub(pending), withdrawn)
+      wait: async (pending, withdrawn) => {
+        const safe = scrub(pending);
+        // Question text is also the SDK's answer key. Keep changed keys opaque and translate answers back locally.
+        const keys = new Map<string, string>();
+        if (safe.questions && pending.questions) {
+          const changed = safe.questions.some((question, index) => question.id !== pending.questions![index].id);
+          safe.questions = safe.questions.map((question, index) => {
+            const original = pending.questions![index].id;
+            const id = changed ? `enso-question-${index}` : original;
+            keys.set(id, original);
+            return { ...question, id };
+          });
+        }
+        const answer = await wait(safe, withdrawn);
+        return typeof answer.value === "string" ? answer : {
+          ...answer, value: Object.fromEntries(Object.entries(answer.value).map(([key, value]) => [keys.get(key) ?? key, value]))
+        };
+      }
     }).run();
+    // Metadata is never model-facing text and must not itself be passed through the output scrubber.
+    if (outcome.status !== "interrupted" && outcome.providerState && typeof outcome.providerState === "object" && !Array.isArray(outcome.providerState)) {
+      const { providerState, ...fields } = outcome;
+      return { ...scrub(fields), providerState: plain({ ...providerState, ...redaction }) };
+    }
     return scrub(outcome);
   }
 
@@ -335,18 +374,6 @@ class Turn {
       throw error;
     }
   }
-}
-
-/** Replaces every occurrence of `secret` in a JSON value's strings; the identity without one. */
-function redactor(secret: string | undefined): <T>(value: T) => T {
-  if (!secret) return value => value;
-  const scrub = (value: unknown): unknown => {
-    if (typeof value === "string") return value.split(secret).join("[redacted]");
-    if (Array.isArray(value)) return value.map(scrub);
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [scrub(key) as string, scrub(item)]));
-    return value;
-  };
-  return value => scrub(value) as never;
 }
 
 function cancelled(toolUseID: string): PermissionResult {
