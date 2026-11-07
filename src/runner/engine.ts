@@ -3,7 +3,7 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import { EnsoCliError } from "../errors.js";
-import { answerSchema, canonical, defaultFakeOptions, outcomeSchema, parse, pendingSchema, sessionInputSchema, submitSchema, terminal, type Answer, type Change, type Json, type Pending, type Prompt, type Run, type RunnerEvent, type Session } from "./protocol.js";
+import { answerSchema, canonical, defaultFakeOptions, outcomeSchema, parse, pendingSchema, sessionInputSchema, sessionSchema, submitSchema, terminal, type Answer, type Change, type Json, type Pending, type Prompt, type Run, type RunnerEvent, type Session, type SessionInput } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
 import type { RunnerStorage } from "./storage.js";
 
@@ -40,18 +40,49 @@ export class RunnerEngine {
     })));
   }
 
-  createSession(input: unknown): Session {
+  /**
+   * Validates a session request without committing it, and returns the bridge origin the session must pin, or
+   * undefined when this runner's provider gives its agent no bridge.
+   */
+  bridgeToPin(input: unknown): string | undefined {
+    const { binding } = this.sessionRequest(input);
+    return this.provider.pinsBridge ? binding.bridgeUrl : undefined;
+  }
+
+  /**
+   * `bridgeInstanceID`: the instance read from the session's bridge to pin, which the service supplies for a provider
+   * that `pinsBridge`. A session without one keeps the bridge disabled for its whole life. A client's expected
+   * `binding.bridgeInstanceID` must equal it.
+   */
+  createSession(input: unknown, bridgeInstanceID?: string): Session {
+    const { binding } = this.sessionRequest(input);
+    const expected = binding.bridgeInstanceID;
+    delete binding.bridgeInstanceID;
+    if (expected !== undefined && bridgeInstanceID === undefined) {
+      throw new EnsoCliError("invalid_input", "binding.bridgeInstanceID applies only when the runner pins a bridge instance, which it does not for this provider");
+    }
+    if (expected !== undefined && expected !== bridgeInstanceID) {
+      throw new EnsoCliError("bridge_instance_mismatch", "The bridge instance answering at bridgeUrl is not the one the client expected; no session was created", {
+        bridgeUrl: binding.bridgeUrl, expectedInstanceID: expected, instanceID: bridgeInstanceID!
+      });
+    }
+    if (bridgeInstanceID !== undefined) binding.bridgeInstanceID = bridgeInstanceID;
+    const session: Session = parse(sessionSchema, { id: randomUUID(), binding, provider: this.provider.name, createdAt: new Date().toISOString() });
+    this.commit([{ type: "session_created", session }]);
+    return session;
+  }
+
+  private sessionRequest(input: unknown): SessionInput {
     this.assertAccepting();
-    const { binding, provider } = parse(sessionInputSchema, input);
+    const request = parse(sessionInputSchema, input);
+    const { binding, provider } = request;
     if (provider !== undefined && provider !== this.provider.name) throw this.mismatch(provider);
     if (!isAbsolute(binding.workingDirectory)) throw new EnsoCliError("invalid_input", "workingDirectory must be absolute");
     try {
       binding.workingDirectory = realpathSync(binding.workingDirectory);
       if (!statSync(binding.workingDirectory).isDirectory()) throw new Error();
     } catch { throw new EnsoCliError("invalid_input", "workingDirectory must be an existing codebase directory"); }
-    const session: Session = { id: randomUUID(), binding, provider: this.provider.name, createdAt: new Date().toISOString() };
-    this.commit([{ type: "session_created", session }]);
-    return session;
+    return request;
   }
 
   submit(input: unknown): Run {
@@ -220,7 +251,7 @@ export class RunnerEngine {
         // An outcome that fails validation is unconfirmed and falls through to interrupted.
         const outcome = outcomeSchema.parse(await this.provider.execute({
           session: this.session(sessionID), prompt: run.request, signal: controller.signal,
-          record: native => this.record(id, native),
+          record: (native, providerState) => this.record(id, native, providerState),
           wait: (pending, withdrawn) => this.wait(id, pendingSchema.parse(pending), controller.signal, withdrawn)
         }));
         if (!this.healthy) return;
@@ -279,10 +310,14 @@ export class RunnerEngine {
   }
 
   /** Commits the provider's native identifiers, keeping the run's status and pending request. */
-  private record(id: string, native: Json): void {
+  private record(id: string, native: Json, providerState?: Json): void {
     const run = this.run(id);
     if (terminal(run.status)) throw new Error("Provider contract violation: record() after the run finished");
-    this.commit([this.update(id, run.status, { ...(run.pending ? { pending: run.pending } : {}), native })]);
+    const session = this.session(run.request.sessionID);
+    this.commit([
+      this.update(id, run.status, { ...(run.pending ? { pending: run.pending } : {}), native }),
+      ...(providerState === undefined ? [] : [this.sessionUpdate(session.id, providerState, session.uncertain)])
+    ]);
   }
   /** The run becomes interrupted and its session uncertain, carrying the native identifiers the run recorded. */
   private uncertain(run: Run, error: NonNullable<Run["error"]>): Change[] {

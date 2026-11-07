@@ -26,6 +26,7 @@ export function registerAuth(program: Command): void {
     if (existing) {
       try {
         const status = await new BridgeClient(existing.bridgeUrl).request("/v1/status");
+        if (!status.ok && isInstanceRefusal(status.error.code)) return status;
         if (status.ok) {
           // A stale stored token relinks inside that request, so the config on
           // disk is the pairing this status came from.
@@ -43,7 +44,8 @@ export function registerAuth(program: Command): void {
             }
           };
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof EnsoCliError && isInstanceRefusal(error.body.code)) throw error;
         // An unavailable or invalid existing configuration does not block a fresh pairing attempt.
       }
     }
@@ -109,4 +111,8 @@ export function registerAuth(program: Command): void {
       }
     };
   });
+}
+
+function isInstanceRefusal(code: string): boolean {
+  return code === "bridge_instance_mismatch" || code === "bridge_instance_unavailable";
 }

@@ -25,7 +25,8 @@ to wait for the durable commit that puts a run in a given status.
 
 - `transcript.ts`: the format, the playback cursor, gates, errors. Provider-neutral.
 - `commits.ts`: waits on durable runner commits. Provider-neutral.
-- `claude.ts`: the Claude Agent SDK boundary (`query.open`, `prompt.offer`,
+- `claude.ts`: the Claude Agent SDK boundary (`query.open`, which pins the agent's
+  bridge binding environment with the pairing token as `<token>`, `prompt.offer`,
   `permission.request`/`permission.response`, `permission.withdraw`, `query.interrupt`,
   `query.close`).
 

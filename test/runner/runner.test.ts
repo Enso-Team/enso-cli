@@ -178,7 +178,9 @@ describe("local runner protocol", () => {
     const auth = { Authorization: `Bearer ${connection.token}` };
     expect(await raw(auth)).toMatchObject({ status: 426 });
     expect(await raw({ ...auth, "Enso-Runner-Version": "1" })).toMatchObject({ status: 426 });
-    expect(await raw({ ...auth, "Enso-Runner-Version": "3" })).toMatchObject({ status: 426 });
+    // Protocol 3 serves no protocol 2 client: the binding it returns has a field protocol 2 does not know.
+    expect(await raw({ ...auth, "Enso-Runner-Version": "2" })).toMatchObject({ status: 426, body: { error: { details: { supportedVersions: [3] } } } });
+    expect(await raw({ ...auth, "Enso-Runner-Version": "4" })).toMatchObject({ status: 426 });
     expect(await raw({ ...auth, "Enso-Runner-Version": "1", Origin: "http://hostile.example" })).toMatchObject({ status: 401 });
     await session();
     for (const name of ["runner.sqlite", "runner.sqlite-wal", "runner.sqlite-shm"]) {

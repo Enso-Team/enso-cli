@@ -29,6 +29,9 @@ export class RequestContext {
   readonly bound?: CanvasTarget;
   connection?: Promise<{ bridgeUrl: string; token?: string }>;
   negotiated?: Promise<void>;
+  /** The invocation's /v1/health data, read once. */
+  health?: Promise<unknown>;
+  instanceVerified?: Promise<void>;
   private target?: Promise<CanvasTarget>;
   resolvedTarget?: CanvasTarget;
   private selectors = new Set<string>();

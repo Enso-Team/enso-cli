@@ -19,7 +19,9 @@ without authentication, network calls or paid turns.
 | `turn_interrupt_confirmed.ndjson` | `turn_interrupt_mid_tool/claude_transcript.ndjson`, then the aborted result from `message_steering/claude_transcript.ndjson` |
 
 Inbound frames (`emit_inbound`) are the recorded frames, unchanged. The outbound
-expectations were rewritten for Enso: `query.open` pins the options Enso's runner sets,
+expectations were rewritten for Enso: `query.open` pins the options Enso's runner sets
+(including the bridge environment: these sessions pin no bridge instance, so it is
+`ENSO_RUNNER_BRIDGE=disabled` alone),
 `prompt.offer` uses Enso's message shape, and each query ends with an expected
 `query.close`. Each file's header lists its sources and every adaptation under
 `metadata.sources` and `metadata.adaptation`.

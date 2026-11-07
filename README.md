@@ -105,6 +105,13 @@ replays targeted mutations. Inspect the original target for partial effects
 before deciding whether to retry. A lost mutation response reports an unknown
 outcome; it is not proof that nothing changed.
 
+`ENSO_BRIDGE_INSTANCE_ID` additionally pins the app instance. The CLI checks it
+against the `bridgeInstanceID` the app advertises on `/v1/health` before any other
+request, and sends it as the `Enso-Bridge-Instance` header on every request so the
+app can refuse a mismatch in the request itself. A different instance fails with
+`bridge_instance_mismatch`; an app that advertises none fails with
+`bridge_instance_unavailable`. Neither is retried.
+
 A batch inherits one outer target. Conflicting operation targets and navigation
 operations are rejected before submission. Dry runs use the same targeting and
 version rules as execution. Apply phases retain their existing partial-success
@@ -124,9 +131,17 @@ package; with npm 12, install the CLI with
 accesses its authenticated Unix socket; `enso runner shutdown` cancels active work
 and stops it. Claude runs in the session's codebase directory; permission and
 question prompts become pending requests to answer through the runner. No native
-prompt UI integration is included yet, and Claude cannot use the Enso bridge.
+prompt UI integration is included yet.
 
-See [Runner protocol v2](docs/runner-protocol.md) for a runnable example, private
+A Claude session pins the bridge instance it is created against, and Claude can
+use the `enso` CLI on that session's canvas only: every request is checked
+against the session's canvas and instance, and navigation, linking and other
+canvases are refused. If the user has another canvas open, or Enso restarts,
+the command fails and Claude is told to stop and report it. Session creation
+fails if the app is not running, has Local agent access off, or predates bridge
+instances. Sessions from earlier runner versions keep the bridge disabled.
+
+See [Runner protocol v3](docs/runner-protocol.md) for a runnable example, private
 connection discovery, the native-client contract, the Claude provider, and
 restart/uncertainty rules.
 

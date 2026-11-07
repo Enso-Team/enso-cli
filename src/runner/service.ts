@@ -4,6 +4,7 @@ import { chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { finished } from "node:stream/promises";
 import { EnsoCliError, errorEnvelope } from "../errors.js";
+import { readBridgeInstance, type BridgeInstanceReader } from "./bridge.js";
 import { RunnerEngine } from "./engine.js";
 import { FakeProvider, type RunnerProvider } from "./provider.js";
 import { runnerVersion, runnerVersionHeader } from "./protocol.js";
@@ -19,6 +20,9 @@ const errorStatus = new Map<string, number>([
   ["incompatible_runner_version", 426],
   ["session_busy", 409], ["request_conflict", 409], ["pending_not_found", 409], ["runner_stopping", 409],
   ["session_uncertain", 409], ["provider_mismatch", 409],
+  // Pinning a new session's bridge instance.
+  ["bridge_instance_mismatch", 409], ["bridge_instance_unavailable", 409], ["access_disabled", 409], ["app_outdated", 409],
+  ["app_unavailable", 503], ["invalid_response", 502],
   ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404], ["cursor_expired", 410],
   ["runner_storage_failure", 503]
 ]);
@@ -32,8 +36,10 @@ export const maxRetainDays = 36_500;
  * `retainDays`: delete finished runs (and their events) this many days after their last update; unset keeps everything.
  * `signal`: aborted once the caller means to stop. Startup still completes, so the caller can stop the service it
  * returns, but runs accepted before startup are not dispatched: shutdown cancels them instead.
+ * `bridgeInstance`: how a new session of a provider that `pinsBridge` reads the instance to pin (default: the bridge's
+ * /v1/health).
  */
-export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number; signal?: AbortSignal } = {}): Promise<RunnerService> {
+export async function startRunner(options: { directory?: string; provider?: RunnerProvider; autoDispatch?: boolean; retainDays?: number; signal?: AbortSignal; bridgeInstance?: BridgeInstanceReader } = {}): Promise<RunnerService> {
   // Checked before ownership: 0 or a negative count would delete every finished run, and NaN would fail every pass.
   const retain = options.retainDays;
   if (retain !== undefined && !(Number.isFinite(retain) && retain > 0 && retain <= maxRetainDays)) {
@@ -131,7 +137,13 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     if (method === "GET" && session) return send(response, 200, { ok: true, data: engine.session(decodeURIComponent(session[1]).toLowerCase()) });
     const run = /^\/v1\/runs\/([^/]+)(?:\/(cancel|respond))?$/.exec(path);
     if (method === "GET" && run && !run[2]) return send(response, 200, { ok: true, data: engine.run(decodeURIComponent(run[1])) });
-    if (method === "POST" && path === "/v1/sessions") return send(response, 201, { ok: true, data: engine.createSession(await body(request)) });
+    if (method === "POST" && path === "/v1/sessions") {
+      const input = await body(request);
+      // Validated before the bridge is contacted; nothing is committed unless the pin succeeds.
+      const bridgeUrl = engine.bridgeToPin(input);
+      const pinned = bridgeUrl === undefined ? undefined : await (options.bridgeInstance ?? readBridgeInstance)(bridgeUrl);
+      return send(response, 201, { ok: true, data: engine.createSession(input, pinned) });
+    }
     if (method === "POST" && path === "/v1/prompts") return send(response, 200, { ok: true, data: engine.submit(await body(request)) });
     if (method === "POST" && run?.[2] === "cancel") return send(response, 200, { ok: true, data: engine.cancel(decodeURIComponent(run[1])) });
     if (method === "POST" && run?.[2] === "respond") return send(response, 200, { ok: true, data: engine.answer(decodeURIComponent(run[1]), await body(request)) });

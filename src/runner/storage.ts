@@ -7,13 +7,15 @@ import { configDir } from "../config.js";
 import { EnsoCliError } from "../errors.js";
 import { activeStatuses, canonical, eventSchema, terminal, terminalStatuses, type Change, type Run, type RunnerEvent, type Session } from "./protocol.js";
 
-/** Protocol 2 stores live beside, never inside, the protocol 1 directory: neither runner opens the other's store. */
+/** Protocol 2 and 3 stores live beside, never inside, the protocol 1 directory: neither opens the other's store. Protocol 3
+ * reads protocol 2 stores unchanged (its sessions may also carry a pinned bridge instance). */
 export function runnerDirectory(): string { return join(configDir(), "runner", "v2"); }
 
 export const databaseName = "runner.sqlite";
 /** `PRAGMA application_id` ("Enso") marks the file as a runner store; `user_version` is its schema version. */
 const applicationID = 0x456e736f;
-/** 2: protocol 2 events (session uncertainty, run native identifiers, structured pending input, Claude sessions). */
+/** 2: protocol 2 events (session uncertainty, run native identifiers, structured pending input, Claude sessions), and
+ * protocol 3's, whose sessions may also pin a bridge instance: the SQL schema is unchanged. */
 const schemaVersion = 2;
 /** Files of the pre-SQLite store. Their presence refuses startup: they are neither migrated nor modified. */
 const legacy = (name: string) => name === "state.json" || name === "log.jsonl" || /^\.(state\.json|log\.jsonl)\..+\.tmp$/.test(name);

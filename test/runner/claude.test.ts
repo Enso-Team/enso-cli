@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import Module from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,11 +33,15 @@ const transcript = (name: string) => claudeTranscript(name, codebase);
 const none = () => nothing("no queries", "claude", claudeProtocol);
 const store = () => durable(join(directory, "store"));
 
-/** A runner whose Claude provider talks to the replayed SDK. */
+/** Pairing tokens the provider looked up, by bridge origin; a test that pins a session sets what they return. */
+let tokenReads: string[];
+let pairingToken: string | undefined;
+/** A runner whose Claude provider talks to the replayed SDK. No bridge or app is contacted. */
 function start(transcripts: Transcript | Transcript[], options: { newID?: () => string; config?: Partial<ClaudeConfig>; wrap?: (query: ClaudeQuery) => ClaudeQuery; autoDispatch?: boolean; stopTimeoutMs?: number } = {}) {
   replay = claudeReplay(transcripts);
   const query = options.wrap ? options.wrap(replay.query) : replay.query;
-  const provider = new ClaudeProvider(query, { permissionMode: "default", ...options.config }, { stopTimeoutMs: options.stopTimeoutMs ?? 50, newID: options.newID ?? ids() });
+  const bridgeToken = async (bridgeUrl: string) => { tokenReads.push(bridgeUrl); return pairingToken; };
+  const provider = new ClaudeProvider(query, { permissionMode: "default", ...options.config }, { stopTimeoutMs: options.stopTimeoutMs ?? 50, newID: options.newID ?? ids(), bridgeToken });
   engine = new RunnerEngine(storage, provider, { autoDispatch: options.autoDispatch });
   return replay;
 }
@@ -75,6 +79,7 @@ beforeEach(() => {
   storage = new RunnerStorage(join(directory, "store"));
   storage.acquire();
   commits = observeCommits(storage);
+  tokenReads = []; pairingToken = undefined;
 });
 afterEach(async () => {
   try {
@@ -736,11 +741,321 @@ describe("the replay harness fails clearly", () => {
 });
 
 describe("bridge access from runner agents", () => {
+  // Synthetic transcripts (test/runner/fixtures/claude/bridge_*): no app, bridge or model took part, so these prove the
+  // provider's side of the binding, not compatibility with a live app or Claude Code.
+  const instance = "fixture-instance-1";
+  const pinned = (name: string) => {
+    pairingToken ??= "pairing-token";
+    const recorded = transcript(name);
+    const sdk = start(recorded, { newID: ids(nativeSessionID(recorded)) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    return { recorded, sdk, session };
+  };
+
   it("refuses every bridge request when the runner disabled it for the agent's process", async () => {
     vi.stubEnv("ENSO_RUNNER_BRIDGE", "disabled");
     const fetch = vi.spyOn(globalThis, "fetch");
     await expect(new BridgeClient("http://127.0.0.1:17650", "token").request("/v1/status")).rejects.toMatchObject({ body: { code: "bridge_unavailable" } });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("binds a pinned session's agent to its bridge, instance and canvas; bridge calls mid-turn leave the outcome to the turn's result", async () => {
+    pairingToken = "pairing-token-for-this-turn";
+    const { recorded, sdk, session } = pinned("bridge_bound_read_write");
+    expect(session.binding).toEqual({ ...binding(), bridgeInstanceID: instance });
+    const result = sdk.replays[0].hold("result");
+    submit(session.id, "turn", recorded);
+    await result.reached;
+    // Both canvas calls succeeded and Claude said it is done, but only the result frame ends the turn.
+    expect(engine!.run("turn").status).toBe("running");
+    result.release();
+    const done = await commits.reached("turn", "completed");
+    expect(done.result).toMatchObject({ text: "Marked the Auth note as reviewed.", numTurns: 3 });
+    const { options } = sdk.queries[0];
+    expect(options.env).toMatchObject({
+      ENSO_RUNNER_BRIDGE: "bound", ENSO_BRIDGE_URL: "http://127.0.0.1:17650", ENSO_BRIDGE_INSTANCE_ID: instance,
+      ENSO_VAULT_ID: binding().canvasTarget.vaultID, ENSO_CANVAS_ID: binding().canvasTarget.canvasID, ENSO_BRIDGE_TOKEN: pairingToken
+    });
+    const append = (options.systemPrompt as { append: string }).append;
+    expect(append).toContain(`canvas ${binding().canvasTarget.canvasID}`);
+    expect(append).toMatch(/target_not_active[\s\S]*bridge_instance_mismatch[\s\S]*Do not retry it, navigate, or work around it/);
+    expect(append).not.toContain("not available");
+    expect(tokenReads).toEqual(["http://127.0.0.1:17650"]);
+    expect(JSON.stringify(store())).not.toContain(pairingToken);
+  });
+
+  it("completes a turn whose canvas read was refused as target_not_active: the agent reported it, and nothing was retried", async () => {
+    const { recorded, session } = pinned("bridge_target_not_active");
+    submit(session.id, "turn", recorded);
+    const done = await commits.reached("turn", "completed");
+    expect(done.result).toMatchObject({ text: expect.stringContaining("another canvas open") });
+    expect(statuses("turn")).toEqual(["accepted", "running", "running", "completed"]);
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+  });
+
+  it("leaves a turn interrupted when a canvas write succeeded but the stream ended without the turn's result", async () => {
+    const { recorded, session } = pinned("bridge_write_then_disconnect");
+    submit(session.id, "turn", recorded);
+    const run = await commits.reached("turn", "interrupted");
+    expect(run.error).toMatchObject({ code: "claude_ended_without_result" });
+    expect(engine!.session(session.id).uncertain).toMatchObject({ requestID: "turn" });
+  });
+
+  it("keeps the pairing token out of runner state when the agent repeats it in a tool input and its reply", async () => {
+    pairingToken = transcript("bridge_token_echo").metadata.pairingToken as string;
+    const { recorded, session } = pinned("bridge_token_echo");
+    submit(session.id, "turn", recorded);
+    const waiting = await commits.reached("turn", "waiting_permission");
+    expect(waiting.pending?.message).toBe("curl -H 'Authorization: Bearer [redacted]' http://127.0.0.1:17650/v1/status");
+    expect(JSON.stringify(waiting.pending)).not.toContain(pairingToken);
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: "deny" });
+    const done = await commits.reached("turn", "completed");
+    expect(done.result).toMatchObject({ text: "The pairing token is [redacted]; I did not use it." });
+    expect(replay!.queries[0].options.env?.ENSO_BRIDGE_TOKEN).toBe(pairingToken);
+    await engine!.shutdown();
+    const snapshot = JSON.stringify(engine!.snapshot()), events = JSON.stringify(engine!.events(0));
+    expect(snapshot).not.toContain(pairingToken);
+    expect(events).not.toContain(pairingToken);
+    for (const name of readdirSync(join(directory, "store"))) {
+      const path = join(directory, "store", name);
+      if (lstatSync(path).isFile()) expect(readFileSync(path, "latin1"), name).not.toContain(pairingToken);
+    }
+  });
+
+  it.each(["Bash", "Read"])("redacts %s input before shortening it and still executes the original input when approved", async toolName => {
+    const echo = transcript("bridge_token_echo");
+    pairingToken = echo.metadata.pairingToken as string;
+    const field = toolName === "Bash" ? "command" : "file_path";
+    // Read's fallback message cuts file paths at 400 characters, before the separate input preview is built.
+    const summary = toolName === "Read" ? "x".repeat(400 - pairingToken.length + 1) + pairingToken : "";
+    // In the unredacted JSON, only the last character of the credential falls beyond the preview's cutoff.
+    const prefix = "x".repeat(1024 - JSON.stringify({ [field]: "" }).indexOf('""') - pairingToken.length - summary.length);
+    const input = { [field]: summary + prefix + pairingToken + "x".repeat(34_000) };
+    const recorded = variant(echo, "large tool input", entries => entries.map(entry => {
+      if (entry.label === "permission.request:toolu_curl" && entry.type === "emit_inbound") {
+        return { ...entry, frame: { ...(entry.frame as object), toolName, input } };
+      }
+      if (entry.label === "permission.response:toolu_curl" && entry.type === "expect_outbound") {
+        return { ...entry, frame: { type: "permission.response", result: {
+          behavior: "allow", updatedInput: input, toolUseID: "toolu_curl", decisionClassification: "user_temporary"
+        } } };
+      }
+      return entry;
+    }));
+    start(recorded, { newID: ids(nativeSessionID(recorded)) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "turn", recorded);
+    const waiting = await commits.reached("turn", "waiting_permission");
+    const preview = waiting.pending!.details!.input as { truncated: boolean; preview: string };
+    expect(preview.truncated).toBe(true);
+    expect(preview.preview).toContain("[redacted]");
+    expect(preview.preview).not.toContain(pairingToken.slice(0, -1));
+    expect(waiting.pending!.message).not.toContain(pairingToken.slice(0, -1));
+    expect(JSON.stringify(engine!.events(0))).not.toContain(pairingToken.slice(0, -1));
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: "allow" });
+    await commits.reached("turn", "completed");
+    expect(JSON.stringify(store())).not.toContain(pairingToken.slice(0, -1));
+  });
+
+  it("redacts chunked stderr before retaining its error tail", async () => {
+    const echo = transcript("bridge_token_echo");
+    pairingToken = echo.metadata.pairingToken as string;
+    const suffix = "x".repeat(2048 - pairingToken.length + 1);
+    const recorded = variant(echo, "stderr token at cutoff", entries => [...entries.slice(0, labelled(entries, "result")), exit("error", "Disconnected"), close]);
+    start(recorded, { newID: ids(nativeSessionID(recorded)), wrap: query => params => {
+      params.options.stderr!(pairingToken!.slice(0, 8));
+      params.options.stderr!(pairingToken!.slice(8) + suffix);
+      return query(params);
+    } });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "turn", recorded);
+    const waiting = await commits.reached("turn", "waiting_permission");
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: "deny" });
+    const done = await commits.reached("turn", "interrupted");
+    expect(done.error?.details?.stderr).toBe("[redacted]" + suffix);
+    expect(JSON.stringify(store())).not.toContain(pairingToken.slice(1));
+    expect(JSON.stringify(engine!.events(0))).not.toContain(pairingToken.slice(1));
+  });
+
+  it.each([
+    { nextToken: undefined, restart: false, interrupted: false },
+    { nextToken: "replacement-pairing-token", restart: false, interrupted: false },
+    { nextToken: undefined, restart: true, interrupted: false },
+    { nextToken: "replacement-pairing-token", restart: true, interrupted: true }
+  ])("redacts historical tokens in pending requests and outcomes after resume ($nextToken, restart=$restart, interrupted=$interrupted)", async ({ nextToken, restart, interrupted }) => {
+    const echo = transcript("bridge_token_echo"), sid = nativeSessionID(echo);
+    const originalToken = echo.metadata.pairingToken as string;
+    pairingToken = originalToken;
+    const first = interrupted ? variant(echo, "interrupted", entries => [...entries.slice(0, labelled(entries, "result")), exit(), close]) : echo;
+    const second = variant(echo, "resumed", entries => entries.map(entry => {
+      let resumed = reopen(entry, { resume: sid });
+      if (resumed.label === "query.open" && resumed.type === "expect_outbound" && nextToken === undefined) {
+        const frame = resumed.frame as { options: { env: Record<string, string> } };
+        delete frame.options.env.ENSO_BRIDGE_TOKEN;
+      }
+      if (nextToken && resumed.type === "emit_inbound") resumed = JSON.parse(JSON.stringify(resumed).replaceAll(originalToken, `${originalToken} / ${nextToken}`)) as Entry;
+      return resumed;
+    }));
+    start(restart ? first : variant(first, "two turns", entries => [...entries, ...second.entries]), { newID: ids(sid) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "first", first);
+    const waiting = await commits.reached("first", "waiting_permission");
+    engine!.answer("first", { pendingID: waiting.pending!.id, value: "deny" });
+    await commits.reached("first", interrupted ? "interrupted" : "completed");
+    if (restart) {
+      await engine!.shutdown();
+      replay!.complete();
+      storage.release();
+      storage = new RunnerStorage(join(directory, "store"));
+      storage.acquire();
+      commits = observeCommits(storage);
+      start(second);
+    }
+    pairingToken = nextToken;
+    submit(session.id, "second", second, 0, interrupted ? { recovery: { after: "first", mode: "resume" } } : {});
+    const resumed = await commits.reached("second", "waiting_permission");
+    expect(resumed.pending!.message).toContain("[redacted]");
+    expect(JSON.stringify(store())).not.toContain(originalToken);
+    if (nextToken) expect(JSON.stringify(store())).not.toContain(nextToken);
+    engine!.answer("second", { pendingID: resumed.pending!.id, value: "deny" });
+    const done = await commits.reached("second", "completed");
+    expect(done.result).toMatchObject({ text: expect.stringContaining("[redacted]") });
+    for (const text of [JSON.stringify(store()), JSON.stringify(engine!.events(0))]) {
+      expect(text).not.toContain(originalToken);
+      if (nextToken) expect(text).not.toContain(nextToken);
+    }
+    for (const name of readdirSync(join(directory, "store"))) {
+      const path = join(directory, "store", name);
+      if (lstatSync(path).isFile()) expect(readFileSync(path, "latin1")).not.toContain(originalToken);
+    }
+  });
+
+  it("maps redacted question identifiers back to the SDK's original answer keys", async () => {
+    pairingToken = "question-pairing-token";
+    const questions = transcript("ask_user_question");
+    const authored = variant(questions, "token in question", entries => entries.map(entry => {
+      const changed = JSON.parse(JSON.stringify(entry).replaceAll("Which layout?", `Which layout for ${pairingToken}?`)) as Entry;
+      if (changed.label === "query.open" && changed.type === "expect_outbound") {
+        const frame = changed.frame as { options: { env: Record<string, string> } };
+        frame.options.env = {
+          ENSO_RUNNER_BRIDGE: "bound", ENSO_BRIDGE_URL: binding().bridgeUrl, ENSO_BRIDGE_INSTANCE_ID: instance,
+          ENSO_VAULT_ID: binding().canvasTarget.vaultID, ENSO_CANVAS_ID: binding().canvasTarget.canvasID, ENSO_BRIDGE_TOKEN: "<token>"
+        };
+      }
+      return changed;
+    }));
+    start(authored, { newID: ids(nativeSessionID(authored)) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "turn", authored);
+    const waiting = await commits.reached("turn", "waiting_input");
+    expect(waiting.pending!.questions![0]).toMatchObject({ id: "enso-question-0", question: "Which layout for [redacted]?" });
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: { "enso-question-0": "Grid", "enso-question-1": ["node-a", "node-b"] } });
+    await commits.reached("turn", "completed");
+    expect(JSON.stringify(store())).not.toContain(pairingToken);
+  });
+
+  it("retains newly exposed token fingerprints when a confirmed failure does not advance the conversation checkpoint", async () => {
+    const echo = transcript("bridge_token_echo"), sid = nativeSessionID(echo);
+    const originalToken = echo.metadata.pairingToken as string, replacement = "replacement-pairing-token";
+    const resumed = variant(echo, "resumed", entries => entries.map(entry => reopen(entry, { resume: sid })));
+    const failed = variant(resumed, "no conversation frame", entries => entries.map(entry => {
+      if (entry.type !== "emit_inbound") return entry;
+      const frame = entry.frame as Record<string, unknown>;
+      return { ...entry, frame: { ...frame, session_id: uuid(999), ...(entry.label === "result" ? { is_error: true, api_error_status: 429 } : {}) } };
+    }));
+    start(variant(echo, "confirmed failure", entries => [...entries, ...failed.entries]), { newID: ids(sid) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    for (const [requestID, currentToken, script, status] of [
+      ["first", originalToken, echo, "completed"], ["failed", replacement, failed, "failed"]
+    ] as const) {
+      pairingToken = currentToken;
+      submit(session.id, requestID, script);
+      const waiting = await commits.reached(requestID, "waiting_permission");
+      engine!.answer(requestID, { pendingID: waiting.pending!.id, value: "deny" });
+      const done = await commits.reached(requestID, status);
+      if (requestID === "failed") expect(done.providerState).toBeUndefined();
+    }
+    expect(engine!.session(session.id)).toMatchObject({ providerState: { conversationID: sid } });
+    expect(engine!.session(session.id).uncertain).toBeUndefined();
+    await engine!.shutdown(); replay!.complete(); storage.release();
+    storage = new RunnerStorage(join(directory, "store")); storage.acquire(); commits = observeCommits(storage);
+    const remembering = variant(resumed, "remember failed turn token", entries => (JSON.parse(JSON.stringify(entries).replaceAll(originalToken, replacement)) as Entry[]).map(entry => {
+      if (entry.label === "query.open" && entry.type === "expect_outbound") {
+        delete (entry.frame as { options: { env: Record<string, string> } }).options.env.ENSO_BRIDGE_TOKEN;
+      }
+      return entry;
+    }));
+    start(remembering);
+    pairingToken = undefined;
+    submit(session.id, "after", remembering);
+    const waiting = await commits.reached("after", "waiting_permission");
+    expect(waiting.pending!.message).toContain("[redacted]");
+    engine!.answer("after", { pendingID: waiting.pending!.id, value: "deny" });
+    await commits.reached("after", "completed");
+    expect(JSON.stringify(store())).not.toContain(replacement);
+    expect(JSON.stringify(engine!.events(0))).not.toContain(replacement);
+  });
+
+  it("refuses to resume a bound pre-fix conversation whose historical token fingerprints are unknown", async () => {
+    start(none());
+    const session = engine!.createSession({ binding: binding() }, instance);
+    storage.commit([{ type: "session_updated", sessionID: session.id, providerState: { conversationID: uuid(99) } }]);
+    submit(session.id, "turn", transcript("simple"));
+    const done = await commits.reached("turn", "failed");
+    expect(done.error).toMatchObject({ code: "conversation_redaction_unavailable" });
+    expect(done.native).toBeUndefined();
+    expect(engine!.session(session.id).providerState).toEqual({ conversationID: uuid(99) });
+  });
+
+  it("does not certify a legacy uncertain conversation when fresh recovery fails before creating a checkpoint", async () => {
+    const failure = Object.assign(new Error("missing Claude executable"), { code: "ENOENT" });
+    const provider = new ClaudeProvider(() => { throw failure; }, { permissionMode: "default" }, { newID: ids(uuid(101)), bridgeToken: async () => "fresh-token" });
+    engine = new RunnerEngine(storage, provider);
+    const session = engine.createSession({ binding: binding() }, instance);
+    const uncertain = { requestID: "legacy-lost", native: { conversationID: uuid(99) } };
+    storage.commit([{ type: "session_updated", sessionID: session.id, providerState: { conversationID: uuid(99) }, uncertain }]);
+    submit(session.id, "fresh", transcript("simple"), 0, { recovery: { after: "legacy-lost", mode: "fresh" } });
+    expect((await commits.reached("fresh", "failed")).error).toMatchObject({ code: "claude_unavailable" });
+    expect(engine.session(session.id)).toMatchObject({ providerState: { conversationID: uuid(99) }, uncertain });
+    submit(session.id, "resume", transcript("simple"), 0, { recovery: { after: "legacy-lost", mode: "resume" } });
+    expect((await commits.reached("resume", "failed")).error).toMatchObject({ code: "conversation_redaction_unavailable" });
+    expect(engine.run("resume").native).toBeUndefined();
+  });
+
+  it("keeps the bridge disabled for a session that pinned no instance, as every protocol 2 session did", async () => {
+    pairingToken = "never-read";
+    const simple = transcript("simple");
+    const sdk = start(simple, { newID: ids(nativeSessionID(simple)) });
+    const session = engine!.createSession({ binding: binding() });
+    expect(session.binding).not.toHaveProperty("bridgeInstanceID");
+    submit(session.id, "turn", simple);
+    await commits.reached("turn", "completed");
+    // The transcript pins ENSO_RUNNER_BRIDGE=disabled and no other binding variable.
+    expect(sdk.queries[0].options.env).not.toHaveProperty("ENSO_BRIDGE_TOKEN");
+    expect((sdk.queries[0].options.systemPrompt as { append: string }).append).toContain("The Enso app bridge is not available to this session");
+    expect(tokenReads).toEqual([]);
+  });
+
+  it("clears binding variables the runner itself inherited before binding the agent", async () => {
+    for (const [name, value] of Object.entries({ ENSO_VAULT_ID: uuid(9), ENSO_CANVAS_ID: uuid(8), ENSO_BRIDGE_URL: "http://127.0.0.1:1", ENSO_BRIDGE_TOKEN: "runner-token", ENSO_BRIDGE_INSTANCE_ID: "other" })) vi.stubEnv(name, value);
+    const simple = transcript("simple");
+    const sdk = start(simple, { newID: ids(nativeSessionID(simple)) });
+    submit(engine!.createSession({ binding: binding() }).id, "turn", simple);
+    await commits.reached("turn", "completed");
+    for (const name of ["ENSO_VAULT_ID", "ENSO_CANVAS_ID", "ENSO_BRIDGE_URL", "ENSO_BRIDGE_TOKEN", "ENSO_BRIDGE_INSTANCE_ID"]) expect(sdk.queries[0].options.env).not.toHaveProperty(name);
+  });
+
+  it("creates a session only with the instance a client expects, and only when the runner pins one", () => {
+    start(none());
+    const expected = { binding: { ...binding(), bridgeInstanceID: "instance-B" } };
+    expect(() => engine!.createSession(expected, "instance-A")).toThrow(expect.objectContaining({ body: expect.objectContaining({
+      code: "bridge_instance_mismatch", details: { bridgeUrl: "http://127.0.0.1:17650", expectedInstanceID: "instance-B", instanceID: "instance-A" }
+    }) }));
+    expect(() => engine!.createSession(expected)).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_input" }) }));
+    expect(() => engine!.createSession({ binding: binding() }, "has a space")).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "invalid_input" }) }));
+    expect(engine!.snapshot().sessions).toEqual([]);
+    expect(engine!.createSession({ binding: { ...binding(), bridgeInstanceID: "instance-A" } }, "instance-A").binding.bridgeInstanceID).toBe("instance-A");
+    expect(engine!.bridgeToPin({ binding: binding() })).toBe("http://127.0.0.1:17650");
   });
 });
 

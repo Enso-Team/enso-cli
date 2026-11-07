@@ -15,9 +15,11 @@ export type Execution = {
   /**
    * Durably records the provider's native identifiers for this run (conversation, prompt, execution) and returns once
    * they are committed. A provider calls it before any native call that could make those identifiers meaningful, so a
-   * crash after that call always leaves them in the interrupted run. Throws if the commit fails: do not proceed.
+   * crash after that call always leaves them in the interrupted run. Optional providerState records metadata in the
+   * same transaction without reconciling uncertainty; preserve the current conversation checkpoint in that value.
+   * Throws if the commit fails: do not proceed.
    */
-  record: (native: Json) => void;
+  record: (native: Json, providerState?: Json) => void;
   /** Persists `pending` and resolves with its answer; rejects on cancellation, or once `withdrawn` aborts (the pending
    * request is then removed durably). */
   wait: (pending: Pending, withdrawn?: AbortSignal) => Promise<Answer>;
@@ -33,6 +35,8 @@ export type Execution = {
  */
 export interface RunnerProvider {
   readonly name: ProviderName;
+  /** The provider gives its agent the session's bridge, so each new session pins the bridge instance it is bound to. */
+  readonly pinsBridge?: boolean;
   execute(execution: Execution): Promise<ProviderOutcome>;
 }
 

@@ -11,7 +11,8 @@
  * pins the options the runner sets; close() is an expected outbound `query.close`; a permission.request does not block
  * the stream, so concurrent callbacks can be replayed, and `permission.withdraw` aborts one from the CLI side; a
  * `runtime_exit` with status error fails the stream rather than the replay; responses after close are dropped, as the
- * SDK cannot deliver them; several transcripts can play at once, one per conversation, routed by their query.open.
+ * SDK cannot deliver them; several transcripts can play at once, one per conversation, routed by their query.open;
+ * query.open pins the session's bridge binding environment, with the pairing token as the `<token>` placeholder.
  *
  * MIT License
  *
@@ -39,7 +40,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CanUseTool, Options, PermissionResult, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeQuery, ClaudeQueryHandle } from "../../../src/runner/claude.js";
-import { runnerBridgeEnv } from "../../../src/runner/claude.js";
+import { bridgeInstanceEnv, bridgeTokenEnv, bridgeUrlEnv, canvasEnv, runnerBridgeEnv, vaultEnv } from "../../../src/bridge-binding.js";
 import { materializeWorkspace, readTranscript, Replay, ReplayError, sameFrame, type Entry, type Transcript } from "./transcript.js";
 
 export const claudeProtocol = "claude-agent-sdk.query";
@@ -70,9 +71,15 @@ export function nativeSessionID(transcript: Transcript): string {
   return id;
 }
 
-/** The query options a transcript pins: conversation identity, directory, permission mode, model and agent environment. */
+/** Stands for the pairing token in a transcript: no token is ever written to one. */
+export const tokenPlaceholder = "<token>";
+/**
+ * The query options a transcript pins: conversation identity, directory, permission mode, model and the agent's bridge
+ * environment (whether it is bound, and to which bridge, instance and canvas; only whether a pairing token is passed).
+ */
 function openFrame(options: Options) {
   const systemPrompt = options.systemPrompt;
+  const env = options.env ?? {};
   return { type: "query.open", options: {
     cwd: options.cwd,
     ...(options.resume !== undefined ? { resume: options.resume } : {}),
@@ -81,7 +88,10 @@ function openFrame(options: Options) {
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.pathToClaudeCodeExecutable !== undefined ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable } : {}),
     systemPrompt: typeof systemPrompt === "object" && !Array.isArray(systemPrompt) && systemPrompt !== null && "preset" in systemPrompt ? { type: systemPrompt.type, preset: systemPrompt.preset } : systemPrompt,
-    env: { [runnerBridgeEnv]: options.env?.[runnerBridgeEnv] }
+    env: {
+      [runnerBridgeEnv]: env[runnerBridgeEnv], [bridgeUrlEnv]: env[bridgeUrlEnv], [bridgeInstanceEnv]: env[bridgeInstanceEnv],
+      [vaultEnv]: env[vaultEnv], [canvasEnv]: env[canvasEnv], [bridgeTokenEnv]: env[bridgeTokenEnv] === undefined ? undefined : tokenPlaceholder
+    }
   } };
 }
 
