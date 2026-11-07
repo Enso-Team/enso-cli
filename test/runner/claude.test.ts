@@ -822,6 +822,61 @@ describe("bridge access from runner agents", () => {
     }
   });
 
+  it.each(["Bash", "Read"])("redacts %s input before shortening it and still executes the original input when approved", async toolName => {
+    const echo = transcript("bridge_token_echo");
+    pairingToken = echo.metadata.pairingToken as string;
+    const field = toolName === "Bash" ? "command" : "file_path";
+    // Read's fallback message cuts file paths at 400 characters, before the separate input preview is built.
+    const summary = toolName === "Read" ? "x".repeat(400 - pairingToken.length + 1) + pairingToken : "";
+    // In the unredacted JSON, only the last character of the credential falls beyond the preview's cutoff.
+    const prefix = "x".repeat(1024 - JSON.stringify({ [field]: "" }).indexOf('""') - pairingToken.length - summary.length);
+    const input = { [field]: summary + prefix + pairingToken + "x".repeat(34_000) };
+    const recorded = variant(echo, "large tool input", entries => entries.map(entry => {
+      if (entry.label === "permission.request:toolu_curl" && entry.type === "emit_inbound") {
+        return { ...entry, frame: { ...(entry.frame as object), toolName, input } };
+      }
+      if (entry.label === "permission.response:toolu_curl" && entry.type === "expect_outbound") {
+        return { ...entry, frame: { type: "permission.response", result: {
+          behavior: "allow", updatedInput: input, toolUseID: "toolu_curl", decisionClassification: "user_temporary"
+        } } };
+      }
+      return entry;
+    }));
+    start(recorded, { newID: ids(nativeSessionID(recorded)) });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "turn", recorded);
+    const waiting = await commits.reached("turn", "waiting_permission");
+    const preview = waiting.pending!.details!.input as { truncated: boolean; preview: string };
+    expect(preview.truncated).toBe(true);
+    expect(preview.preview).toContain("[redacted]");
+    expect(preview.preview).not.toContain(pairingToken.slice(0, -1));
+    expect(waiting.pending!.message).not.toContain(pairingToken.slice(0, -1));
+    expect(JSON.stringify(engine!.events(0))).not.toContain(pairingToken.slice(0, -1));
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: "allow" });
+    await commits.reached("turn", "completed");
+    expect(JSON.stringify(store())).not.toContain(pairingToken.slice(0, -1));
+  });
+
+  it("redacts chunked stderr before retaining its error tail", async () => {
+    const echo = transcript("bridge_token_echo");
+    pairingToken = echo.metadata.pairingToken as string;
+    const suffix = "x".repeat(2048 - pairingToken.length + 1);
+    const recorded = variant(echo, "stderr token at cutoff", entries => [...entries.slice(0, labelled(entries, "result")), exit("error", "Disconnected"), close]);
+    start(recorded, { newID: ids(nativeSessionID(recorded)), wrap: query => params => {
+      params.options.stderr!(pairingToken!.slice(0, 8));
+      params.options.stderr!(pairingToken!.slice(8) + suffix);
+      return query(params);
+    } });
+    const session = engine!.createSession({ binding: binding() }, instance);
+    submit(session.id, "turn", recorded);
+    const waiting = await commits.reached("turn", "waiting_permission");
+    engine!.answer("turn", { pendingID: waiting.pending!.id, value: "deny" });
+    const done = await commits.reached("turn", "interrupted");
+    expect(done.error?.details?.stderr).toBe("[redacted]" + suffix);
+    expect(JSON.stringify(store())).not.toContain(pairingToken.slice(1));
+    expect(JSON.stringify(engine!.events(0))).not.toContain(pairingToken.slice(1));
+  });
+
   it.each([
     { nextToken: undefined, restart: false, interrupted: false },
     { nextToken: "replacement-pairing-token", restart: false, interrupted: false },

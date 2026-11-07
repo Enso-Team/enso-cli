@@ -263,4 +263,23 @@ describe("discovery with an expected bridge instance", () => {
     expect(paths()).toEqual(["/v1/health"]);
     expect(readConfig()).toEqual(previous);
   });
+
+  it.each(["bridge_instance_mismatch", "bridge_instance_unavailable"])("auth link stops on an app-side %s after health succeeds", async code => {
+    vi.stubEnv("ENSO_BRIDGE_INSTANCE_ID", instance);
+    const previous = readConfig();
+    const error = { code, message: "The app instance changed", details: { instanceID: "replacement-instance", hint: "Stop here" } };
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Response.json(new URL(String(url)).pathname === "/v1/health"
+        ? { ok: true, data: { contractVersion: 3, bridgeInstanceID: instance } }
+        : { ok: false, error });
+    }));
+
+    const result = await run(["auth", "link"]);
+
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({ ok: false, error });
+    expect(paths()).toEqual(["/v1/health", "/v1/status"]);
+    expect(readConfig()).toEqual(previous);
+  });
 });

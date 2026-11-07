@@ -33,7 +33,7 @@ export function fingerprintToken(token: string): TokenFingerprint {
  * Match old credentials without knowing their plaintext. Rolling hashes screen windows in linear time per distinct
  * token length; SHA-256 confirms only hash hits. Overlapping matches are merged so one replacement cannot hide another.
  */
-export function tokenRedactor(fingerprints: TokenFingerprint[]): <T>(value: T) => T {
+function stringRedactor(fingerprints: TokenFingerprint[]): (text: string, from?: number) => string {
   const lengths = new Map<number, Map<number, Set<string>>>();
   for (const { length, rolling, sha256 } of fingerprints) {
     if (!lengths.has(length)) lengths.set(length, new Map());
@@ -41,7 +41,7 @@ export function tokenRedactor(fingerprints: TokenFingerprint[]): <T>(value: T) =
     if (!hashes.has(rolling)) hashes.set(rolling, new Set());
     hashes.get(rolling)!.add(sha256);
   }
-  const redactString = (text: string): string => {
+  return (text: string, from = 0): string => {
     const matches: { start: number; end: number }[] = [];
     for (const [length, hashes] of lengths) {
       if (length > text.length) continue;
@@ -58,15 +58,26 @@ export function tokenRedactor(fingerprints: TokenFingerprint[]): <T>(value: T) =
         }
       }
     }
-    if (!matches.length) return text;
+    if (!matches.length) return text.slice(from);
     matches.sort((a, b) => a.start - b.start || b.end - a.end);
-    let output = "", through = 0;
+    const merged: typeof matches = [];
     for (const match of matches) {
-      if (match.start >= through) output += text.slice(through, match.start) + "[redacted]";
-      through = Math.max(through, match.end);
+      const last = merged.at(-1);
+      if (last && match.start < last.end) last.end = Math.max(last.end, match.end);
+      else merged.push(match);
+    }
+    let output = "", through = from;
+    for (const match of merged) {
+      if (match.end <= from) continue;
+      output += text.slice(through, Math.max(through, match.start)) + "[redacted]";
+      through = match.end;
     }
     return output + text.slice(through);
   };
+}
+
+export function tokenRedactor(fingerprints: TokenFingerprint[]): <T>(value: T) => T {
+  const redactString = stringRedactor(fingerprints);
   const scrub = (value: unknown): unknown => {
     if (typeof value === "string") return redactString(value);
     if (Array.isArray(value)) return value.map(scrub);
@@ -74,4 +85,19 @@ export function tokenRedactor(fingerprints: TokenFingerprint[]): <T>(value: T) =
     return value;
   };
   return fingerprints.length ? value => scrub(value) as never : value => value;
+}
+
+/**
+ * A bounded text tail with enough raw lookbehind to recognize a token crossing its start, including across chunks.
+ * Crop in the original string's coordinates while redacting: cropping first would hide a token's missing prefix,
+ * while cropping the redacted string alone could pull that fragment back into view when replacements shorten it.
+ */
+export function redactedTextTail(fingerprints: TokenFingerprint[], limit: number): { append: (chunk: string) => void; read: () => string } {
+  const redact = stringRedactor(fingerprints);
+  const lookbehind = fingerprints.reduce((longest, value) => Math.max(longest, value.length - 1), 0);
+  let raw = "";
+  return {
+    append: chunk => { raw = (raw + chunk).slice(-(limit + lookbehind)); },
+    read: () => redact(raw, Math.max(0, raw.length - limit)).slice(-limit)
+  };
 }

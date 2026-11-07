@@ -7,7 +7,7 @@ import { bridgeEnvironment, readBridgeToken, type BridgeTokenReader } from "./br
 import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
 import type { Answer, Binding, Json, Pending, Prompt, Session } from "./protocol.js";
 import type { Execution, ProviderOutcome, RunnerProvider } from "./provider.js";
-import { fingerprintToken, redactedConversations, tokenFingerprints, tokenRedactor, type TokenFingerprint } from "./redaction.js";
+import { fingerprintToken, redactedConversations, redactedTextTail, tokenFingerprints, tokenRedactor, type TokenFingerprint } from "./redaction.js";
 
 /** The part of the SDK's `query()` the provider uses; tests replace it with a scripted exchange. */
 export type ClaudeQueryHandle = AsyncIterable<SDKMessage> & { interrupt(): Promise<unknown>; close(): void };
@@ -122,6 +122,7 @@ export class ClaudeProvider implements RunnerProvider {
     const outcome = await new Turn(this.query, this.config, {
       cwd, conversationID, resume, promptUUID, prompt, signal, stopTimeoutMs: this.options.stopTimeoutMs ?? stopConfirmTimeoutMs,
       env: bridgeEnvironment(session.binding, token), instructions: sessionInstructions(session.binding),
+      redact: scrub, stderr: redactedTextTail(fingerprints, stderrTail),
       // Claude can see its own environment, so a tool input or result can repeat the token: it never reaches runner state.
       wait: async (pending, withdrawn) => {
         const safe = scrub(pending);
@@ -175,6 +176,7 @@ type TurnInput = {
   cwd: string; conversationID: string; resume: boolean; promptUUID: string; prompt: Readonly<Prompt>;
   signal: AbortSignal; wait: Execution["wait"]; stopTimeoutMs: number;
   env: Record<string, string | undefined>; instructions: string;
+  redact: ReturnType<typeof tokenRedactor>; stderr: ReturnType<typeof redactedTextTail>;
 };
 
 class Turn {
@@ -184,7 +186,6 @@ class Turn {
   /** This turn's result has arrived: later callbacks have no request left to ask in. */
   private finished = false;
   private sawFrame = false;
-  private stderr = "";
   /** Serializes callbacks: the runner keeps one pending request per run. */
   private callbacks = Promise.resolve();
   constructor(private readonly query: ClaudeQuery, private readonly config: ClaudeConfig, private readonly input: TurnInput) {}
@@ -278,22 +279,24 @@ class Turn {
   /** Claude Code never started, so nothing ran: a requested stop is confirmed, and otherwise the turn failed. */
   private unstarted(cause: unknown): ProviderOutcome {
     if (this.interruptRequested) return { status: "cancelled" };
+    const stderr = this.input.stderr.read();
     return { status: "failed", error: { code: "claude_unavailable", message: "Claude Code could not be started; nothing ran", details: plain({
       conversationID: this.input.conversationID, promptUUID: this.input.promptUUID,
       ...(cause instanceof Error ? { cause: cause.message } : {}),
-      ...(this.stderr ? { stderr: this.stderr } : {})
+      ...(stderr ? { stderr } : {})
     }) as Record<string, Json> } };
   }
 
   private uncertain(code: string, message: string, cause?: unknown): ProviderOutcome {
     const interrupt = this.interruptRequested ? { interrupt: this.interrupt ?? "pending" } : {};
+    const stderr = this.input.stderr.read();
     return { status: "interrupted", error: {
       code: this.interruptRequested && code !== "cancel_unconfirmed" ? "cancel_unconfirmed" : code,
       message: this.interruptRequested && code !== "cancel_unconfirmed" ? `${message}; the stop was not confirmed` : message,
       details: plain({
         conversationID: this.input.conversationID, promptUUID: this.input.promptUUID, ...interrupt,
         ...(cause instanceof Error ? { cause: cause.message } : {}),
-        ...(this.stderr ? { stderr: this.stderr } : {})
+        ...(stderr ? { stderr } : {})
       }) as Record<string, Json>
     } };
   }
@@ -309,7 +312,7 @@ class Turn {
       canUseTool,
       systemPrompt: { type: "preset", preset: "claude_code", append: this.input.instructions },
       env: { ...this.input.env, CLAUDE_AGENT_SDK_CLIENT_APP: `enso-cli/${cliVersion}` },
-      stderr: data => { this.stderr = (this.stderr + data).slice(-stderrTail); }
+      stderr: data => { this.input.stderr.append(data); }
     };
   }
 
@@ -354,10 +357,12 @@ class Turn {
       const answers = typeof answer.value === "string" ? { [questions[0].id]: answer.value } : answer.value;
       return { behavior: "allow", toolUseID: options.toolUseID, updatedInput: { questions: toolInput.questions, answers: sdkUserInputAnswers(answers) } };
     }
-    const request = permissionRequest(toolName, toolInput, options);
+    // Presentation helpers may truncate strings; redact a copy first and keep the SDK's original input for execution.
+    const safeInput = this.input.redact(toolInput);
+    const request = permissionRequest(toolName, safeInput, options);
     const answer = await this.ask({
       id, kind: "permission", message: request.message, choices: request.choices,
-      details: { ...details, ...(request.reason ? { reason: request.reason } : {}), input: bounded(toolInput) }
+      details: { ...details, ...(request.reason ? { reason: request.reason } : {}), input: bounded(safeInput) }
     }, options.signal);
     if (!answer) return cancelled(options.toolUseID);
     return permissionResultFromDecision({
