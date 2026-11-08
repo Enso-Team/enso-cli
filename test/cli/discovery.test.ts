@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeInstanceHeader } from "../../src/bridge-binding.js";
 import { readConfig } from "../../src/config.js";
-import { contractHeader, contractVersion, oldestSupportedContractVersion } from "../../src/contract.js";
+import { contractHeader, contractVersion } from "../../src/contract.js";
 import { calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
@@ -17,7 +17,7 @@ function stubBridge(tokenPath: string, health: Record<string, unknown> = {}): vo
       if (pathname === "/v1/health") {
         return Response.json({
           ok: true,
-          data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath, ...health }
+          data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", tokenPath, ...health }
         });
       }
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
@@ -109,12 +109,29 @@ describe("file-based link", () => {
     expect(readConfig()).toBeNull();
   });
 
-  it("discovery carries the supported bootstrap contract version", async () => {
+  it("discovery speaks the CLI's one contract version", async () => {
     const result = await run(["status"]);
 
     expect(result.code).toBe(0);
-    const headers = calls[0]?.init.headers as Record<string, string>;
-    expect(headers[contractHeader]).toBe(String(oldestSupportedContractVersion));
+    for (const call of calls.filter(call => new URL(call.url).pathname !== "/v1/health")) {
+      expect((call.init.headers as Record<string, string>)[contractHeader]).toBe(String(contractVersion));
+    }
+  });
+
+  it.each([1, 2])("refuses to link an app on contract %s with an actionable app_outdated error", async appVersion => {
+    rmSync(join(tempDir, "config.json"));
+    const tokenPath = join(tempDir, "bridge-token.json");
+    writeFileSync(tokenPath, JSON.stringify({ token: "file-token" }));
+    stubBridge(tokenPath, { contractVersion: appVersion });
+
+    const result = await run(["auth", "link"]);
+
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      ok: false,
+      error: { code: "app_outdated", details: { appContractVersion: appVersion, cliContractVersion: 3, hint: expect.stringContaining("Update the Enso app") } }
+    });
+    expect(readConfig()).toBeNull();
   });
 
   it("a token file whose token the app rejects does not link", async () => {

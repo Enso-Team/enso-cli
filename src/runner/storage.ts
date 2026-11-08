@@ -614,6 +614,12 @@ export class RunnerStorage {
     return scalar(this.database(), `SELECT request_id FROM runs WHERE status IN (${terminalSQL}) AND updated_at < ?
       ORDER BY updated_at, sequence LIMIT ?`).all(cutoff, limit) as string[];
   }
+  /** Whether retention deleted a run with this request ID. Every runs_deleted event is kept (the schema refuses to
+   * delete one), so this record lasts as long as the store. */
+  deleted(requestID: string): boolean {
+    return prepare(this.database(), `SELECT 1 FROM events, json_each(events.event_json, '$.requestIDs') AS deleted
+      WHERE events.subject IS NULL AND events.type = 'runs_deleted' AND deleted.value = ? LIMIT 1`).get(requestID) !== undefined;
+  }
   /** Events at or below this sequence may have been deleted: a cursor below it cannot be replayed. */
   expiredThrough(): number { return scalar(this.database(), "SELECT expired_through FROM retention").get() as number; }
   /** One committed state and the sequence of its last event: the transaction holds one WAL read view across the

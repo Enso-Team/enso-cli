@@ -97,6 +97,12 @@ export class RunnerEngine {
       if (canonical(existing.request) !== canonical(request)) throw new EnsoCliError("request_conflict", "requestID already belongs to a different payload");
       return existing;
     }
+    // A deleted run's ID stays spent, in every session, so a retried submission never executes a second time.
+    if (this.read(() => this.storage.deleted(parsed.requestID))) {
+      throw new EnsoCliError("request_expired", "Retention deleted the run with this requestID; it is never accepted again", {
+        requestID: parsed.requestID, hint: "Submit an intentional new prompt under a new requestID"
+      });
+    }
     this.assertAccepting();
     if (!session) throw new EnsoCliError("session_not_found", "Session not found");
     if (session.provider !== this.provider.name) throw this.mismatch(session.provider);

@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { advertisedInstance, bindingEnvNames, bridgeInstanceEnv, bridgeTokenEnv, bridgeUrlEnv, canvasEnv, runnerBridgeEnv, vaultEnv } from "../bridge-binding.js";
 import { envelopeSchema, isLoopbackBridgeUrl } from "../client.js";
 import { readConfig } from "../config.js";
-import { assertTargetingContract } from "../contract.js";
+import { assertCompatibleContract } from "../contract.js";
 import { tokenFileSchema } from "../discovery.js";
 import { EnsoCliError } from "../errors.js";
 import type { Binding } from "./protocol.js";
@@ -39,7 +41,7 @@ export const readBridgeInstance: BridgeInstanceReader = async bridgeUrl => {
   if (data?.agentAccess === "disabled") {
     throw new EnsoCliError("access_disabled", "Local agent access is turned off in Enso's Settings", { bridgeUrl, hint: "Turn on Local agent access in Enso's Settings, then create the session again" });
   }
-  assertTargetingContract(data?.contractVersion, bridgeUrl);
+  assertCompatibleContract(data?.contractVersion, bridgeUrl);
   const instance = advertisedInstance(data);
   if (instance === undefined) {
     throw new EnsoCliError("bridge_instance_unavailable", "The Enso app at the session's bridgeUrl advertises no bridge instance, so the session cannot pin one", {
@@ -75,13 +77,34 @@ export const readBridgeToken: BridgeTokenReader = async bridgeUrl => {
  * session with a pinned instance gets its bridge origin, instance, canvas target and (when found) pairing token; any
  * other is marked disabled, and the CLI refuses every bridge request in it.
  */
-export function bridgeEnvironment(binding: Readonly<Binding>, token?: string): Record<string, string | undefined> {
+export function bridgeEnvironment(binding: Readonly<Binding>, token?: string, cli: CliCommand = runningCli()): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of bindingEnvNames) delete env[name];
+  // An `enso` found later on PATH may predate the binding variables and ignore them.
+  env.PATH = [cliDirectory(cli), env.PATH].filter(Boolean).join(delimiter);
   if (binding.bridgeInstanceID === undefined) return { ...env, [runnerBridgeEnv]: "disabled" };
   return {
     ...env, [runnerBridgeEnv]: "bound", [bridgeUrlEnv]: binding.bridgeUrl, [bridgeInstanceEnv]: binding.bridgeInstanceID,
     [vaultEnv]: binding.canvasTarget.vaultID, [canvasEnv]: binding.canvasTarget.canvasID,
     ...(token ? { [bridgeTokenEnv]: token } : {})
   };
+}
+
+/** How to start this CLI: the Node binary, its flags and the entry script. */
+export type CliCommand = { node: string; args: string[] };
+export function runningCli(): CliCommand {
+  return { node: process.execPath, args: [...process.execArgv, realpathSync(process.argv[1]!)] };
+}
+
+let shim: { key: string; directory: string } | undefined;
+/** A private directory, made once per process, whose `enso` runs `cli`. */
+export function cliDirectory(cli: CliCommand): string {
+  const key = JSON.stringify(cli);
+  if (shim?.key === key && existsSync(join(shim.directory, "enso"))) return shim.directory;
+  const directory = mkdtempSync(join(tmpdir(), "enso-runner-cli-"));
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  writeFileSync(join(directory, "enso"), `#!/bin/sh\nexec ${[cli.node, ...cli.args].map(quote).join(" ")} "$@"\n`, { mode: 0o700 });
+  process.once("exit", () => rmSync(directory, { recursive: true, force: true }));
+  shim = { key, directory };
+  return directory;
 }

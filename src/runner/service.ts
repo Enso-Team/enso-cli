@@ -23,7 +23,7 @@ const errorStatus = new Map<string, number>([
   // Pinning a new session's bridge instance.
   ["bridge_instance_mismatch", 409], ["bridge_instance_unavailable", 409], ["access_disabled", 409], ["app_outdated", 409],
   ["app_unavailable", 503], ["invalid_response", 502],
-  ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404], ["cursor_expired", 410],
+  ["run_not_found", 404], ["session_not_found", 404], ["route_not_found", 404], ["cursor_expired", 410], ["request_expired", 410],
   ["runner_storage_failure", 503]
 ]);
 

@@ -65,7 +65,7 @@ describe("auth", () => {
     await run(["auth", "unlink"]);
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
-      return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650" } });
+      return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650" } });
     }));
 
     const result = await run(["auth", "link"]);
@@ -81,7 +81,7 @@ describe("auth", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
       }
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
       if (auth === "Bearer fresh-token") return Response.json({ ok: true, data: { app: "Enso" } });
@@ -99,7 +99,7 @@ describe("auth", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650" } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650" } });
       }
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));
@@ -115,7 +115,7 @@ describe("auth", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", agentAccess: "disabled" } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", agentAccess: "disabled" } });
       }
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));

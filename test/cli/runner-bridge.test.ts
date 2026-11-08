@@ -2,13 +2,14 @@
 // (bridgeEnvironment), against a stand-in bridge. No Enso app takes part, so this proves the CLI's side of the binding,
 // not compatibility with a live app.
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { configPath, writeConfig } from "../../src/config.js";
 import { run as executeCli } from "../../src/index.js";
-import { bridgeEnvironment } from "../../src/runner/bridge.js";
+import { bridgeEnvironment, cliDirectory } from "../../src/runner/bridge.js";
 import type { Binding } from "../../src/runner/protocol.js";
 
 const A = { vaultID: "11111111-1111-4111-8111-111111111111", canvasID: "22222222-2222-4222-8222-222222222222" };
@@ -93,6 +94,19 @@ async function cli(...args: string[]) {
   } finally { process.stdout.write = out; process.stderr.write = err; process.exitCode = code; }
 }
 const routes = () => calls.filter(call => call.path !== "/v1/health").map(call => `${call.method} ${call.path}`);
+
+it("puts the runner's own CLI first on the agent's PATH, ahead of any other installed enso", () => {
+  const decoy = mkdtempSync(join(tmpdir(), "enso-decoy-"));
+  writeFileSync(join(decoy, "enso"), "#!/bin/sh\necho decoy\n", { mode: 0o700 });
+  process.env.PATH = `${decoy}:${process.env.PATH}`;
+  const runner = { node: "/bin/echo", args: ["runner cli's", "entry"] };
+  for (const binding of [{}, { bridgeInstanceID: undefined }]) {
+    const env = bridgeEnvironment({ bridgeUrl, canvasTarget: A, workingDirectory: directory, bridgeInstanceID: "instance-1", ...binding }, token, runner);
+    expect(env.PATH!.split(":")[0]).toBe(cliDirectory(runner));
+    expect(execFileSync("/bin/sh", ["-c", "enso node list"], { env, encoding: "utf8" })).toBe("runner cli's entry node list\n");
+  }
+  rmSync(decoy, { recursive: true, force: true });
+});
 
 it("reads and writes the session's canvas with its pairing, its instance on every request, and its target", async () => {
   const read = await cli("node", "list");

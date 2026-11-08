@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import { defaultBridgeUrl, readConfig } from "./config.js";
-import { assertTargetingContract, contractHeader, contractVersion, oldestSupportedContractVersion } from "./contract.js";
+import { assertCompatibleContract, contractHeader, contractVersion } from "./contract.js";
 import { assertExpectedBridgeInstance, bridgeInstanceHeader, expectedBridgeInstance, runnerBridge, runnerBridgeEnv } from "./bridge-binding.js";
 import { discoverAndLink } from "./discovery.js";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
@@ -119,7 +119,7 @@ export class BridgeClient {
     }
     const expectedVault = this.context.bound ?? this.context.resolvedTarget;
     if (scope === "vault" && method === "GET" && expectedVault) await this.assertVault();
-    const result = await this.transmit(url, method, body, options.auth !== false && scope !== "health", scope === "canvas" ? contractVersion : oldestSupportedContractVersion, scope);
+    const result = await this.transmit(url, method, body, options.auth !== false && scope !== "health", scope);
     if (result.ok && url.pathname === "/v1/vault/current" && expectedVault) this.checkVault(result);
     if (result.ok && scope === "vault" && method === "GET" && expectedVault) await this.assertVault();
     return result;
@@ -143,7 +143,7 @@ export class BridgeClient {
     return this.context.negotiated ??= (async () => {
       const data = await this.health();
       const connection = await this.connect();
-      assertTargetingContract((data as { contractVersion?: unknown })?.contractVersion, connection.bridgeUrl);
+      assertCompatibleContract((data as { contractVersion?: unknown })?.contractVersion, connection.bridgeUrl);
     })();
   }
 
@@ -173,7 +173,7 @@ export class BridgeClient {
   private async bootstrap(path: string, auth = true): Promise<EnsoEnvelope> {
     if (path !== "/v1/health") await this.verifyInstance();
     const connection = await this.connect();
-    return this.transmit(new URL(path, connection.bridgeUrl), "GET", undefined, auth, oldestSupportedContractVersion, routeScope(path, "GET"));
+    return this.transmit(new URL(path, connection.bridgeUrl), "GET", undefined, auth, routeScope(path, "GET"));
   }
 
   private async connect(discover = true): Promise<{ bridgeUrl: string; token?: string }> {
@@ -214,7 +214,7 @@ export class BridgeClient {
     return connection;
   }
 
-  private async transmit(url: URL, method: string, body: unknown, auth: boolean, version: number, scope: RouteScope): Promise<EnsoEnvelope> {
+  private async transmit(url: URL, method: string, body: unknown, auth: boolean, scope: RouteScope): Promise<EnsoEnvelope> {
     const connection = await this.connect(auth);
     if (auth && !connection.token) {
       if (runnerBridge()) throw new EnsoCliError("auth_required", "The runner found no Enso pairing for this session's bridge", {
@@ -225,7 +225,7 @@ export class BridgeClient {
       });
     }
     assertBridgeAllowed({ url, method, scope, bound: this.context.bound });
-    const headers: Record<string, string> = { Accept: "application/json", [contractHeader]: String(version) };
+    const headers: Record<string, string> = { Accept: "application/json", [contractHeader]: String(contractVersion) };
     const instance = expectedBridgeInstance();
     if (instance !== undefined) headers[bridgeInstanceHeader] = instance;
     if (auth) headers.Authorization = `Bearer ${connection.token}`;
@@ -233,7 +233,7 @@ export class BridgeClient {
     const serialized = body === undefined ? undefined : JSON.stringify(body);
     const result = await this.send(url, method, headers, serialized);
     // Only an explicit authentication rejection is safe to resend. Targeted work is never replayed.
-    if (auth && !this.tokenOverride && !this.context.bound && version < contractVersion && !result.ok && result.error.code === "invalid_token") {
+    if (auth && !this.tokenOverride && !this.context.bound && scope !== "canvas" && !result.ok && result.error.code === "invalid_token") {
       const discovered = await discoverAndLink([connection.bridgeUrl], { stay: true });
       if (!discovered) throw new EnsoCliError("invalid_token", "The stored Enso pairing is stale", {
         bridgeUrl: connection.bridgeUrl,
