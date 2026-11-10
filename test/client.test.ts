@@ -18,7 +18,7 @@ describe("BridgeClient", () => {
       if (parsed.pathname === "/v1/health") {
         return Response.json({
           ok: true,
-          data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath }
+          data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", tokenPath }
         });
       }
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
@@ -44,7 +44,7 @@ describe("BridgeClient", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
       }
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
       if (auth === "Bearer fresh-token") return Response.json({ ok: true, data: { app: "Enso" } });
@@ -67,7 +67,7 @@ describe("BridgeClient", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650" } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650" } });
       }
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));
@@ -87,12 +87,12 @@ describe("BridgeClient", () => {
       const parsed = new URL(String(url));
       if (parsed.origin === "http://127.0.0.1:17650") {
         if (parsed.pathname === "/v1/health") {
-          return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
+          return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
         }
         return Response.json({ ok: true, data: {} });
       }
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17651" } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17651" } });
       }
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
     }));
@@ -112,7 +112,7 @@ describe("BridgeClient", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17651", tokenPath } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17651", tokenPath } });
       }
       if (parsed.origin === "http://127.0.0.1:17650") return Response.json({ ok: true, data: {} });
       return Response.json({ ok: false, error: { code: "invalid_token", message: "Authorization token is invalid" } });
@@ -132,7 +132,7 @@ describe("BridgeClient", () => {
       calls.push({ url: String(url), init: init ?? {} });
       const parsed = new URL(String(url));
       if (parsed.pathname === "/v1/health") {
-        return Response.json({ ok: true, data: { status: "ok", contractVersion: 2, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
+        return Response.json({ ok: true, data: { status: "ok", contractVersion: 3, bridgeUrl: "http://127.0.0.1:17650", tokenPath } });
       }
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
       if (auth === "Bearer fresh-token") return Response.json({ ok: true, data: {} });

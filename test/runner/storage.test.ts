@@ -510,12 +510,29 @@ describe("retention", () => {
     open({ autoDispatch: false });
     expect(engine!.snapshot()).toEqual(after);
     expect(RunnerStorage.check(directory)).toMatchObject({ runs: 2, expiredThrough: beforeOld.cursor, differences: [] });
-    // A deleted request ID is free: resubmitting it is a new run, which retention can delete again.
-    engine!.submit(prompt(s.id, "old-1"));
-    engine!.cancel("old-1");
+    // A deleted request ID stays spent across restarts and sessions, while lookup still reports run_not_found.
+    const requestExpired = expect.objectContaining({ body: expect.objectContaining({ code: "request_expired", details: expect.objectContaining({ requestID: "old-1" }) }) });
+    expect(() => engine!.submit(prompt(s.id, "old-1"))).toThrow(requestExpired);
+    expect(() => engine!.submit(prompt(other.id, "old-1"))).toThrow(requestExpired);
+    expect(() => engine!.run("old-1")).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "run_not_found" }) }));
+    expect(engine!.snapshot()).toEqual(after);
+    // An intentional new submission uses a new ID.
+    engine!.submit(prompt(s.id, "old-1-again"));
+    engine!.cancel("old-1-again");
     expect(await engine!.deleteFinishedBefore(new Date(Date.now() + 1000))).toBe(2);
     expect(engine!.snapshot().runs.map(run => run.request.requestID)).toEqual(["active"]);
+    expect(() => engine!.submit(prompt(s.id, "new"))).toThrow(expect.objectContaining({ body: expect.objectContaining({ code: "request_expired" }) }));
     expect(RunnerStorage.check(directory).differences).toEqual([]);
+  });
+
+  it("finds a deleted request ID through the event subject index", () => {
+    open({ autoDispatch: false });
+    const prepare = vi.spyOn(Database.prototype, "prepare");
+    storage.deleted("any");
+    const sql = prepare.mock.calls.map(([source]) => source).find(source => source.includes("runs_deleted"))!;
+    prepare.mockRestore();
+    const plan = external(db => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all("any") as { detail: string }[]);
+    expect(plan.map(step => step.detail)).toContainEqual(expect.stringMatching(/^SEARCH events USING INDEX events_subject \(subject=\?\)$/));
   });
 
   it("deletes the session checkpoints that expired history superseded, keeping each session's latest", async () => {

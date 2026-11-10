@@ -214,8 +214,10 @@ Request IDs are **global to a store**, not scoped to a session. After schema
 normalization (including defaults), object key order is ignored; text and array
 order must agree exactly. Equivalent resubmissions return the current original
 run before busy checks, including terminal and interrupted runs, until retention
-deletes it (see Retention); after that the ID is free and a submission is new. A different
-payload or session under the same ID returns HTTP 409 `request_conflict`.
+deletes it (see Retention). After that the ID is spent for the life of the store:
+a submission under it, with any payload or session, returns HTTP 410
+`request_expired`, while reading the run returns `run_not_found`. A different
+payload or session under the ID of a stored run returns HTTP 409 `request_conflict`.
 Concurrent calls obey the same rule. Different IDs compete for the single active
 slot in a session: losers receive HTTP 409 `session_busy`. There is no queue or
 live steering. Different sessions can run concurrently.
@@ -485,8 +487,16 @@ returned by the next; meanwhile later writes reuse it. A failure while releasing
 pages stops the runner like any failed durable write (`runner_storage_failure`);
 the deletions it follows are already committed. Sessions, and runs that are still active, are
 never deleted.
-After deletion, the run's `requestID` is unknown (`run_not_found`) and free for a
-new submission. Pagination of snapshots needs a later design.
+After deletion, reading the run returns `run_not_found`, and submitting its
+`requestID` again returns `request_expired` (HTTP 410), whatever the payload or
+session, before busy and session checks. The runner reads that from the retained
+`runs_deleted` events, which the schema never deletes, so a retried submission can
+never execute a second time. A client that receives `request_expired` treats the
+submission as resolved and offers an intentional new prompt under a new
+`requestID`; it never resubmits because a run is missing (`run_not_found`).
+Retention bounds neither the `runs_deleted` events nor each session's latest
+`session_updated` checkpoint, so total storage still grows with every deleted ID.
+Pagination of snapshots and compaction of those events need a later design.
 
 `owner` is an atomic PID symlink that prevents multiple service writers per
 store. Startup reclaims it only after the old PID is no longer alive. PID reuse
@@ -615,6 +625,10 @@ environment minus every binding variable, then, for a pinned session:
 | `ENSO_BRIDGE_TOKEN` | The bridge pairing token, when the runner finds one |
 
 A session without a pinned instance gets only `ENSO_RUNNER_BRIDGE=disabled`.
+Every session's `PATH` starts with a private directory, made once per runner
+process, whose `enso` runs this runner's own CLI with its Node binary. Another
+`enso` installed on the user's `PATH`, such as an older global install that
+predates these variables, is never the one the agent runs.
 
 The pairing token is looked up for each turn, in the token file the app at
 `bridgeUrl` names on `/v1/health` (accepted only if it names no other origin), then

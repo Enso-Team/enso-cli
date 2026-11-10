@@ -19,12 +19,13 @@ timeout; CI and piped commands keep their structured output.
 With the Enso app open, the first command links itself by reading the token
 file the app provisions. `enso auth link` relinks the same way.
 
-Canvas operations require an Enso app with **bridge contract 3**. The CLI checks
-`/v1/health` before targeting and sends `Enso-Contract-Version: 3` on canvas
-requests. An older app fails with `app_outdated` and upgrade guidance; canvas
-commands never fall back to implicit active-canvas execution. Health, pairing,
-discovery, vault operations and explicit navigation use the supported bootstrap
-contract (2), so you can inspect an older app before upgrading.
+The CLI requires an Enso app with **bridge contract 3** and sends
+`Enso-Contract-Version: 3` on every request. It checks `/v1/health` before
+linking or targeting; an older app fails with `app_outdated` and upgrade
+guidance, and canvas commands never fall back to implicit active-canvas
+execution. A contract 3 app still answers discovery (`enso status`,
+`enso canvas list`) from older CLIs, and refuses their other requests with
+`cli_outdated` and the update command.
 
 Install the bundled agent skill:
 

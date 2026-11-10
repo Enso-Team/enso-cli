@@ -303,6 +303,15 @@ describe("contract 3 outgoing HTTP requests", () => {
     expect((await cli(["canvas", "list"])).code).toBe(0);
   });
 
+  it("sends contract 3 on discovery, vault and navigation requests too, never an older bootstrap contract", async () => {
+    for (const args of [["canvas", "list"], ["status"], ["vault", "tree"], ["canvas", "open", "B"], ["node", "list"]]) {
+      expect((await cli(args)).code).toBe(0);
+    }
+    const sent = records.filter(call => call.url.pathname !== "/v1/health");
+    expect(new Set(sent.map(call => call.url.pathname))).toEqual(new Set(["/v1/canvases", "/v1/status", "/v1/vault/tree", `/v1/canvases/B/open`, "/v1/canvases/current", "/v1/nodes"]));
+    expect(sent.every(call => call.headers["enso-contract-version"] === "3")).toBe(true);
+  });
+
   it("accepts immutable flags without discovering an active canvas", async () => {
     expect((await cli([...bound, "node", "list"])).code).toBe(0);
     expect(targetOf(targeted()[0])).toEqual(A);
