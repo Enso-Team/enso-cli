@@ -1,6 +1,6 @@
 # Canvas operations
 
-Read this before a first build or a multi-element revision, and when recovering from an apply failure.
+Read this before a first build, and when recovering from an apply failure.
 
 ## Files and target
 
@@ -8,31 +8,53 @@ A Note's identity is the filename stem or Vault-relative path. Place members mus
 
 Use an exact Canvas selector or stable `canvasID` from `enso canvas list`. Each invocation resolves one stable vault/canvas pair and reuses it across requests, batches and dry runs. Open another Canvas as a separate explicit `enso canvas open <target>` action before targeting it; named apply/layout commands also require that target to be active. With an immutable vault/canvas binding, keep apply/layout `canvas` as `current` or the bound `canvasID` and preserve the binding. Handle inactive or changed targets by reporting the error and inspecting partial effects before a retry.
 
-## Lay out a new graph
+## Grow a diagram
 
-Write a temporary graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`. A member can carry an `excerpt` from its Note and a `mark` about it, and top-level `marks` hold the takeaway and legend. The CLI computes Node positions, cluster bounds, and where every Excerpt and Mark goes.
+Write each step's intent to a temporary JSON file outside the Vault, or pass it with `--json`. A step adds one Node with the Links to Nodes already placed, plus its Excerpt or Mark:
 
-```sh
-enso layout /tmp/enso-<task>-graph.json --apply --dry-run
-enso layout /tmp/enso-<task>-graph.json --apply
+```json
+{
+  "canvas": "current",
+  "direction": "TB",
+  "regions": [{ "title": "Sync layer", "color": "blue" }],
+  "nodes": [{ "kind": "note", "mode": "place", "note": "Sync server", "in": "Sync layer" }],
+  "links": [{ "mode": "create", "source": "Client", "target": "Sync server", "label": "sends updates to" }],
+  "excerpts": [{ "mode": "create", "note": "Sync server", "text": "Retries with backoff." }],
+  "marks": [{ "mode": "create", "text": "Why retry here?", "connect": ["Sync server"] }]
+}
 ```
 
-Apply when the dry-run's `data.warnings` is empty. Each warning carries a `hint` for its repair. `data.crossings` estimates crossing Links and does not block. When a crossing cuts the main path, fix it in the graph before applying: reorder members or edges, change the `direction` or clusters, or leave out a Link the prose already states. Accept crossings off the main path.
-
-## Apply a coherent change
-
-Write the intent to a temporary JSON file outside the Vault. For an existing Canvas, use inspected IDs for updates and removals, and keep creation sections to additions.
-
 ```sh
-enso canvas apply /tmp/enso-<task>-intent.json --dry-run
-enso canvas apply /tmp/enso-<task>-intent.json
+enso canvas apply /tmp/enso-<task>-step.json
 ```
 
-Apply when the dry-run returns `ok: true` and `preflightPassed: true`. Check `sharedNoteWrites` for edits to Notes other Canvases also show.
+A Node without `x` and `y` lands beside the Nodes it links to. Nodes you placed earlier keep their order, and a Node next to new work shifts at most half a step. `x` and `y` pin a Node where you put them. An Excerpt or connected Mark without a position goes beside its Node, and a Mark that connects to nothing goes above the drawing.
 
-When `data.placement.recentered` is true, the CLI moved the creation onto the empty-Canvas home. Add the returned `dx` and `dy` to your input coordinates for later edits.
+The CLI groups your applies on a Canvas into one growth. It ends after 2 minutes without a write, when the user moves one of its Nodes or reshapes one of its Regions, or on tidy. The next apply starts a new growth, and everything already on the Canvas stays where it is. `data.growth` reports the growth's `status`, the Nodes it `placed` and `moved`, and the Regions it `drawn`, `resized`, or `removed`.
+
+## Regions
+
+Place a Node `in` a Region by its title or id. Declare a new Region's title and color in `regions`. A declared title reuses the one Region with that title. When several share a title, the apply fails with their ids, so name the Region by id.
+
+A Region appears around its first Node and grows with each Node placed in it. Nodes placed outside every Region stay clear of the boxes. A Region never grows over a Node that is not in it. When it has no room, the apply fails with `region_blocked`. Make the Region bigger, move what blocks it, or place the Node in another Region. A Region you drew this growth shrinks when its Nodes go and disappears when empty. Regions that were on the Canvas before only grow.
+
+## Edit what is there
+
+For a change to existing elements, write an intent carrying only that change. Use inspected IDs for updates and removals.
+
+```json
+{ "canvas": "current", "links": [{ "mode": "update", "id": "<link-id>", "color": "blue" }] }
+```
+
+Check `sharedNoteWrites` in the result for edits to Notes other Canvases also show.
 
 For a requested overview, `enso canvas fit <target>` frames the open Canvas content.
+
+## Rearrange
+
+`{"canvas":"current","tidy":true}` reruns the full layout over the Nodes of the current growth and keeps the result only when it removes crossings. It ends the growth.
+
+When the user asks to rearrange a Canvas, or for Regions nested inside Regions, write a graph JSON with the target `canvas`, `members`, `edges`, optional `clusters`, and a `direction`, then run `enso layout <graph.json> --apply`. Apply when `data.warnings` is empty. Each warning carries a `hint` for its repair. `data.crossings` estimates crossing Links and does not block.
 
 ## Link and removal semantics
 
@@ -49,7 +71,7 @@ Each command touches shared files differently:
 
 ## Recover from failure
 
-An apply runs in phases, and phases that succeeded stay applied when a later one fails. Read `appliedBatches`, `failedBatch`, `returnedIds`, and `retrySections`, then dry-run and apply the smallest remaining correction. For `verification_failed`, repair the reported mismatch on the mutations that landed.
+An apply runs in phases, and phases that succeeded stay applied when a later one fails. Read `appliedBatches`, `failedBatch`, `returnedIds`, and `retrySections`, then apply the smallest remaining correction. For `verification_failed`, repair the reported mismatch on the mutations that landed.
 
 For `ambiguous_selector` or `note_ambiguous`, pick one returned candidate, usually a Vault-relative path. Prose edits can remove a Link, so refresh the inventory before removing one.
 

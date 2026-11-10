@@ -49,4 +49,4 @@ Diagnostics measure Nodes, Links, and labels. Check regions against the plain co
 
 Prioritize faults that obstruct reading, such as overlapping Nodes, Links through unrelated Nodes, and unreadable labels. Judge low gaps and crossings by the intended path. Offscreen elements matter when the user requests a single-screen overview or necessary content is clipped; a navigable Canvas can have intentional offscreen content.
 
-Collect related faults into a focused repair, dry-run it, apply it, and check affected diagnostics. Stop when the affected area is readable. If the same obstruction persists after a repair, report it and explain the broader layout change it needs. Diagnostics describe geometry. The glance decides whether the explanation succeeds.
+Collect related faults into a focused repair, apply it, and check affected diagnostics. Stop when the affected area is readable. If the same obstruction persists after a repair, report it and explain the broader layout change it needs. Diagnostics describe geometry. The glance decides whether the explanation succeeds.
