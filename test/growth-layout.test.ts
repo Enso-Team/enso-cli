@@ -305,6 +305,16 @@ describe("growth with Regions", () => {
     expect(plan.report?.regions).toEqual({ drawn: [], resized: [], removed: [] });
   });
 
+  it("keeps a Node outside a Region two paddings clear of it, so the Region has room to grow a rank", () => {
+    const first = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("A", { in: "Store" })] }), { nodes: [] }, undefined, CANVAS, 0);
+    const region = boxOf(first.intent.primitives[0] as Record<string, any>);
+    const canvas = { nodes: [{ id: "a", title: "A", position: { ...CANVAS_WORLD_HOME } }], diagramPrimitives: [group(region, "Store")] };
+    const next = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("L")], links: [{ mode: "create", source: "A", target: "L" }] }), canvas, first.growth, CANVAS, 1);
+    const l = next.intent.nodes[0] as { x: number; y: number };
+    const box = nodeBox(l.x, l.y);
+    expect(overlaps({ minX: box.minX - 2 * pad, minY: box.minY - 2 * pad, maxX: box.maxX + 2 * pad, maxY: box.maxY + 2 * pad }, region)).toBe(false);
+  });
+
   it("refuses a member its Region cannot reach without covering an outside Node", () => {
     const region = nodeBox(0, 0);
     const outer = { minX: region.minX - pad, minY: region.minY - pad, maxX: region.maxX + pad, maxY: region.maxY + pad };

@@ -162,7 +162,7 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
     if (otherLanes.some((other) => overlaps(box, other))) return true;
     const own = regionOf(key);
     const others = [...regions.values()].filter((region) => region !== own).flatMap((region) => regionBox(region, placed) ?? []);
-    if (!own) return others.some((other) => overlaps(inflate(box, padding), other) || lane.some((item) => overlaps(item, other)));
+    if (!own) return others.some((other) => overlaps(inflate(box, 2 * padding), other) || lane.some((item) => overlaps(item, other)));
     const grownBox = regionBox(own, placed, { key, spot })!;
     if (others.some((other) => overlaps(inflate(grownBox, padding / 2), other))) return true;
     const outsiders = [
