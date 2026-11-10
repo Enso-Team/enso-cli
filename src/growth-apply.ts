@@ -7,10 +7,11 @@ import { canvasSpecFromObject } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
 import { EnsoCliError } from "./errors.js";
 import { GrowthBlocked, growLayout, type GrowthEdge, type GrowthNode, type GrowthSpot } from "./growth-layout.js";
-import { CANVAS_WORLD_HOME, centeringOffset, contextObject, existingContent, readArray, type WorldBox } from "./layout-centering.js";
+import { CANVAS_WORLD_HOME, centeringOffset, contextNodeBox, contextObject, existingContent, readArray } from "./layout-centering.js";
 import { ANNOTATION_GEOMETRY, CARD_GEOMETRY, SYMBOL_GEOMETRY, computeCanvasLayout, isSymbolAppearance, linkCrossings } from "./layout.js";
 import { markWorldBox } from "./mark-model.js";
 import { noteMatches } from "./note-identity.js";
+import { boundsBox, centeredBox as centered, inflate, overlaps, sameBox, unionBoxes as union, type WorldBox } from "./world-box.js";
 
 /** A growth ends after this long without a write. */
 export const GROWTH_QUIET_MS = 120_000;
@@ -117,8 +118,8 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
       const spot = candidate?.key === key ? candidate.spot : placed.get(key);
       if (spot) return [inflate(nodeBox(toWorld(spot)), padding)];
       const node = older(key);
-      const point = node && position(node);
-      return point ? [inflate(nodeBox(point), padding)] : [];
+      const box = node && contextNodeBox(node);
+      return box ? [inflate(box, padding)] : [];
     });
     return union([...(region.drawn || !region.base ? [] : [region.base]), ...boxes]);
   };
@@ -279,8 +280,8 @@ function continueGrowth(previous: Growth | undefined, canvas: Canvas, canvasID: 
 /**
  * Every Region this write touches: those the intent declares or places a Node in, those the
  * growth drew, and every other Region on the Canvas so new Nodes stay clear of it. A Region's
- * members are the growth Nodes placed in it plus the Nodes inside its box, since membership
- * is spatial.
+ * members are the growth Nodes placed in it plus every Node whose box overlaps its box, since
+ * membership is spatial.
  */
 function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | undefined, members: GrowthMember[], fresh: Array<{ note: string; in?: string }>): Map<string, Region> {
   const regions = new Map<string, Region>();
@@ -326,8 +327,8 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
   for (const region of regions.values()) {
     if (!region.base || region.drawn) continue;
     for (const node of canvas.nodes) {
-      const point = position(node);
-      if (!point || !inside(point, region.base) || typeof node.id !== "string") continue;
+      const box = contextNodeBox(node);
+      if (!box || !overlaps(box, region.base) || typeof node.id !== "string") continue;
       const own = members.find((member) => noteMatches(identity(node), member.note));
       region.members.add(own ? own.note : OLDER + node.id);
     }
@@ -428,12 +429,8 @@ function startingAnchor(fresh: Array<{ note: string; x?: number; y?: number }>, 
 /** Nodes outside the growth, keyed the way Region members are, each with its box. */
 function staticNodes(canvas: Canvas, skip: (node: Item) => boolean): Array<{ key: string; box: WorldBox }> {
   return canvas.nodes.filter((node) => !skip(node)).flatMap((node) => {
-    const key = OLDER + String(node.id ?? "");
-    const bounds = boundsBox(node.bounds);
-    if (bounds) return [{ key, box: bounds }];
-    const point = position(node);
-    const size = isSymbolAppearance(typeof node.appearance === "string" ? node.appearance : undefined) ? SYMBOL_GEOMETRY : CARD_GEOMETRY;
-    return point ? [{ key, box: centered(point, size.nodeWidth, size.nodeHeight) }] : [];
+    const box = contextNodeBox(node);
+    return box ? [{ key: OLDER + String(node.id ?? ""), box }] : [];
   });
 }
 
@@ -573,37 +570,4 @@ function textBox(item: Item): WorldBox[] {
   const { x, y } = value as { x?: unknown; y?: unknown };
   if (typeof x !== "number" || typeof y !== "number") return [];
   return [markWorldBox({ x, y, width: typeof item.width === "number" ? item.width : undefined, text: typeof item.text === "string" ? item.text : undefined })];
-}
-
-function boundsBox(value: unknown): WorldBox | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const { x, y, width, height } = value as Record<string, unknown>;
-  if (![x, y, width, height].every((item) => typeof item === "number" && Number.isFinite(item))) return undefined;
-  return { minX: x as number, minY: y as number, maxX: (x as number) + (width as number), maxY: (y as number) + (height as number) };
-}
-
-function centered(point: Point, width: number, height: number): WorldBox {
-  return { minX: point.x - width / 2, minY: point.y - height / 2, maxX: point.x + width / 2, maxY: point.y + height / 2 };
-}
-
-function inflate(box: WorldBox, margin: number): WorldBox {
-  return { minX: box.minX - margin, minY: box.minY - margin, maxX: box.maxX + margin, maxY: box.maxY + margin };
-}
-
-function union(boxes: WorldBox[]): WorldBox | undefined {
-  if (boxes.length === 0) return undefined;
-  return boxes.reduce((all, box) => ({ minX: Math.min(all.minX, box.minX), minY: Math.min(all.minY, box.minY), maxX: Math.max(all.maxX, box.maxX), maxY: Math.max(all.maxY, box.maxY) }));
-}
-
-function inside(point: Point, box: WorldBox): boolean {
-  return point.x > box.minX && point.x < box.maxX && point.y > box.minY && point.y < box.maxY;
-}
-
-function sameBox(a: WorldBox, b: WorldBox): boolean {
-  return Math.abs(a.minX - b.minX) <= MOVE_TOLERANCE && Math.abs(a.minY - b.minY) <= MOVE_TOLERANCE
-    && Math.abs(a.maxX - b.maxX) <= MOVE_TOLERANCE && Math.abs(a.maxY - b.maxY) <= MOVE_TOLERANCE;
-}
-
-function overlaps(a: WorldBox, b: WorldBox): boolean {
-  return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
 }

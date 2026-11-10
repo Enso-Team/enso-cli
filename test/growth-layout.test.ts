@@ -200,6 +200,17 @@ describe("growth with Regions", () => {
     expect(boxOf(update).maxY).toBeGreaterThanOrEqual(b.y + CARD_GEOMETRY.nodeHeight / 2);
   });
 
+  it("counts a Node whose box overlaps a person's Region as a member, though its center sits outside", () => {
+    const region = { minX: -200, minY: -150, maxX: 200, maxY: 150 };
+    const canvas = { nodes: [{ id: "a", title: "A", position: { x: 0, y: 0 } }, { id: "edge", title: "Edge", position: { x: 250, y: 0 } }], diagramPrimitives: [group(region, "Store")] };
+    const plan = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("B", { in: "Store" })], links: [{ mode: "create", source: "A", target: "B" }] }), canvas, undefined, CANVAS, 0);
+    const b = plan.intent.nodes[0] as { x: number; y: number };
+    const update = plan.intent.primitives[0] as Record<string, any>;
+    expect(update).toMatchObject({ kind: "region", mode: "update", id: REGION_ID });
+    expect(boxOf(update).maxX).toBeGreaterThanOrEqual(250 + CARD_GEOMETRY.nodeWidth / 2);
+    expect(boxOf(update).maxY).toBeGreaterThanOrEqual(b.y + CARD_GEOMETRY.nodeHeight / 2);
+  });
+
   it("refuses a member its Region cannot reach without covering an outside Node", () => {
     const region = nodeBox(0, 0);
     const outer = { minX: region.minX - pad, minY: region.minY - pad, maxX: region.maxX + pad, maxY: region.maxY + pad };
