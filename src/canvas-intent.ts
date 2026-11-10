@@ -33,7 +33,8 @@ const setsNodeVisual = (value: Record<string, unknown>): boolean => Object.keys(
 
 // A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
 // the Vault, named by its title or its Vault-relative path. The intent carries no content.
-const notePlace = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...coordinates }).strict();
+// A place without x and y lets the growth layout choose the spot beside the Node's neighbors.
+const notePlace = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...optionalCoordinates }).strict().superRefine(pairedCoordinates);
 const noteUpdate = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
   if (!setsNodeVisual(value) && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, glyphSize, fontSize, titleGap, isResizeLocked, or x and y" });
@@ -71,7 +72,8 @@ const intentPrimitive = z.union([regionCreate, lineCreate, primitiveUpdate, prim
 // A Mark is typed canvas text with a top-left origin. `connect` draws a connection from each
 // named Node to the Mark, so the Mark comments on those Nodes.
 const markFields = { width: positiveFinite.optional(), textRuns: z.array(markTextRunSchema).optional(), connect: z.array(selector).optional() };
-const markCreate = z.object({ mode: z.literal("create"), text: markTextSchema, ...coordinates, ...markFields }).strict().superRefine((value, ctx) => {
+const markCreate = z.object({ mode: z.literal("create"), text: markTextSchema, ...optionalCoordinates, ...markFields }).strict().superRefine((value, ctx) => {
+  pairedCoordinates(value, ctx);
   if (value.textRuns && runsOutsideText(value.text, value.textRuns)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["textRuns"], message: "formatting ranges must lie inside the text" });
 });
 const markUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), text: markTextSchema.optional(), ...optionalCoordinates, ...markFields }).strict().superRefine((value, ctx) => {
@@ -84,12 +86,25 @@ const markUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), 
 const markRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid() }).strict();
 const intentMark = z.union([markCreate, markUpdate, markRemove]);
 
+// An Excerpt shows a passage of a placed Note's markdown, quoted exactly as the file holds it.
+// Without x and y it lands in the lane beside its Node.
+const excerptCreate = z.object({ mode: z.literal("create"), note: selector, text: markTextSchema, occurrence: z.number().int().positive().optional(), width: positiveFinite.optional(), ...optionalCoordinates }).strict().superRefine(pairedCoordinates);
+const excerptUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), width: positiveFinite.optional(), ...optionalCoordinates }).strict().superRefine((value, ctx) => {
+  pairedCoordinates(value, ctx);
+  if (value.x === undefined && value.width === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "excerpt update requires x and y, or width" });
+});
+const excerptRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid() }).strict();
+const intentExcerpt = z.union([excerptCreate, excerptUpdate, excerptRemove]);
+
 export const canvasIntentSchema = z.object({
   canvas: safeString,
   nodes: z.array(intentNode).default([]),
   links: z.array(intentLink).default([]),
   primitives: z.array(intentPrimitive).default([]),
-  marks: z.array(intentMark).default([])
+  marks: z.array(intentMark).default([]),
+  excerpts: z.array(intentExcerpt).default([]),
+  direction: z.enum(["TB", "LR"]).optional(),
+  tidy: z.boolean().optional()
 }).strict().superRefine((intent, ctx) => {
   addDuplicates(ctx, "nodes", intent.nodes.flatMap((node) => node.mode === "place" ? [node.note] : "title" in node ? [node.title] : []));
   const linkPairs = intent.links.flatMap((link) => link.mode === "create"
@@ -101,6 +116,7 @@ export const canvasIntentSchema = z.object({
   const nodeTargets = intent.nodes.flatMap((node) => "selector" in node ? [node.selector] : []);
   addDuplicates(ctx, "nodes", nodeTargets);
   addDuplicates(ctx, "marks", intent.marks.flatMap((mark) => mark.mode !== "create" ? [mark.id] : []));
+  addDuplicates(ctx, "excerpts", intent.excerpts.flatMap((excerpt) => excerpt.mode !== "create" ? [excerpt.id] : []));
 });
 
 function addDuplicates(ctx: z.RefinementCtx, path: string, values: string[]): void {
@@ -428,10 +444,13 @@ function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: Context
   }
   if (node.mode === "place") {
     const existing = matches(nodes, node.note)[0];
-    if (!existing) return [{ type: "node.create", ...appearance, title: placementSelector(node.note), placeExisting: true, x: node.x, y: node.y }];
+    if (!existing) {
+      if (node.x === undefined || node.y === undefined) fail("invalid_input", `Note '${node.note}' has no position`, `nodes.${node.note}`, "Supply x and y, or let canvas apply place it");
+      return [{ type: "node.create", ...appearance, title: placementSelector(node.note), placeExisting: true, x: node.x, y: node.y }];
+    }
     const selector = nodeSelector(existing, node.note);
     return [
-      ...moveIfDisplaced(existing, selector, node.x, node.y),
+      ...(node.x === undefined || node.y === undefined ? [] : moveIfDisplaced(existing, selector, node.x, node.y)),
       ...(Object.keys(appearance).length > 0 ? [{ type: "node.update", selector, ...appearance }] : [])
     ];
   }
@@ -462,7 +481,10 @@ function primitiveOperation(primitive: CanvasIntent["primitives"][number]): Reco
 
 function markWriteOperation(mark: Exclude<CanvasIntent["marks"][number], { mode: "remove" }>): Record<string, unknown> | undefined {
   const fields = defined({ text: mark.text, x: mark.x, y: mark.y, width: mark.width, textRuns: mark.textRuns });
-  if (mark.mode === "create") return { type: "mark.create", ...fields };
+  if (mark.mode === "create") {
+    if (mark.x === undefined) fail("invalid_input", "A Mark has no position", "marks", "Supply x and y, or connect the Mark to a Node so canvas apply places it beside that Node");
+    return { type: "mark.create", ...fields };
+  }
   return Object.keys(fields).length > 0 ? { type: "mark.update", id: mark.id, ...fields } : undefined;
 }
 
@@ -517,7 +539,7 @@ export const canvasApplyContract = {
       titleGap: { exclusiveMinimum: 0, default: 8 },
       isResizeLocked: { type: "boolean", default: false },
       note: {
-        place: { identity: "note", required: ["kind", "mode", "note", "x", "y"], optional: ["titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault" },
+        place: { identity: "note", required: ["kind", "mode", "note"], optional: ["x", "y", "titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", position: "omit x and y to let the growth layout place the Node beside its neighbors; x and y pin it" },
         update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["titleGap", "isResizeLocked", "glyphSize", "fontSize", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
@@ -552,19 +574,34 @@ export const canvasApplyContract = {
       position: "x and y are the World-space top-left of the text block, unlike Node centres",
       textRuns: { location: "UTF-16 offset", length: "positive UTF-16 length", styles: markStyleSchema.options },
       connect: "Node selectors; each draws a connection from that Node to the Mark",
-      create: { identity: "app-returned UUID", required: ["mode", "text", "x", "y"], optional: ["width", "textRuns", "connect"] },
+      create: { identity: "app-returned UUID", required: ["mode", "text"], optional: ["x", "y", "width", "textRuns", "connect"], position: "omit x and y to place the Mark beside the first Node it connects to, or above the drawing when it connects to none" },
       update: { identity: "app Mark UUID of a typed Mark", required: ["mode", "id"], optional: ["text", "x", "y", "width", "textRuns", "connect"] },
       remove: { identity: "app Mark UUID", required: ["mode", "id"] }
-    }
+    },
+    excerpts: {
+      purpose: "a passage of a placed Note's markdown shown on the Canvas, linked from the Note's Node",
+      position: "x and y are the World-space top-left; omit them to place the Excerpt in the lane beside its Node",
+      create: { identity: "app-returned UUID", required: ["mode", "note", "text"], optional: ["occurrence", "width", "x", "y"], text: "quoted exactly as the markdown file holds it" },
+      update: { identity: "app Excerpt UUID", required: ["mode", "id"], optional: ["x", "y", "width"] },
+      remove: { identity: "app Excerpt UUID", required: ["mode", "id"], keepsPassage: true }
+    },
+    direction: { values: ["TB", "LR"], default: "TB", note: "the growth direction, set when an Agent turn starts" },
+    tidy: "true reruns the full layout over this Agent turn's Nodes and keeps it only when it removes crossings; it ends the Agent turn"
+  },
+  growth: {
+    agentTurn: "the run of applies one agent makes on a Canvas; it ends after 2 minutes without a write, when a person moves one of its Nodes, or on tidy",
+    runsWhen: "an intent places or removes a Node, or creates or removes a Link",
+    moves: "placed Nodes keep their rank and order; a Node next to new work drifts at most half a grid step",
+    olderNodes: "Nodes from before the Agent turn never move; new work lands beside the ones it links to"
   },
   content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
   sharedNoteWrites: "Existing Notes the app may rewrite: the source of a fromNote Link removal, and every Note on either end of a Link endpoint move, before and after.",
   validation: { local: "complete", placedNotes: "resolved by the bridge from disk at apply; preflight rejects an ambiguous title", bridgeValidated: "first nonempty phase on the invocation target", deferredUntilApply: "later phases" },
   targeting: { contractVersion: 3, selection: "resolved once per invocation", navigation: "separate explicit command", binding: "--vault-id/--canvas-id or ENSO_VAULT_ID/ENSO_CANVAS_ID" },
-  partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives", "marks", "markConnections"] },
+  partialApplication: { atomicity: "per-phase", rollback: false, phases: ["linkRemovals", "nodePortalRemovals", "nodePortalWrites", "linkWrites", "primitives", "marks", "markConnections", "excerpts"] },
   success: { ok: true, data: { applied: true, appliedBatches: [], results: [], verification: "targeted" } },
   error: { ok: false, error: { code: "string", message: "string", details: {} } },
-  example: { canvas: "current", nodes: [{ kind: "note", mode: "place", note: "docs/Service.md", x: 0, y: 0 }] }
+  example: { canvas: "current", nodes: [{ kind: "note", mode: "place", note: "Sync server" }], links: [{ mode: "create", source: "Client", target: "Sync server", label: "sends updates to" }], excerpts: [{ mode: "create", note: "Sync server", text: "Retries with backoff." }] }
 } as const;
 
 export function parseCanvasIntent(input: unknown): CanvasIntent {

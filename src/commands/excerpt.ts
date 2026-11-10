@@ -134,6 +134,16 @@ export function moveExcerpt(id: string, placement: { x: number; y: number; width
   return mutate(excerptPath(id), "PUT", placement, false);
 }
 
+/** Moves or rewraps an Excerpt already on the open Canvas. */
+export function updateExcerpt(id: string, placement: { x?: number; y?: number; width?: number }): Promise<EnsoEnvelope> {
+  return mutate(excerptPath(id), "PUT", placement, false);
+}
+
+/** Removes an Excerpt and its links from the Canvas. The Note keeps the passage. */
+export function deleteExcerpt(id: string): Promise<EnsoEnvelope> {
+  return mutate(excerptPath(id), "DELETE", {}, false);
+}
+
 function placementOptions(command: Command, positionHelp: string): Command {
   return command
     .option("--x <number>", `${positionHelp} x`, parseNumber)

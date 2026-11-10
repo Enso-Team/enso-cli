@@ -73,7 +73,7 @@ export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry, extr
     return x === undefined || y === undefined ? [] : [box(x, y, size.nodeWidth, size.nodeHeight)];
   });
   const primitives = patch.primitives.flatMap((primitive) => primitiveBox(primitive as Record<string, unknown>));
-  const marks = patch.marks.flatMap((mark) => mark.mode === "create" ? [markWorldBox(mark)] : []);
+  const marks = patch.marks.flatMap((mark) => mark.mode === "create" && mark.x !== undefined && mark.y !== undefined ? [markWorldBox({ ...mark, x: mark.x, y: mark.y })] : []);
   return unionBoxes([...nodes, ...primitives, ...marks, ...extra]);
 }
 
