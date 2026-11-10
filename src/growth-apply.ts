@@ -45,7 +45,8 @@ export type GrowthPlan = { intent: CanvasIntent; growth: Growth | undefined; rep
 type Point = { x: number; y: number };
 type Item = Record<string, unknown>;
 type Geometry = typeof CARD_GEOMETRY | typeof SYMBOL_GEOMETRY;
-type Region = { title: string; id?: string; color?: string | null; base?: WorldBox; drawn: boolean; declared: boolean; members: Set<string> };
+/** `touched` Regions are the ones this write declares, adds members to, removes members from, or moves members of. Only they are written. */
+type Region = { title: string; id?: string; color?: string | null; base?: WorldBox; drawn: boolean; declared: boolean; touched: boolean; members: Set<string> };
 
 /**
  * The room a Link label of about five words takes at the app's 14pt label size: one line of
@@ -227,8 +228,9 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
     }
   }
 
+  for (const region of regions.values()) if (moved.some((note) => region.members.has(note))) region.touched = true;
   const finalSpots = new Map(growth.nodes.map((node) => [node.note, { ...toSpot(node), fixed: node.fixed }]));
-  const { primitives, written, report: regionReport } = regionWrites(intent, regions, (region) => regionBox(region, finalSpots), geometry.clusterFillOpacity);
+  const { primitives, written, report: regionReport } = regionWrites(intent, regions, (region) => regionBox(region, finalSpots), geometry.clusterFillOpacity, continued?.regions ?? []);
   growth.regions = written;
   const filled = placeAnnotations({ ...intent, nodes, primitives: [...intent.primitives, ...primitives], regions: [] }, canvas, direction, growth);
   const report: GrowthReport = {
@@ -324,7 +326,7 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
     const existing = regions.get(key);
     if (existing) return existing;
     const drawn = growth?.regions.some((region) => region.drawn && region.title === title) ?? false;
-    const region: Region = { title, id: typeof group.id === "string" ? group.id : undefined, base: boundsBox(group.bounds), drawn, declared: false, members: new Set() };
+    const region: Region = { title, id: typeof group.id === "string" ? group.id : undefined, base: boundsBox(group.bounds), drawn, declared: false, touched: false, members: new Set() };
     regions.set(key, region);
     return region;
   };
@@ -343,16 +345,27 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
     if (UUID.test(selector)) {
       throw new EnsoCliError("missing_selector", `No Region has the id '${selector}'`, { path: "regions", expected: "a Region title or id", hint: "Inspect the Canvas and use a Region's id, or name a new Region by title" });
     }
-    const region: Region = { title: selector, drawn: true, declared: false, members: new Set() };
+    const region: Region = { title: selector, drawn: true, declared: false, touched: false, members: new Set() };
     regions.set(selector, region);
     return region;
   };
   for (const declared of intent.regions) {
     const region = resolve(declared.title);
     region.declared = true;
+    region.touched = true;
     if (declared.color !== undefined) region.color = declared.color;
   }
-  for (const node of fresh) if (node.in !== undefined) resolve(node.in).members.add(node.note);
+  for (const node of fresh) {
+    if (node.in === undefined) continue;
+    const region = resolve(node.in);
+    region.members.add(node.note);
+    region.touched = true;
+  }
+  for (const node of growth?.nodes ?? []) {
+    if (node.region === undefined || !removes(intent, node.note, canvas)) continue;
+    const region = [...regions.values()].find((candidate) => candidate.title === node.region);
+    if (region) region.touched = true;
+  }
   for (const member of members) {
     if (member.region === undefined) continue;
     [...regions.values()].find((candidate) => candidate.title === member.region)?.members.add(member.note);
@@ -362,6 +375,10 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
     for (const node of canvas.nodes) {
       const box = contextNodeBox(node);
       if (!box || !overlaps(box, region.base) || typeof node.id !== "string") continue;
+      if (removes(intent, node.id, canvas)) {
+        region.touched = true;
+        continue;
+      }
       const own = members.find((member) => noteMatches(identity(node), member.note));
       region.members.add(own ? own.note : OLDER + node.id);
     }
@@ -370,11 +387,12 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
 }
 
 /**
- * The Region writes that follow the Nodes. A new Region is created around its members, a
+ * The Region writes that follow the Nodes, for the Regions this write touches. A Region it
+ * leaves alone keeps its box and its record. A new Region is created around its members, a
  * Region whose box changed is updated in place, and a Region this growth drew with no members
  * left is removed. A Region that began before the growth only ever grows.
  */
-function regionWrites(intent: CanvasIntent, regions: Map<string, Region>, boxOf: (region: Region) => WorldBox | undefined, fillOpacity: number): {
+function regionWrites(intent: CanvasIntent, regions: Map<string, Region>, boxOf: (region: Region) => WorldBox | undefined, fillOpacity: number, recorded: GrowthRegion[]): {
   primitives: CanvasIntent["primitives"]; written: GrowthRegion[]; report: GrowthReport["regions"];
 } {
   const primitives: CanvasIntent["primitives"] = [];
@@ -383,6 +401,10 @@ function regionWrites(intent: CanvasIntent, regions: Map<string, Region>, boxOf:
   const claimed = new Set(intent.primitives.flatMap((primitive) => primitive.mode === "create" ? [] : [primitive.id.toLowerCase()]));
   for (const region of regions.values()) {
     if (region.id !== undefined && claimed.has(region.id.toLowerCase())) continue;
+    if (!region.touched) {
+      written.push(...recorded.filter((record) => record.title === region.title));
+      continue;
+    }
     const box = region.members.size > 0 ? boxOf(region) : undefined;
     const color = region.color === undefined ? {} : { color: region.color };
     if (!box) {

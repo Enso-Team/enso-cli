@@ -293,6 +293,18 @@ describe("growth with Regions", () => {
     expect(contains(update, { minX: lane.x, minY: lane.y, maxX: lane.x + lane.width, maxY: lane.y + lane.height })).toBe(true);
   });
 
+  it("writes no Region the intent leaves alone, even one drawn tighter than the padding", () => {
+    const tight = (x: number) => { const box = nodeBox(x, 0); return { minX: box.minX - 40, minY: box.minY - 40, maxX: box.maxX + 40, maxY: box.maxY + 40 }; };
+    const ids = ["66666666-6666-4666-8666-666666666661", "66666666-6666-4666-8666-666666666662", "66666666-6666-4666-8666-666666666663"];
+    const canvas = {
+      nodes: [0, 1, 2].map((index) => ({ id: `h${index}`, title: `H${index}`, position: { x: index * 600, y: 0 } })),
+      diagramPrimitives: [0, 1, 2].map((index) => group(tight(index * 600), `Hand ${index}`, ids[index]))
+    };
+    const plan = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("New")] }), canvas, undefined, CANVAS, 0);
+    expect(plan.intent.primitives).toEqual([]);
+    expect(plan.report?.regions).toEqual({ drawn: [], resized: [], removed: [] });
+  });
+
   it("refuses a member its Region cannot reach without covering an outside Node", () => {
     const region = nodeBox(0, 0);
     const outer = { minX: region.minX - pad, minY: region.minY - pad, maxX: region.maxX + pad, maxY: region.maxY + pad };
