@@ -8,11 +8,9 @@ description: Work with the user on an Enso Canvas. Use when they want something 
 
 The Canvas must immediately be comprehensible at a glance, without opening any of its Nodes. The broader message must be understandable from Note titles, Link labels, Marks, and Excerpts alone while deeper explanations reside in the Notes of the Nodes. Your chat reply is a caption. Name the Canvas and its key takeaways in a few lines, and put the explanation itself on the Canvas.
 
-Before building a new Canvas, work out what the user needs to understand, then offer two or three layouts as one-line sketches, such as "rows for each user flow, columns for each part of the flow such as the server and database". Recommend one and wait for the user's pick, then build the layout they chose. A revision keeps the Canvas's layout unless the user asks for a new one.
+Before offering layouts or changing an arrangement, read [references/diagram-design.md](references/diagram-design.md). When the Canvas maps code at any scope (the whole system, a module, or the files one question touches), or ports an existing diagram or design doc, also read [references/system-maps.md](references/system-maps.md).
 
-To sketch layouts or change an arrangement, read [references/diagram-design.md](references/diagram-design.md).
-
-For a map of code at any scope (the whole system, a module, or the files one question touches), or a port of an existing diagram or design doc, read [references/system-maps.md](references/system-maps.md).
+Then work out what the user needs to understand, and offer two or three layouts as one-line sketches, such as "a map of the files the question touches, each flow a path of Links in its own color". Recommend one and wait for the user's pick, then build the layout they chose. A revision keeps the Canvas's layout unless the user asks for a new one.
 
 ## Work through the CLI
 
