@@ -6,7 +6,7 @@ import { marksUnsupported } from "../mark-model.js";
 import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
 import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
-import { readAgentTurn, writeAgentTurn } from "../agent-turn.js";
+import { readGrowth, writeGrowth } from "../growth-store.js";
 import { checkExcerptSource } from "../excerpt-model.js";
 import { planGrowth } from "../growth-apply.js";
 import { deleteExcerpt, placeNoteExcerpt, updateExcerpt } from "./excerpt.js";
@@ -137,7 +137,7 @@ export function registerCanvas(program: Command): void {
       const context = await requestCanvasContext(client, intent.canvas);
       if (!context.ok) return context;
       const { canvasID } = await client.resolveTarget(intent.canvas);
-      const grown = planGrowth(intent, context.data, readAgentTurn(canvasID), canvasID, Date.now());
+      const grown = planGrowth(intent, context.data, readGrowth(canvasID), canvasID, Date.now());
       // An intent that changes the graph places itself through the growth layout. Any other
       // pure-creation intent on an empty Canvas lands on the app's empty-Canvas home point,
       // where the first load focuses. Existing content or any update means the author placed
@@ -146,7 +146,7 @@ export function registerCanvas(program: Command): void {
         ? { patch: grown.intent, placement: placementReport({ dx: 0, dy: 0 }, false) }
         : placeIntentOnCanvas(grown.intent, context.data);
       const applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
-      if (applied.ok && !options.dryRun) writeAgentTurn(canvasID, grown.turn);
+      if (applied.ok && !options.dryRun) writeGrowth(canvasID, grown.growth);
       if (!grown.report) return applied;
       return applied.ok
         ? { ok: true, data: { ...applied.data as Record<string, unknown>, growth: grown.report } }

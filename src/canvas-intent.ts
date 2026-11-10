@@ -34,7 +34,8 @@ const setsNodeVisual = (value: Record<string, unknown>): boolean => Object.keys(
 // A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
 // the Vault, named by its title or its Vault-relative path. The intent carries no content.
 // A place without x and y lets the growth layout choose the spot beside the Node's neighbors.
-const notePlace = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("place"), note: safeString, ...optionalCoordinates }).strict().superRefine(pairedCoordinates);
+// `in` names the Region the Node lands inside, by title or id.
+const notePlace = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("place"), note: safeString, in: safeString.optional(), ...optionalCoordinates }).strict().superRefine(pairedCoordinates);
 const noteUpdate = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
   if (!setsNodeVisual(value) && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, glyphSize, fontSize, titleGap, isResizeLocked, or x and y" });
@@ -96,6 +97,10 @@ const excerptUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(
 const excerptRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid() }).strict();
 const intentExcerpt = z.union([excerptCreate, excerptUpdate, excerptRemove]);
 
+// A Region declared by title. It reuses the one Region with that title, or begins a new one
+// around the Nodes placed in it.
+const intentRegion = z.object({ title: safeString, color: visualColorSchema.nullable().optional() }).strict();
+
 export const canvasIntentSchema = z.object({
   canvas: safeString,
   nodes: z.array(intentNode).default([]),
@@ -103,6 +108,7 @@ export const canvasIntentSchema = z.object({
   primitives: z.array(intentPrimitive).default([]),
   marks: z.array(intentMark).default([]),
   excerpts: z.array(intentExcerpt).default([]),
+  regions: z.array(intentRegion).default([]),
   direction: z.enum(["TB", "LR"]).optional(),
   tidy: z.boolean().optional()
 }).strict().superRefine((intent, ctx) => {
@@ -117,6 +123,7 @@ export const canvasIntentSchema = z.object({
   addDuplicates(ctx, "nodes", nodeTargets);
   addDuplicates(ctx, "marks", intent.marks.flatMap((mark) => mark.mode !== "create" ? [mark.id] : []));
   addDuplicates(ctx, "excerpts", intent.excerpts.flatMap((excerpt) => excerpt.mode !== "create" ? [excerpt.id] : []));
+  addDuplicates(ctx, "regions", intent.regions.map((region) => region.title));
 });
 
 function addDuplicates(ctx: z.RefinementCtx, path: string, values: string[]): void {
@@ -539,7 +546,7 @@ export const canvasApplyContract = {
       titleGap: { exclusiveMinimum: 0, default: 8 },
       isResizeLocked: { type: "boolean", default: false },
       note: {
-        place: { identity: "note", required: ["kind", "mode", "note"], optional: ["x", "y", "titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", position: "omit x and y to let the growth layout place the Node beside its neighbors; x and y pin it" },
+        place: { identity: "note", required: ["kind", "mode", "note"], optional: ["in", "x", "y", "titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", position: "omit x and y to let the growth layout place the Node beside its neighbors; x and y pin it", in: "a Region title or id; the Node lands inside that Region, which grows to hold it" },
         update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["titleGap", "isResizeLocked", "glyphSize", "fontSize", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
@@ -585,14 +592,20 @@ export const canvasApplyContract = {
       update: { identity: "app Excerpt UUID", required: ["mode", "id"], optional: ["x", "y", "width"] },
       remove: { identity: "app Excerpt UUID", required: ["mode", "id"], keepsPassage: true }
     },
-    direction: { values: ["TB", "LR"], default: "TB", note: "the growth direction, set when an Agent turn starts" },
-    tidy: "true reruns the full layout over this Agent turn's Nodes and keeps it only when it removes crossings; it ends the Agent turn"
+    regions: {
+      identity: "title; reuses the one Region with that title, and fails as ambiguous when several share it",
+      optional: ["color"],
+      growth: "a Region appears around the first Node placed in it and grows with each later one; it never covers a Node outside it"
+    },
+    direction: { values: ["TB", "LR"], default: "TB", note: "the growth direction, set when a growth starts" },
+    tidy: "true reruns the full layout over the growth's Nodes and keeps it only when it removes crossings; it ends the growth"
   },
   growth: {
-    agentTurn: "the run of applies one agent makes on a Canvas; it ends after 2 minutes without a write, when a person moves one of its Nodes, or on tidy",
-    runsWhen: "an intent places or removes a Node, or creates or removes a Link",
+    span: "the applies one agent makes on a Canvas; it ends after 2 minutes without a write, when a person moves one of its Nodes or reshapes one of its Regions, or on tidy",
+    runsWhen: "an intent places a Node without x and y, names a Region, or tidies, and every graph change while a growth runs",
     moves: "placed Nodes keep their rank and order; a Node next to new work drifts at most half a grid step",
-    olderNodes: "Nodes from before the Agent turn never move; new work lands beside the ones it links to"
+    olderNodes: "Nodes from before the growth never move; new work lands beside the ones it links to",
+    regions: "Regions from before the growth grow when that covers no outside Node; Regions the growth drew also shrink, and go when empty"
   },
   content: "never in an intent; a Note is a markdown file the agent writes into the Vault before placing it",
   sharedNoteWrites: "Existing Notes the app may rewrite: the source of a fromNote Link removal, and every Note on either end of a Link endpoint move, before and after.",

@@ -52,16 +52,16 @@ describe("canvas apply growth", () => {
     const state = fakeBridge();
     const first = await apply({ nodes: [{ kind: "note", mode: "place", note: "Client" }] });
     expect(first.code).toBe(0);
-    expect(JSON.parse(first.stdout).data.growth).toMatchObject({ turn: "started", placed: ["Client"] });
+    expect(JSON.parse(first.stdout).data.growth).toMatchObject({ status: "started", placed: ["Client"] });
     expect(state.nodes[0].position).toEqual(CANVAS_WORLD_HOME);
-    expect(existsSync(join(tempDir, "turns", `${fixtureTarget.canvasID}.json`))).toBe(true);
+    expect(existsSync(join(tempDir, "growth", `${fixtureTarget.canvasID}.json`))).toBe(true);
 
     const second = await apply({
       nodes: [{ kind: "note", mode: "place", note: "Sync server" }],
       links: [{ mode: "create", source: "Client", target: "Sync server", label: "sends updates to" }]
     });
     expect(second.code).toBe(0);
-    expect(JSON.parse(second.stdout).data).toMatchObject({ applied: true, growth: { turn: "continued", placed: ["Sync server"] } });
+    expect(JSON.parse(second.stdout).data).toMatchObject({ applied: true, growth: { status: "continued", placed: ["Sync server"] } });
     expect(state.nodes[1].position).toEqual({ x: CANVAS_WORLD_HOME.x, y: CANVAS_WORLD_HOME.y + CARD_GEOMETRY.rowStep });
     expect(state.links).toHaveLength(1);
   });
@@ -70,8 +70,8 @@ describe("canvas apply growth", () => {
     fakeBridge();
     const result = await apply({ nodes: [{ kind: "note", mode: "place", note: "Client" }] }, "--dry-run");
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout).data.growth).toMatchObject({ turn: "started" });
-    expect(existsSync(join(tempDir, "turns"))).toBe(false);
+    expect(JSON.parse(result.stdout).data.growth).toMatchObject({ status: "started" });
+    expect(existsSync(join(tempDir, "growth"))).toBe(false);
   });
 
   it("creates Excerpts after the Node they quote lands, beside that Node", async () => {
