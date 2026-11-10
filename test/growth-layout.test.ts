@@ -3,6 +3,7 @@ import { parseCanvasIntent } from "../src/canvas-intent.js";
 import { growLayout, type GrowthNode } from "../src/growth-layout.js";
 import { GROWTH_QUIET_MS, growthSteps, planGrowth, type Growth } from "../src/growth-apply.js";
 import { CANVAS_WORLD_HOME } from "../src/layout-centering.js";
+import { markWorldBox } from "../src/mark-model.js";
 import { ANNOTATION_GEOMETRY, CARD_GEOMETRY, SYMBOL_GEOMETRY } from "../src/layout.js";
 
 const CANVAS = "22222222-2222-4222-8222-222222222222";
@@ -151,6 +152,20 @@ describe("growth on canvas apply", () => {
     expect(free.y).toBeLessThan(node.y - CARD_GEOMETRY.nodeHeight / 2);
   });
 
+  it("keeps a new Node off the Excerpt lane below its neighbor growing left to right", () => {
+    const long = "Retries with exponential backoff and jitter, then parks the update in a dead-letter queue the operator drains by hand.";
+    const plan = planGrowth(parseCanvasIntent({
+      canvas: "current", direction: "LR",
+      nodes: [place("A"), place("B"), place("C")],
+      links: [{ mode: "create", source: "A", target: "B" }, { mode: "create", source: "A", target: "C" }],
+      excerpts: [{ mode: "create", note: "B", text: long }]
+    }), { nodes: [] }, undefined, CANVAS, 0);
+    const c = plan.intent.nodes[2] as { x: number; y: number };
+    const lane = markWorldBox(plan.intent.excerpts[0] as { x: number; y: number; width: number; text: string });
+    const box = { minX: c.x - CARD_GEOMETRY.nodeWidth / 2, minY: c.y - CARD_GEOMETRY.nodeHeight / 2, maxX: c.x + CARD_GEOMETRY.nodeWidth / 2, maxY: c.y + CARD_GEOMETRY.nodeHeight / 2 };
+    expect(box.minX < lane.maxX && lane.minX < box.maxX && box.minY < lane.maxY && lane.minY < box.maxY).toBe(false);
+  });
+
   it("tidies the turn only when the full layout removes crossings, and ends the growth", () => {
     const nodes = ["A", "B", "C", "D"];
     const positions: Record<string, { x: number; y: number }> = { A: { x: 0, y: 0 }, B: { x: TB.slot, y: 0 }, C: { x: TB.slot, y: TB.rank }, D: { x: 0, y: TB.rank } };
@@ -252,6 +267,30 @@ describe("growth with Regions", () => {
     const boxes = canvas.diagramPrimitives.map((primitive) => boundsOf(primitive.bounds as Record<string, number>));
     const [low, high] = along === "x" ? ["minX", "maxX"] as const : ["minY", "maxY"] as const;
     for (let index = 1; index < boxes.length; index++) expect(boxes[index][low] - boxes[index - 1][high]).toBeGreaterThanOrEqual(pad / 2);
+  });
+
+  const contains = (outer: Box, inner: Box) => inner.minX >= outer.minX && inner.maxX <= outer.maxX && inner.minY >= outer.minY && inner.maxY <= outer.maxY;
+  const LONG = "Retries with exponential backoff and jitter, then parks the update in a dead-letter queue the operator drains by hand.";
+
+  it("draws a Region around its member's Excerpt lane", () => {
+    const plan = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("A", { in: "Store" })], excerpts: [{ mode: "create", note: "A", text: LONG }] }), { nodes: [] }, undefined, CANVAS, 0);
+    const region = boxOf(plan.intent.primitives[0] as Record<string, any>);
+    const excerpt = plan.intent.excerpts[0] as { x: number; y: number; width: number; text: string };
+    expect(contains(region, markWorldBox(excerpt))).toBe(true);
+  });
+
+  it("grows a Region around an Excerpt its member already shows", () => {
+    const first = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("A", { in: "Store" })] }), { nodes: [] }, undefined, CANVAS, 0);
+    const created = boxOf(first.intent.primitives[0] as Record<string, any>);
+    const lane = { x: CANVAS_WORLD_HOME.x + CARD_GEOMETRY.nodeWidth / 2 + ANNOTATION_GEOMETRY.gap, y: CANVAS_WORLD_HOME.y - CARD_GEOMETRY.nodeHeight / 2, width: ANNOTATION_GEOMETRY.width, height: 220 };
+    const canvas = {
+      nodes: [{ id: "a", title: "A", position: { ...CANVAS_WORLD_HOME } }],
+      diagramPrimitives: [group(created, "Store")],
+      excerpts: [{ id: "e1", linkedNodeID: "a", connectedNodeIDs: [], bounds: lane }]
+    };
+    const second = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("B", { in: "Store" })], links: [{ mode: "create", source: "A", target: "B" }] }), canvas, first.growth, CANVAS, 1);
+    const update = boxOf(second.intent.primitives.find((primitive) => primitive.mode === "update") as Record<string, any>);
+    expect(contains(update, { minX: lane.x, minY: lane.y, maxX: lane.x + lane.width, maxY: lane.y + lane.height })).toBe(true);
   });
 
   it("refuses a member its Region cannot reach without covering an outside Node", () => {

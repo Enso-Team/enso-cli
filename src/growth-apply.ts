@@ -133,27 +133,40 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
   const statics = staticNodes(canvas, (node) => members.some((own) => noteMatches(identity(node), own.note)) || removes(intent, String(node.id ?? ""), canvas));
   const annotations = [...canvas.excerpts.flatMap(textBox), ...canvas.marks.filter((mark) => mark.kind !== "strokes").flatMap(textBox)];
   const nodeBox = (point: Point): WorldBox => centered(point, geometry.nodeWidth, geometry.nodeHeight);
+  const lanes = annotationLanes(intent, canvas, tracked, direction, geometry);
   const regionBox = (region: Region, placed: ReadonlyMap<string, GrowthNode>, candidate?: { key: string; spot: GrowthSpot }): WorldBox | undefined => {
     const boxes = [...region.members].flatMap((key) => {
       const spot = candidate?.key === key ? candidate.spot : placed.get(key);
-      if (spot) return [inflate(nodeBox(toWorld(spot)), padding)];
       const node = older(key);
-      const box = node && contextNodeBox(node);
-      return box ? [inflate(box, padding)] : [];
+      const point = spot ? toWorld(spot) : node && position(node);
+      const box = spot ? nodeBox(toWorld(spot)) : node && contextNodeBox(node);
+      if (!box || !point) return [];
+      return [box, ...lanes.planned(key, point), ...lanes.shown(key)].map((item) => inflate(item, padding));
     });
     return union([...(region.drawn || !region.base ? [] : [region.base]), ...boxes]);
   };
+  const staticLanes = statics.flatMap((item) => lanes.planned(item.key, { x: (item.box.minX + item.box.maxX) / 2, y: (item.box.minY + item.box.maxY) / 2 }));
   const taken = (spot: GrowthSpot, key: string, placed: ReadonlyMap<string, GrowthNode>): boolean => {
-    const box = nodeBox(toWorld(spot));
+    const point = toWorld(spot);
+    const box = nodeBox(point);
+    const lane = lanes.planned(key, point);
+    const placedOthers = [...placed].filter(([other]) => other !== key);
+    const occupied = [
+      ...statics.filter((item) => item.key !== key).map((item) => item.box),
+      ...placedOthers.map(([, other]) => nodeBox(toWorld(other)))
+    ];
     if (statics.some((item) => item.key !== key && overlaps(box, item.box)) || annotations.some((other) => overlaps(box, other))) return true;
+    if (lane.some((item) => occupied.some((other) => overlaps(item, other)))) return true;
+    const otherLanes = [...staticLanes, ...placedOthers.flatMap(([other, at]) => lanes.planned(other, toWorld(at)))];
+    if (otherLanes.some((other) => overlaps(box, other))) return true;
     const own = regionOf(key);
     const others = [...regions.values()].filter((region) => region !== own).flatMap((region) => regionBox(region, placed) ?? []);
-    if (!own) return others.some((other) => overlaps(inflate(box, padding), other));
+    if (!own) return others.some((other) => overlaps(inflate(box, padding), other) || lane.some((item) => overlaps(item, other)));
     const grownBox = regionBox(own, placed, { key, spot })!;
     if (others.some((other) => overlaps(inflate(grownBox, padding / 2), other))) return true;
     const outsiders = [
       ...statics.filter((item) => !own.members.has(item.key)).map((item) => item.box),
-      ...[...placed].filter(([other]) => other !== key && !own.members.has(other)).map(([, other]) => nodeBox(toWorld(other)))
+      ...placedOthers.filter(([other]) => !own.members.has(other)).map(([, other]) => nodeBox(toWorld(other)))
     ];
     return outsiders.some((other) => overlaps(grownBox, other));
   };
@@ -522,12 +535,10 @@ function placeAnnotations(intent: CanvasIntent, canvas: Canvas, direction: Direc
   const lane = (selector: string, text: string, width?: number): { x: number; y: number; width: number } => {
     const node = nodeAt(selector);
     if (!node) throw laneError(selector);
-    const laneWidth = width ?? (direction === "TB" ? ANNOTATION_GEOMETRY.width : node.geometry.colStep - 2 * ANNOTATION_GEOMETRY.gap);
+    const laneWidth = width ?? defaultLaneWidth(direction, node.geometry);
     const key = `${node.point.x},${node.point.y}`;
     const left = direction === "TB" && occupiedRight(node.point, node.geometry);
-    const start = cursors.get(key) ?? (direction === "TB"
-      ? { x: left ? node.point.x - node.geometry.nodeWidth / 2 - ANNOTATION_GEOMETRY.gap - laneWidth : node.point.x + node.geometry.nodeWidth / 2 + ANNOTATION_GEOMETRY.gap, y: node.point.y - node.geometry.nodeHeight / 2 }
-      : { x: node.point.x - node.geometry.nodeWidth / 2, y: node.point.y + node.geometry.nodeHeight / 2 + ANNOTATION_GEOMETRY.gap });
+    const start = cursors.get(key) ?? laneOrigin(node.point, node.geometry, direction, laneWidth, left);
     const placed = { x: start.x, y: start.y, width: laneWidth };
     cursors.set(key, { x: start.x, y: markWorldBox({ ...placed, text }).maxY + ANNOTATION_GEOMETRY.stackGap });
     return placed;
@@ -542,6 +553,69 @@ function placeAnnotations(intent: CanvasIntent, canvas: Canvas, direction: Direc
     return { ...mark, ...above[freeIndex++] };
   });
   return { ...intent, excerpts, marks };
+}
+
+function defaultLaneWidth(direction: Direction, geometry: Geometry): number {
+  return direction === "TB" ? ANNOTATION_GEOMETRY.width : geometry.colStep - 2 * ANNOTATION_GEOMETRY.gap;
+}
+
+/** Top-left of a Node's annotation lane: beside it for TB, on the left when `left`, and below it for LR. */
+function laneOrigin(point: Point, geometry: Geometry, direction: Direction, laneWidth: number, left: boolean): Point {
+  if (direction === "LR") return { x: point.x - geometry.nodeWidth / 2, y: point.y + geometry.nodeHeight / 2 + ANNOTATION_GEOMETRY.gap };
+  const x = left ? point.x - geometry.nodeWidth / 2 - ANNOTATION_GEOMETRY.gap - laneWidth : point.x + geometry.nodeWidth / 2 + ANNOTATION_GEOMETRY.gap;
+  return { x, y: point.y - geometry.nodeHeight / 2 };
+}
+
+/** The boxes a lane's items stack into, in the order placeAnnotations places them. */
+function stackLane(point: Point, geometry: Geometry, direction: Direction, items: Array<{ text: string; width?: number }>): WorldBox[] {
+  let cursor: Point | undefined;
+  return items.map(({ text, width }) => {
+    const laneWidth = width ?? defaultLaneWidth(direction, geometry);
+    const start = cursor ?? laneOrigin(point, geometry, direction, laneWidth, false);
+    const box = markWorldBox({ x: start.x, y: start.y, width: laneWidth, text });
+    cursor = { x: start.x, y: box.maxY + ANNOTATION_GEOMETRY.stackGap };
+    return box;
+  });
+}
+
+/**
+ * The annotation lanes beside growth Nodes: `planned` stacks the Excerpts and connected Marks
+ * this intent places without x and y beside a Node at a point, and `shown` is what the Canvas
+ * already shows for that Node.
+ */
+function annotationLanes(intent: CanvasIntent, canvas: Canvas, tracked: (selector: string) => string | undefined, direction: Direction, geometry: Geometry): {
+  planned: (key: string, point: Point) => WorldBox[]; shown: (key: string) => WorldBox[];
+} {
+  const keyOf = (selector: string): string | undefined => {
+    const own = tracked(selector);
+    if (own !== undefined) return own;
+    const node = canvas.find(selector);
+    return typeof node?.id === "string" ? OLDER + node.id : undefined;
+  };
+  const items = new Map<string, Array<{ text: string; width?: number }>>();
+  const add = (selector: string, item: { text: string; width?: number }): void => {
+    const key = keyOf(selector);
+    if (key !== undefined) items.set(key, [...(items.get(key) ?? []), item]);
+  };
+  for (const excerpt of intent.excerpts) if (excerpt.mode === "create" && excerpt.x === undefined) add(excerpt.note, { text: excerpt.text, width: excerpt.width });
+  for (const mark of intent.marks) if (mark.mode === "create" && mark.x === undefined && mark.connect?.length) add(mark.connect[0], { text: mark.text, width: mark.width });
+  const nodeId = (key: string): string | undefined => {
+    if (key.startsWith(OLDER)) return key.slice(OLDER.length);
+    const id = canvas.find(key)?.id;
+    return typeof id === "string" ? id : undefined;
+  };
+  const annotates = (item: Item, id: string): boolean => {
+    const same = (value: unknown): boolean => typeof value === "string" && value.toLowerCase() === id.toLowerCase();
+    return same(item.linkedNodeID) || (Array.isArray(item.connectedNodeIDs) && item.connectedNodeIDs.some(same));
+  };
+  const texts = [...canvas.excerpts, ...canvas.marks.filter((mark) => mark.kind !== "strokes")];
+  return {
+    planned: (key, point) => stackLane(point, geometry, direction, items.get(key) ?? []),
+    shown: (key) => {
+      const id = nodeId(key);
+      return id === undefined ? [] : texts.filter((item) => annotates(item, id)).flatMap(textBox);
+    }
+  };
 }
 
 function stackAbove(items: Array<{ text: string; width?: number }>, intent: CanvasIntent, canvas: Canvas): Array<{ x: number; y: number; width: number }> {
