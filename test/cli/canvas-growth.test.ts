@@ -88,6 +88,20 @@ describe("canvas apply growth", () => {
     expect(operations().map((operation) => operation.type)).toEqual(["node.create"]);
   });
 
+  it("moves an Excerpt with the intent it belongs to when the intent lands on the empty-Canvas home", async () => {
+    const state = fakeBridge();
+    writeFileSync(join(tempDir, "Sync server.md"), "# Sync server\n\nRetries with backoff.\n");
+    const result = await apply({
+      nodes: [{ kind: "note", mode: "place", note: "Sync server", x: 0, y: 0 }],
+      excerpts: [{ mode: "create", note: "Sync server", text: "Retries with backoff." }]
+    });
+    expect(result.code).toBe(0);
+    const node = state.nodes[0].position;
+    expect(Math.abs(node.x - CANVAS_WORLD_HOME.x)).toBeLessThan(CARD_GEOMETRY.nodeWidth);
+    const excerpt = calls.find((call) => new URL(call.url).pathname === "/v1/excerpts")!;
+    expect(requestBody(excerpt)).toMatchObject({ x: node.x + CARD_GEOMETRY.nodeWidth / 2 + 24, y: node.y - CARD_GEOMETRY.nodeHeight / 2 });
+  });
+
   it("checks an Excerpt's passage against its Note on a dry run", async () => {
     fakeBridge();
     writeFileSync(join(tempDir, "Sync server.md"), "# Sync server\n\nRetries with backoff.\n");

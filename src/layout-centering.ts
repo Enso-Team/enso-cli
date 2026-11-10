@@ -62,7 +62,7 @@ export function centeringOffset(cluster: WorldBox | undefined, existing: Existin
 }
 
 /**
- * Bounding box of a compiled patch, node boxes and primitive boxes together, plus any
+ * Bounding box of a compiled patch, its Nodes, primitives, Marks, and Excerpts together, plus any
  * `extra` boxes placed outside the patch. Nodes measure at the geometry the patch was laid
  * out with.
  */
@@ -74,7 +74,8 @@ export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry, extr
   });
   const primitives = patch.primitives.flatMap((primitive) => primitiveBox(primitive as Record<string, unknown>));
   const marks = patch.marks.flatMap((mark) => mark.mode === "create" && mark.x !== undefined && mark.y !== undefined ? [markWorldBox({ ...mark, x: mark.x, y: mark.y })] : []);
-  return unionBoxes([...nodes, ...primitives, ...marks, ...extra]);
+  const excerpts = patch.excerpts.flatMap((excerpt) => excerpt.mode === "create" && excerpt.x !== undefined && excerpt.y !== undefined ? [markWorldBox({ ...excerpt, x: excerpt.x, y: excerpt.y })] : []);
+  return unionBoxes([...nodes, ...primitives, ...marks, ...excerpts, ...extra]);
 }
 
 /**
@@ -87,7 +88,8 @@ export function translatePatch(patch: CanvasIntent, offset: WorldOffset): Canvas
     ...patch,
     nodes: patch.nodes.map((node) => shiftCoordinates(node, offset)),
     primitives: patch.primitives.map((primitive) => shiftCoordinates(primitive, offset)),
-    marks: patch.marks.map((mark) => shiftCoordinates(mark, offset))
+    marks: patch.marks.map((mark) => shiftCoordinates(mark, offset)),
+    excerpts: patch.excerpts.map((excerpt) => shiftCoordinates(excerpt, offset))
   };
 }
 
@@ -109,14 +111,15 @@ export function centerPatchOnCanvas(patch: CanvasIntent, context: unknown): Canv
 }
 
 /**
- * An intent that only adds: every Note is placed, every Portal and primitive is created.
+ * An intent that only adds: every Note is placed, every Portal, primitive, Mark, and Excerpt is created.
  * Only such an intent can be translated as one cluster. An update names a position the
  * author chose against inspected geometry, which a translation would break.
  */
 export function isPureCreation(intent: CanvasIntent): boolean {
   return intent.nodes.every((node) => node.mode === "place" || node.mode === "create")
     && intent.primitives.every((primitive) => primitive.mode === "create")
-    && intent.marks.every((mark) => mark.mode === "create");
+    && intent.marks.every((mark) => mark.mode === "create")
+    && intent.excerpts.every((excerpt) => excerpt.mode === "create");
 }
 
 function coordinate(value: unknown, key: string): number | undefined {
