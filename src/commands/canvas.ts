@@ -8,7 +8,7 @@ import { BridgeClient } from "../client.js";
 import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { readGrowth, writeGrowth } from "../growth-store.js";
 import { checkExcerptSource } from "../excerpt-model.js";
-import { planGrowth } from "../growth-apply.js";
+import { planGrowth, type Growth } from "../growth-apply.js";
 import { deleteExcerpt, placeNoteExcerpt, updateExcerpt } from "./excerpt.js";
 
 export function registerCanvas(program: Command): void {
@@ -145,8 +145,10 @@ export function registerCanvas(program: Command): void {
       const { patch, placement } = grown.report
         ? { patch: grown.intent, placement: placementReport({ dx: 0, dy: 0 }, false) }
         : placeIntentOnCanvas(grown.intent, context.data);
+      const previous = readGrowth(canvasID);
       const applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
-      if (applied.ok && !options.dryRun) writeGrowth(canvasID, grown.growth);
+      const landed = options.dryRun ? undefined : landedGrowth(grown.growth, previous, applied);
+      if (landed) writeGrowth(canvasID, landed.growth);
       if (!grown.report) return applied;
       return applied.ok
         ? { ok: true, data: { ...applied.data as Record<string, unknown>, growth: grown.report } }
@@ -154,7 +156,27 @@ export function registerCanvas(program: Command): void {
     });
 }
 
+const APPLY_PHASES: readonly string[] = canvasApplyContract.partialApplication.phases;
+
 /**
+ * The growth to save after an apply, for what actually landed. Phases land in order and each
+ * one is atomic, so every phase before the failed one landed. The growth Nodes land with the
+ * node writes and its Regions with the primitives. Nothing is saved when the node writes did
+ * not land or when the apply stopped before any phase ran.
+ */
+export function landedGrowth(planned: Growth | undefined, previous: Growth | undefined, applied: EnsoEnvelope): { growth: Growth | undefined } | undefined {
+  if (applied.ok) return { growth: planned };
+  const details = applied.error.details ?? {};
+  if (!Array.isArray(details.appliedBatches)) return undefined;
+  const failed = typeof details.failedBatch === "string" ? APPLY_PHASES.indexOf(details.failedBatch) : APPLY_PHASES.length;
+  const landed = (phase: string): boolean => APPLY_PHASES.indexOf(phase) < failed;
+  if (!landed("nodePortalWrites")) return undefined;
+  if (!planned || landed("primitives")) return { growth: planned };
+  return { growth: { ...planned, regions: previous?.regions ?? [] } };
+}
+
+/**
+ * A Canvas as an agent selects and reads it./**
  * A Canvas as an agent selects and reads it. The app also reports the Canvas JSON path inside
  * its sandbox, which agents cannot open, and an id that repeats the name for local Canvases.
  */

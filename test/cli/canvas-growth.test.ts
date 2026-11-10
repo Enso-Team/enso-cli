@@ -1,6 +1,7 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { landedGrowth } from "../../src/commands/canvas.js";
 import { growthSteps } from "../../src/growth-apply.js";
 import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { CARD_GEOMETRY } from "../../src/layout.js";
@@ -101,6 +102,30 @@ describe("canvas apply growth", () => {
     expect(Math.abs(node.x - CANVAS_WORLD_HOME.x)).toBeLessThan(CARD_GEOMETRY.nodeWidth);
     const excerpt = calls.find((call) => new URL(call.url).pathname === "/v1/excerpts")!;
     expect(requestBody(excerpt)).toMatchObject({ x: node.x + CARD_GEOMETRY.nodeWidth / 2 + 24, y: node.y - CARD_GEOMETRY.nodeHeight / 2 });
+  });
+
+  it("saves the growth for the Nodes that landed when the excerpts phase fails", async () => {
+    const state = fakeBridge();
+    writeFileSync(join(tempDir, "Sync server.md"), "# Sync server\n\nRetries.\n\nRetries.\n");
+    const result = await apply({
+      nodes: [{ kind: "note", mode: "place", note: "Sync server" }],
+      excerpts: [{ mode: "create", note: "Sync server", text: "Retries." }]
+    });
+    expect(result.code).not.toBe(0);
+    expect(JSON.parse(result.stderr || result.stdout).error).toMatchObject({ code: "ambiguous_passage", details: { failedBatch: "excerpts" } });
+    expect(state.nodes).toHaveLength(1);
+    const saved = JSON.parse(readFileSync(join(tempDir, "growth", `${fixtureTarget.canvasID}.json`), "utf8"));
+    expect(saved.nodes.map((node: { note: string }) => node.note)).toEqual(["Sync server"]);
+  });
+
+  it("keeps the earlier Regions when the Nodes land and the Region writes fail", () => {
+    const box = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+    const planned = { canvasID: fixtureTarget.canvasID, startedAt: 0, lastWriteAt: 1, direction: "TB" as const, symbols: false, anchor: { x: 0, y: 0 }, nodes: [], regions: [{ title: "New", drawn: true, box }] };
+    const previous = { ...planned, regions: [{ title: "Old", drawn: true, box }] };
+    const failure = (failedBatch: string) => ({ ok: false as const, error: { code: "bridge_error", message: "failed", details: { appliedBatches: [], failedBatch } } });
+    expect(landedGrowth(planned, previous, failure("primitives"))).toEqual({ growth: { ...planned, regions: previous.regions } });
+    expect(landedGrowth(planned, previous, failure("nodePortalWrites"))).toBeUndefined();
+    expect(landedGrowth(planned, previous, failure("marks"))).toEqual({ growth: planned });
   });
 
   it("checks an Excerpt's passage against its Note on a dry run", async () => {
