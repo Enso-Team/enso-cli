@@ -47,6 +47,25 @@ type Item = Record<string, unknown>;
 type Geometry = typeof CARD_GEOMETRY | typeof SYMBOL_GEOMETRY;
 type Region = { title: string; id?: string; color?: string | null; base?: WorldBox; drawn: boolean; declared: boolean; members: Set<string> };
 
+/**
+ * The room a Link label of about five words takes at the app's 14pt label size: one line of
+ * text, with a margin that keeps it off the Nodes at both ends.
+ */
+export const LINK_LABEL_ROOM = { width: 200, height: 22, margin: 24 } as const;
+
+/**
+ * World distance between neighboring ranks and slots. A rank step holds a Node plus the room
+ * a Link label needs along the flow, and never less than two Region paddings plus a margin,
+ * so members of neighboring Regions stay in their rank. Slots keep the density's step, and the
+ * half-step search opens the same Region clearance across ranks.
+ */
+export function growthSteps(geometry: Geometry, direction: Direction): { rank: number; slot: number } {
+  const label = (direction === "TB" ? LINK_LABEL_ROOM.height : LINK_LABEL_ROOM.width) + 2 * LINK_LABEL_ROOM.margin;
+  const region = 2.5 * geometry.clusterPadding;
+  const size = direction === "TB" ? geometry.nodeHeight : geometry.nodeWidth;
+  return { rank: size + Math.max(label, region), slot: direction === "TB" ? geometry.colStep : geometry.rowStep };
+}
+
 const OLDER = "older:";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -85,12 +104,13 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
   const regionOf = (key: string): Region | undefined => [...regions.values()].find((region) => region.members.has(key));
 
   const anchor = continued?.anchor ?? startingAnchor(fresh, edges, older, regions, context, geometry);
+  const steps = growthSteps(geometry, direction);
   const toWorld = (spot: GrowthSpot): Point => direction === "TB"
-    ? { x: anchor.x + spot.slot * geometry.colStep, y: anchor.y + spot.rank * geometry.rowStep }
-    : { x: anchor.x + spot.rank * geometry.colStep, y: anchor.y + spot.slot * geometry.rowStep };
+    ? { x: anchor.x + spot.slot * steps.slot, y: anchor.y + spot.rank * steps.rank }
+    : { x: anchor.x + spot.rank * steps.rank, y: anchor.y + spot.slot * steps.slot };
   const toSpot = (point: Point): GrowthSpot => direction === "TB"
-    ? { rank: (point.y - anchor.y) / geometry.rowStep, slot: (point.x - anchor.x) / geometry.colStep }
-    : { rank: (point.x - anchor.x) / geometry.colStep, slot: (point.y - anchor.y) / geometry.rowStep };
+    ? { rank: (point.y - anchor.y) / steps.rank, slot: (point.x - anchor.x) / steps.slot }
+    : { rank: (point.x - anchor.x) / steps.rank, slot: (point.y - anchor.y) / steps.slot };
 
   const previousSpots = new Map<string, GrowthNode>(members.map((node) => [node.note, { rank: node.rank, slot: node.slot, fixed: node.fixed }]));
   const olderKeys = [
@@ -130,7 +150,7 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
     const others = [...regions.values()].filter((region) => region !== own).flatMap((region) => regionBox(region, placed) ?? []);
     if (!own) return others.some((other) => overlaps(inflate(box, padding), other));
     const grownBox = regionBox(own, placed, { key, spot })!;
-    if (others.some((other) => overlaps(grownBox, other))) return true;
+    if (others.some((other) => overlaps(inflate(grownBox, padding / 2), other))) return true;
     const outsiders = [
       ...statics.filter((item) => !own.members.has(item.key)).map((item) => item.box),
       ...[...placed].filter(([other]) => other !== key && !own.members.has(other)).map(([, other]) => nodeBox(toWorld(other)))

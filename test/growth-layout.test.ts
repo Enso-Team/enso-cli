@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { parseCanvasIntent } from "../src/canvas-intent.js";
 import { growLayout, type GrowthNode } from "../src/growth-layout.js";
-import { GROWTH_QUIET_MS, planGrowth, type Growth } from "../src/growth-apply.js";
+import { GROWTH_QUIET_MS, growthSteps, planGrowth, type Growth } from "../src/growth-apply.js";
 import { CANVAS_WORLD_HOME } from "../src/layout-centering.js";
-import { ANNOTATION_GEOMETRY, CARD_GEOMETRY } from "../src/layout.js";
+import { ANNOTATION_GEOMETRY, CARD_GEOMETRY, SYMBOL_GEOMETRY } from "../src/layout.js";
 
 const CANVAS = "22222222-2222-4222-8222-222222222222";
+const TB = growthSteps(CARD_GEOMETRY, "TB");
+const LR = growthSteps(CARD_GEOMETRY, "LR");
 
 function grow(order: string[], edges: Array<{ from: string; to: string }>): Map<string, GrowthNode> {
   let spots = new Map<string, GrowthNode>();
@@ -75,14 +77,32 @@ describe("growth on canvas apply", () => {
 
     const canvas = { nodes: [{ id: "c1", title: "Client", position: { ...CANVAS_WORLD_HOME } }], links: [] };
     const second = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("Sync server")], links: [{ mode: "create", source: "Client", target: "Sync server" }] }), canvas, first.growth, CANVAS, 2_000);
-    expect(second.intent.nodes[0]).toMatchObject({ x: CANVAS_WORLD_HOME.x, y: CANVAS_WORLD_HOME.y + CARD_GEOMETRY.rowStep });
+    expect(second.intent.nodes[0]).toMatchObject({ x: CANVAS_WORLD_HOME.x, y: CANVAS_WORLD_HOME.y + TB.rank });
     expect(second.report).toMatchObject({ status: "continued", placed: ["Sync server"] });
     expect(second.growth!.nodes.map((node) => node.note)).toEqual(["Sync server", "Client"]);
   });
 
   it("grows left to right when the growth starts with that direction", () => {
     const first = planGrowth(parseCanvasIntent({ canvas: "current", direction: "LR", nodes: [place("A"), place("B")], links: [{ mode: "create", source: "A", target: "B" }] }), { nodes: [] }, undefined, CANVAS, 0);
-    expect(first.intent.nodes[1]).toMatchObject({ x: CANVAS_WORLD_HOME.x + CARD_GEOMETRY.colStep, y: CANVAS_WORLD_HOME.y });
+    expect(first.intent.nodes[1]).toMatchObject({ x: CANVAS_WORLD_HOME.x + LR.rank, y: CANVAS_WORLD_HOME.y });
+  });
+
+  // A Link label of about five words at the app's 14pt label size, plus a little air on each side.
+  const FIVE_WORD_LABEL = { width: 200, height: 22 };
+
+  it("leaves room for a five-word Link label between linked Nodes growing left to right", () => {
+    const plan = planGrowth(parseCanvasIntent({ canvas: "current", direction: "LR", nodes: [place("A"), place("B")], links: [{ mode: "create", source: "A", target: "B" }] }), { nodes: [] }, undefined, CANVAS, 0);
+    const [a, b] = plan.intent.nodes as Array<{ x: number; y: number }>;
+    expect(b.y).toBe(a.y);
+    expect(b.x - a.x - CARD_GEOMETRY.nodeWidth).toBeGreaterThanOrEqual(FIVE_WORD_LABEL.width);
+  });
+
+  it("leaves room for a Link label between linked symbols growing top to bottom", () => {
+    const symbol = { appearance: "server" };
+    const plan = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("A", symbol), place("B", symbol)], links: [{ mode: "create", source: "A", target: "B" }] }), { nodes: [] }, undefined, CANVAS, 0);
+    const [a, b] = plan.intent.nodes as Array<{ x: number; y: number }>;
+    expect(b.x).toBe(a.x);
+    expect(b.y - a.y - SYMBOL_GEOMETRY.nodeHeight).toBeGreaterThanOrEqual(FIVE_WORD_LABEL.height + 2 * ANNOTATION_GEOMETRY.gap);
   });
 
   it("ends the growth when a person moves one of its Nodes, or after a quiet stretch", () => {
@@ -91,7 +111,7 @@ describe("growth on canvas apply", () => {
     const dragged = planGrowth(intent, { nodes: [{ id: "a", title: "A", position: { x: 40, y: 0 } }] }, growth, CANVAS, 10);
     expect(dragged.report).toMatchObject({ status: "started", endedBecause: "moved" });
     // The new growth anchors on the moved Node, which now belongs to the person, and grows below it.
-    expect(dragged.intent.nodes[0]).toMatchObject({ x: 40, y: CARD_GEOMETRY.rowStep });
+    expect(dragged.intent.nodes[0]).toMatchObject({ x: 40, y: TB.rank });
 
     const quiet = planGrowth(intent, { nodes: [{ id: "a", title: "A", position: { x: 0, y: 0 } }] }, growth, CANVAS, GROWTH_QUIET_MS + 1);
     expect(quiet.report).toMatchObject({ status: "started", endedBecause: "quiet" });
@@ -100,11 +120,11 @@ describe("growth on canvas apply", () => {
   it("leaves Nodes from before the growth in place and keeps new Nodes off them", () => {
     const canvas = { nodes: [
       { id: "old", title: "Old", position: { x: 0, y: 0 } },
-      { id: "blocker", title: "Blocker", position: { x: 0, y: CARD_GEOMETRY.rowStep } }
+      { id: "blocker", title: "Blocker", position: { x: 0, y: TB.rank } }
     ] };
     const plan = planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("New")], links: [{ mode: "create", source: "Old", target: "New" }] }), canvas, undefined, CANVAS, 0);
     const placed = plan.intent.nodes.find((node) => node.mode === "place")!;
-    expect(placed).toMatchObject({ y: CARD_GEOMETRY.rowStep });
+    expect(placed).toMatchObject({ y: TB.rank });
     expect(Math.abs((placed as { x: number }).x)).toBeGreaterThanOrEqual(CARD_GEOMETRY.nodeWidth);
     expect(plan.intent.nodes.every((node) => node.mode === "place")).toBe(true);
   });
@@ -133,9 +153,9 @@ describe("growth on canvas apply", () => {
 
   it("tidies the turn only when the full layout removes crossings, and ends the growth", () => {
     const nodes = ["A", "B", "C", "D"];
-    const positions: Record<string, { x: number; y: number }> = { A: { x: 0, y: 0 }, B: { x: 300, y: 0 }, C: { x: 300, y: 200 }, D: { x: 0, y: 200 } };
+    const positions: Record<string, { x: number; y: number }> = { A: { x: 0, y: 0 }, B: { x: TB.slot, y: 0 }, C: { x: TB.slot, y: TB.rank }, D: { x: 0, y: TB.rank } };
     const growth: Growth = { canvasID: CANVAS, startedAt: 0, lastWriteAt: 0, direction: "TB", symbols: false, anchor: { x: 0, y: 0 }, regions: [],
-      nodes: nodes.map((note, index) => ({ note, rank: positions[note].y / 200, slot: positions[note].x / 300, fixed: index === 0, ...positions[note] })) };
+      nodes: nodes.map((note, index) => ({ note, rank: positions[note].y / TB.rank, slot: positions[note].x / TB.slot, fixed: index === 0, ...positions[note] })) };
     const canvas = {
       nodes: nodes.map((title) => ({ id: title, title, position: positions[title] })),
       links: [{ id: "l1", sourceNodeID: "A", targetNodeID: "C" }, { id: "l2", sourceNodeID: "B", targetNodeID: "D" }]
@@ -159,6 +179,7 @@ describe("growth with Regions", () => {
   const boxOf = (primitive: Record<string, any>): Box => ({ minX: primitive.x - primitive.width / 2, minY: primitive.y - primitive.height / 2, maxX: primitive.x + primitive.width / 2, maxY: primitive.y + primitive.height / 2 });
   const group = (box: Box, title: string, id = REGION_ID) => ({ id, kind: "group", title, bounds: { x: box.minX, y: box.minY, width: box.maxX - box.minX, height: box.maxY - box.minY } });
   const nodeBox = (x: number, y: number): Box => ({ minX: x - CARD_GEOMETRY.nodeWidth / 2, minY: y - CARD_GEOMETRY.nodeHeight / 2, maxX: x + CARD_GEOMETRY.nodeWidth / 2, maxY: y + CARD_GEOMETRY.nodeHeight / 2 });
+  const boundsOf = (bounds: Record<string, number>): Box => ({ minX: bounds.x, minY: bounds.y, maxX: bounds.x + bounds.width, maxY: bounds.y + bounds.height });
   const overlaps = (a: Box, b: Box) => a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
 
   it("draws a declared Region around its first member in the declared color, then grows it with the next", () => {
@@ -211,14 +232,36 @@ describe("growth with Regions", () => {
     expect(boxOf(update).maxY).toBeGreaterThanOrEqual(b.y + CARD_GEOMETRY.nodeHeight / 2);
   });
 
+  it.each(["LR", "TB"] as const)("keeps a linked member of the next Region in line growing %s, both paddings plus a margin apart", (direction) => {
+    const canvas = { nodes: [] as Array<Record<string, unknown>>, links: [] as Array<Record<string, unknown>>, diagramPrimitives: [] as Array<Record<string, unknown>> };
+    let growth: Growth | undefined;
+    const chain = [["A", "One"], ["B", "Two"], ["C", "Three"]];
+    chain.forEach(([note, region], index) => {
+      const links = index === 0 ? [] : [{ mode: "create", source: chain[index - 1][0], target: note }];
+      const plan = planGrowth(parseCanvasIntent({ canvas: "current", ...(index === 0 ? { direction } : {}), nodes: [place(note, { in: region })], links }), canvas, growth, CANVAS, index);
+      const placed = plan.intent.nodes[0] as { x: number; y: number };
+      canvas.nodes.push({ id: note, title: note, position: { x: placed.x, y: placed.y } });
+      for (const link of links) canvas.links.push({ id: `l${index}`, sourceNodeID: link.source, targetNodeID: link.target });
+      for (const primitive of plan.intent.primitives as Array<Record<string, any>>) {
+        if (primitive.mode === "create") canvas.diagramPrimitives.push(group(boxOf(primitive), primitive.title, `0000000${index}-0000-4000-8000-000000000000`));
+      }
+      growth = plan.growth;
+    });
+    const [across, along] = direction === "LR" ? ["y", "x"] as const : ["x", "y"] as const;
+    expect(new Set(canvas.nodes.map((node) => (node.position as Record<string, number>)[across])).size).toBe(1);
+    const boxes = canvas.diagramPrimitives.map((primitive) => boundsOf(primitive.bounds as Record<string, number>));
+    const [low, high] = along === "x" ? ["minX", "maxX"] as const : ["minY", "maxY"] as const;
+    for (let index = 1; index < boxes.length; index++) expect(boxes[index][low] - boxes[index - 1][high]).toBeGreaterThanOrEqual(pad / 2);
+  });
+
   it("refuses a member its Region cannot reach without covering an outside Node", () => {
     const region = nodeBox(0, 0);
     const outer = { minX: region.minX - pad, minY: region.minY - pad, maxX: region.maxX + pad, maxY: region.maxY + pad };
     const walls = Array.from({ length: 41 }, (_unused, index) => index - 20).flatMap((step) => [
-      { id: `w${step}`, title: `W${step}`, position: { x: step * CARD_GEOMETRY.colStep, y: CARD_GEOMETRY.rowStep } },
-      { id: `s${step}`, title: `S${step}`, position: { x: step * CARD_GEOMETRY.colStep, y: -CARD_GEOMETRY.rowStep } }
+      { id: `w${step}`, title: `W${step}`, position: { x: step * TB.slot, y: TB.rank } },
+      { id: `s${step}`, title: `S${step}`, position: { x: step * TB.slot, y: -TB.rank } }
     ]).concat(
-      [-1, 1].map((side) => ({ id: `side${side}`, title: `Side${side}`, position: { x: side * CARD_GEOMETRY.colStep, y: 0 } }))
+      [-1, 1].map((side) => ({ id: `side${side}`, title: `Side${side}`, position: { x: side * TB.slot, y: 0 } }))
     );
     const canvas = { nodes: [{ id: "a", title: "A", position: { x: 0, y: 0 } }, ...walls], diagramPrimitives: [group(outer, "Store")] };
     expect(() => planGrowth(parseCanvasIntent({ canvas: "current", nodes: [place("B", { in: "Store" })] }), canvas, undefined, CANVAS, 0))

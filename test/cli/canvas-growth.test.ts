@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { growthSteps } from "../../src/growth-apply.js";
 import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { CARD_GEOMETRY } from "../../src/layout.js";
 import { calls, fixtureTarget, requestBody, run, setupCliTest, tempDir } from "../support/cli-harness.js";
@@ -62,7 +63,7 @@ describe("canvas apply growth", () => {
     });
     expect(second.code).toBe(0);
     expect(JSON.parse(second.stdout).data).toMatchObject({ applied: true, growth: { status: "continued", placed: ["Sync server"] } });
-    expect(state.nodes[1].position).toEqual({ x: CANVAS_WORLD_HOME.x, y: CANVAS_WORLD_HOME.y + CARD_GEOMETRY.rowStep });
+    expect(state.nodes[1].position).toEqual({ x: CANVAS_WORLD_HOME.x, y: CANVAS_WORLD_HOME.y + growthSteps(CARD_GEOMETRY, "TB").rank });
     expect(state.links).toHaveLength(1);
   });
 
