@@ -5,6 +5,7 @@ import { compareStrings, type CanvasSpec } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
 import { parseCanvasIntent } from "./canvas-intent.js";
 import { markWorldBox } from "./mark-model.js";
+import { centeredBox, overlaps } from "./world-box.js";
 
 // Two densities, one per text role. Cards carry 17pt reading text and lay out four or
 // five across at zoom 1. Symbols carry 14pt diagram text under a 56pt icon, so seven
@@ -251,7 +252,7 @@ function segmentsCross(a: Point, b: Point, c: Point, d: Point): boolean {
 type CenteredBox = { x: number; y: number; width: number; height: number };
 
 function boxesIntersect(a: CenteredBox, b: CenteredBox): boolean {
-  return Math.abs(a.x - b.x) < (a.width + b.width) / 2 && Math.abs(a.y - b.y) < (a.height + b.height) / 2;
+  return overlaps(centeredBox(a, a.width, a.height), centeredBox(b, b.width, b.height));
 }
 
 /** The Excerpts a layout places once its Nodes exist, each beside its member's Node. */

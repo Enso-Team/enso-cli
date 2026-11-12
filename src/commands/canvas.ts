@@ -5,7 +5,11 @@ import { bindCreatedMarks, canvasApplyContract, compileCanvasApply, createdMarkI
 import { marksUnsupported } from "../mark-model.js";
 import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
+import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
+import { readGrowth, writeGrowth } from "../growth-store.js";
+import { checkExcerptSource } from "../excerpt-model.js";
+import { planGrowth, type Growth } from "../growth-apply.js";
+import { deleteExcerpt, placeNoteExcerpt, updateExcerpt } from "./excerpt.js";
 
 export function registerCanvas(program: Command): void {
   const canvas = program.command("canvas").description("Manage Enso canvases");
@@ -132,16 +136,47 @@ export function registerCanvas(program: Command): void {
       const client = new BridgeClient();
       const context = await requestCanvasContext(client, intent.canvas);
       if (!context.ok) return context;
-      // A pure-creation intent on an empty Canvas lands on the app's empty-Canvas home
-      // point, where the first load focuses, instead of wherever the author's coordinates
-      // happen to sit. Existing content or any update means the author placed
+      const { canvasID } = await client.resolveTarget(intent.canvas);
+      const grown = planGrowth(intent, context.data, readGrowth(canvasID), canvasID, Date.now());
+      // An intent that changes the graph places itself through the growth layout. Any other
+      // pure-creation intent on an empty Canvas lands on the app's empty-Canvas home point,
+      // where the first load focuses. Existing content or any update means the author placed
       // against inspected geometry, so the coordinates pass through untouched.
-      const { patch, placement } = placeIntentOnCanvas(intent, context.data);
-      return applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
+      const { patch, placement } = grown.report
+        ? { patch: grown.intent, placement: placementReport({ dx: 0, dy: 0 }, false) }
+        : placeIntentOnCanvas(grown.intent, context.data);
+      const previous = readGrowth(canvasID);
+      const applied = await applyCanvasIntent(patch, Boolean(options.dryRun), context, placement);
+      const landed = options.dryRun ? undefined : landedGrowth(grown.growth, previous, applied);
+      if (landed) writeGrowth(canvasID, landed.growth);
+      if (!grown.report) return applied;
+      return applied.ok
+        ? { ok: true, data: { ...applied.data as Record<string, unknown>, growth: grown.report } }
+        : { ...applied, error: { ...applied.error, details: { ...applied.error.details, growth: grown.report } } };
     });
 }
 
+const APPLY_PHASES: readonly string[] = canvasApplyContract.partialApplication.phases;
+
 /**
+ * The growth to save after an apply, for what actually landed. Phases land in order and each
+ * one is atomic, so every phase before the failed one landed. The growth Nodes land with the
+ * node writes and its Regions with the primitives. Nothing is saved when the node writes did
+ * not land or when the apply stopped before any phase ran.
+ */
+export function landedGrowth(planned: Growth | undefined, previous: Growth | undefined, applied: EnsoEnvelope): { growth: Growth | undefined } | undefined {
+  if (applied.ok) return { growth: planned };
+  const details = applied.error.details ?? {};
+  if (!Array.isArray(details.appliedBatches)) return undefined;
+  const failed = typeof details.failedBatch === "string" ? APPLY_PHASES.indexOf(details.failedBatch) : APPLY_PHASES.length;
+  const landed = (phase: string): boolean => APPLY_PHASES.indexOf(phase) < failed;
+  if (!landed("nodePortalWrites")) return undefined;
+  if (!planned || landed("primitives")) return { growth: planned };
+  return { growth: { ...planned, regions: previous?.regions ?? [] } };
+}
+
+/**
+ * A Canvas as an agent selects and reads it./**
  * A Canvas as an agent selects and reads it. The app also reports the Canvas JSON path inside
  * its sandbox, which agents cannot open, and an id that repeats the name for local Canvases.
  */
@@ -226,6 +261,12 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     ? { ...(context.data as Record<string, unknown>), availableNotes: [...new Set(availableNotes)] }
     : { availableNotes: [...new Set(availableNotes)] };
   const compiled = compileCanvasApply(intent, contextData);
+  if (dryRun && intent.excerpts.some((excerpt) => excerpt.mode === "create")) {
+    const vault = await client.request("/v1/vault/current");
+    if (!vault.ok) return vault;
+    const root = (vault.data as { path?: string } | undefined)?.path ?? "";
+    for (const excerpt of intent.excerpts) if (excerpt.mode === "create") checkExcerptSource(root, excerpt.note, excerpt.text);
+  }
   if (dryRun) {
     const first = compiled.phases[0];
     const bridgePhase = first;
@@ -244,7 +285,11 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
           bridgeValidated: bridgePhase ? [bridgePhase.name] : [],
           deferredUntilApply: compiled.phases.slice(bridgePhase ? 1 : 0).map((phase) => phase.name)
         },
-        planned: Object.fromEntries(compiled.phases.map((phase) => [phase.name, phase.operations.length])),
+        planned: Object.fromEntries([
+          ...compiled.phases.map((phase) => [phase.name, phase.operations.length]),
+          ...(intent.excerpts.length > 0 ? [["excerpts", intent.excerpts.length]] : [])
+        ]),
+        ...(intent.excerpts.length > 0 ? { excerpts: intent.excerpts.map((excerpt) => ({ ...excerpt, validated: "locally" })) } : {}),
         sharedNoteWrites: compiled.sharedNoteWrites,
         sharedNoteWritesAssessment: "potential",
         phases: compiled.phases.map((phase) => ({ name: phase.name, operations: phase.operations }))
@@ -252,7 +297,7 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     };
   }
 
-  if (compiled.phases.length === 0) {
+  if (compiled.phases.length === 0 && intent.excerpts.length === 0) {
     const verified = verifyCanvasIntent(intent, contextData);
     if (!verified.ok) return verificationFailure(verified.mismatches, [], []);
     return {
@@ -299,6 +344,19 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     appliedBatches.push({ name: phase.name, count: phase.operations.length });
     results.push(...projectResults(result.data, phase.operations));
   }
+  if (intent.excerpts.length > 0) {
+    const failed = await applyExcerpts(intent, results);
+    if (failed) {
+      return { ok: false, error: { ...failed.error, details: {
+        ...failed.error.details,
+        appliedBatches,
+        failedBatch: "excerpts",
+        returnedIds: results.flatMap((item) => typeof item.id === "string" ? [item.id] : []),
+        retrySections: ["excerpts"]
+      } } };
+    }
+    appliedBatches.push({ name: "excerpts", count: intent.excerpts.length });
+  }
   const verification = await inspect().catch(error => {
     if (error instanceof EnsoCliError) return { ok: false as const, error: error.body };
     throw error;
@@ -318,6 +376,24 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
       verification: { status: "verified", target: intent.canvas, requested: compiled.verification }
     }
   };
+}
+
+/**
+ * The excerpts phase runs after the Nodes it quotes exist. Each Excerpt is its own request,
+ * so a failure names how many landed and the results carry their ids.
+ */
+async function applyExcerpts(intent: CanvasIntent, results: Record<string, unknown>[]): Promise<Extract<EnsoEnvelope, { ok: false }> | undefined> {
+  for (const excerpt of intent.excerpts) {
+    const result = await (excerpt.mode === "create"
+      ? placeNoteExcerpt({ note: excerpt.note, text: excerpt.text, occurrence: excerpt.occurrence, x: excerpt.x, y: excerpt.y, width: excerpt.width, dryRun: false })
+      : excerpt.mode === "update"
+        ? updateExcerpt(excerpt.id, { ...(excerpt.x === undefined ? {} : { x: excerpt.x, y: excerpt.y }), ...(excerpt.width === undefined ? {} : { width: excerpt.width }) })
+        : deleteExcerpt(excerpt.id)).catch(errorEnvelope);
+    if (!result.ok) return result;
+    const id = excerpt.mode === "create" ? (result.data as { excerpt?: { id?: unknown } } | undefined)?.excerpt?.id : excerpt.id;
+    results.push({ type: `excerpt.${excerpt.mode}`, ...(typeof id === "string" ? { id } : {}) });
+  }
+  return undefined;
 }
 
 function verificationFailure(mismatches: string[], appliedBatches: Array<{ name: string; count: number }>, results: Record<string, unknown>[]): EnsoEnvelope {

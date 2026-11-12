@@ -5,6 +5,9 @@
 import type { CanvasIntent } from "./canvas-intent.js";
 import { markWorldBox } from "./mark-model.js";
 import { LAYOUT_GEOMETRY, SYMBOL_GEOMETRY, isSymbolAppearance, type LayoutGeometry } from "./layout.js";
+import { boundsBox, boxCenter, centeredBox, finiteNumber, inflate, overlaps, pointsBox, translateBox, unionBoxes, type WorldBox } from "./world-box.js";
+
+export type { WorldBox } from "./world-box.js";
 
 /**
  * World point the Mac app focuses when a Canvas holds nothing to focus on.
@@ -17,7 +20,6 @@ export const CANVAS_WORLD_HOME = { x: 25_000, y: 25_000 } as const;
 /** Gap between existing content and an adjacent new cluster: one node width. */
 export const ADJACENT_GAP = LAYOUT_GEOMETRY.nodeWidth;
 
-export type WorldBox = { minX: number; minY: number; maxX: number; maxY: number };
 export type WorldOffset = { dx: number; dy: number };
 
 /** Every positioned element on the target Canvas, plus the box that covers them all. */
@@ -32,7 +34,7 @@ export function existingContent(context: unknown): ExistingContent | undefined {
   const data = contextObject(context);
   if (!data) return undefined;
   const boxes = [
-    ...readArray(data, "nodes").flatMap(nodeBox),
+    ...readArray(data, "nodes").flatMap((node) => contextNodeBox(node) ?? []),
     ...readArray(data, "diagramPrimitives").flatMap(primitiveBox),
     ...readArray(data, "marks").flatMap(contextMarkBox)
   ];
@@ -62,7 +64,7 @@ export function centeringOffset(cluster: WorldBox | undefined, existing: Existin
 }
 
 /**
- * Bounding box of a compiled patch, node boxes and primitive boxes together, plus any
+ * Bounding box of a compiled patch, its Nodes, primitives, Marks, and Excerpts together, plus any
  * `extra` boxes placed outside the patch. Nodes measure at the geometry the patch was laid
  * out with.
  */
@@ -70,11 +72,12 @@ export function patchBounds(patch: CanvasIntent, geometry?: LayoutGeometry, extr
   const nodes = patch.nodes.flatMap((node) => {
     const [x, y] = [coordinate(node, "x"), coordinate(node, "y")];
     const size = geometry ?? (isSymbolAppearance("appearance" in node ? node.appearance : undefined) ? SYMBOL_GEOMETRY : LAYOUT_GEOMETRY);
-    return x === undefined || y === undefined ? [] : [box(x, y, size.nodeWidth, size.nodeHeight)];
+    return x === undefined || y === undefined ? [] : [centeredBox({ x, y }, size.nodeWidth, size.nodeHeight)];
   });
   const primitives = patch.primitives.flatMap((primitive) => primitiveBox(primitive as Record<string, unknown>));
-  const marks = patch.marks.flatMap((mark) => mark.mode === "create" ? [markWorldBox(mark)] : []);
-  return unionBoxes([...nodes, ...primitives, ...marks, ...extra]);
+  const marks = patch.marks.flatMap((mark) => mark.mode === "create" && mark.x !== undefined && mark.y !== undefined ? [markWorldBox({ ...mark, x: mark.x, y: mark.y })] : []);
+  const excerpts = patch.excerpts.flatMap((excerpt) => excerpt.mode === "create" && excerpt.x !== undefined && excerpt.y !== undefined ? [markWorldBox({ ...excerpt, x: excerpt.x, y: excerpt.y })] : []);
+  return unionBoxes([...nodes, ...primitives, ...marks, ...excerpts, ...extra]);
 }
 
 /**
@@ -87,7 +90,8 @@ export function translatePatch(patch: CanvasIntent, offset: WorldOffset): Canvas
     ...patch,
     nodes: patch.nodes.map((node) => shiftCoordinates(node, offset)),
     primitives: patch.primitives.map((primitive) => shiftCoordinates(primitive, offset)),
-    marks: patch.marks.map((mark) => shiftCoordinates(mark, offset))
+    marks: patch.marks.map((mark) => shiftCoordinates(mark, offset)),
+    excerpts: patch.excerpts.map((excerpt) => shiftCoordinates(excerpt, offset))
   };
 }
 
@@ -109,14 +113,15 @@ export function centerPatchOnCanvas(patch: CanvasIntent, context: unknown): Canv
 }
 
 /**
- * An intent that only adds: every Note is placed, every Portal and primitive is created.
+ * An intent that only adds: every Note is placed, every Portal, primitive, Mark, and Excerpt is created.
  * Only such an intent can be translated as one cluster. An update names a position the
  * author chose against inspected geometry, which a translation would break.
  */
 export function isPureCreation(intent: CanvasIntent): boolean {
   return intent.nodes.every((node) => node.mode === "place" || node.mode === "create")
     && intent.primitives.every((primitive) => primitive.mode === "create")
-    && intent.marks.every((mark) => mark.mode === "create");
+    && intent.marks.every((mark) => mark.mode === "create")
+    && intent.excerpts.every((excerpt) => excerpt.mode === "create");
 }
 
 function coordinate(value: unknown, key: string): number | undefined {
@@ -137,16 +142,17 @@ export function readArray(data: Record<string, unknown>, key: string): Record<st
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
 }
 
-function nodeBox(node: Record<string, unknown>): WorldBox[] {
+/** The box a Node from a context payload covers: its reported bounds, else its position at its appearance's size. */
+export function contextNodeBox(node: Record<string, unknown>): WorldBox | undefined {
   const bounds = boundsBox(node.bounds);
-  if (bounds) return [bounds];
+  if (bounds) return bounds;
   const position = node.position;
-  if (!position || typeof position !== "object") return [];
+  if (!position || typeof position !== "object") return undefined;
   const { x, y } = position as { x?: unknown; y?: unknown };
-  if (!finiteNumber(x) || !finiteNumber(y)) return [];
+  if (!finiteNumber(x) || !finiteNumber(y)) return undefined;
   const geometry = isSymbolAppearance(typeof node.appearance === "string" ? node.appearance : undefined)
     ? SYMBOL_GEOMETRY : LAYOUT_GEOMETRY;
-  return [box(x, y, geometry.nodeWidth, geometry.nodeHeight)];
+  return centeredBox({ x, y }, geometry.nodeWidth, geometry.nodeHeight);
 }
 
 function primitiveBox(primitive: Record<string, unknown>): WorldBox[] {
@@ -154,7 +160,7 @@ function primitiveBox(primitive: Record<string, unknown>): WorldBox[] {
   if (bounds) return [bounds];
   const { x, y, width, height, x1, y1, x2, y2 } = primitive as Record<string, unknown>;
   if (finiteNumber(x1) && finiteNumber(y1) && finiteNumber(x2) && finiteNumber(y2)) return [pointsBox(x1, y1, x2, y2)];
-  if (finiteNumber(x) && finiteNumber(y)) return [box(x, y, finiteNumber(width) ? width : 0, finiteNumber(height) ? height : 0)];
+  if (finiteNumber(x) && finiteNumber(y)) return [centeredBox({ x, y }, finiteNumber(width) ? width : 0, finiteNumber(height) ? height : 0)];
   return [];
 }
 
@@ -165,50 +171,4 @@ function contextMarkBox(mark: Record<string, unknown>): WorldBox[] {
   const { x, y } = position as { x?: unknown; y?: unknown };
   if (!finiteNumber(x) || !finiteNumber(y)) return [];
   return [markWorldBox({ x, y, width: finiteNumber(mark.width) ? mark.width : undefined, text: typeof mark.text === "string" ? mark.text : undefined })];
-}
-
-function boundsBox(value: unknown): WorldBox | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const { x, y, width, height } = value as Record<string, unknown>;
-  if (!finiteNumber(x) || !finiteNumber(y) || !finiteNumber(width) || !finiteNumber(height)) return undefined;
-  // App bounds are an origin plus a size, not a center plus a size.
-  return { minX: x, minY: y, maxX: x + width, maxY: y + height };
-}
-
-function finiteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function box(centerX: number, centerY: number, width: number, height: number): WorldBox {
-  return { minX: centerX - width / 2, minY: centerY - height / 2, maxX: centerX + width / 2, maxY: centerY + height / 2 };
-}
-
-function pointsBox(x1: number, y1: number, x2: number, y2: number): WorldBox {
-  return { minX: Math.min(x1, x2), minY: Math.min(y1, y2), maxX: Math.max(x1, x2), maxY: Math.max(y1, y2) };
-}
-
-function unionBoxes(boxes: WorldBox[]): WorldBox | undefined {
-  if (boxes.length === 0) return undefined;
-  return boxes.reduce((union, current) => ({
-    minX: Math.min(union.minX, current.minX),
-    minY: Math.min(union.minY, current.minY),
-    maxX: Math.max(union.maxX, current.maxX),
-    maxY: Math.max(union.maxY, current.maxY)
-  }));
-}
-
-function boxCenter(value: WorldBox): { x: number; y: number } {
-  return { x: (value.minX + value.maxX) / 2, y: (value.minY + value.maxY) / 2 };
-}
-
-function translateBox(value: WorldBox, offset: WorldOffset): WorldBox {
-  return { minX: value.minX + offset.dx, minY: value.minY + offset.dy, maxX: value.maxX + offset.dx, maxY: value.maxY + offset.dy };
-}
-
-function inflate(value: WorldBox, margin: number): WorldBox {
-  return { minX: value.minX - margin, minY: value.minY - margin, maxX: value.maxX + margin, maxY: value.maxY + margin };
-}
-
-function overlaps(a: WorldBox, b: WorldBox): boolean {
-  return a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY;
 }
