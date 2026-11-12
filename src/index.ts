@@ -15,7 +15,6 @@ import { registerNode } from "./commands/node.js";
 import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSkill } from "./commands/skill.js";
-import { registerRunner } from "./commands/runner.js";
 import { registerStatus } from "./commands/status.js";
 import { registerUpdate } from "./commands/update.js";
 import { notifyUpdate, wantsUpdateNotice } from "./update.js";
@@ -43,7 +42,6 @@ export function buildProgram(): Command {
     .addHelpText("after", "\nCanvas requests require Enso bridge contract 3. Selection never navigates.\nBinding: supply both --vault-id/--canvas-id or ENSO_VAULT_ID/ENSO_CANVAS_ID.\nA binding rejects selector overrides and navigation; target errors are never replayed.")
     .exitOverride();
 
-  registerRunner(program);
   registerStatus(program);
   registerAuth(program);
   registerVault(program);
