@@ -27,7 +27,7 @@ describe("agent setup app discovery", () => {
     let unavailable = true;
     vi.mocked(fetch).mockImplementation(async () => {
       if (unavailable) { unavailable = false; throw new Error("Connection refused"); }
-      return Response.json({ ok: true, data: { contractVersion: 2, tokenPath, agentAccess: "enabled", capabilities: ["mark.update"] } });
+      return Response.json({ ok: true, data: { contractVersion: 3, tokenPath, agentAccess: "enabled", capabilities: ["mark.update"] } });
     });
     const result = await run(["setup", "--agent", "codex", "--installer", "npm"]);
     expect(result.code).toBe(0);
