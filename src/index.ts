@@ -16,6 +16,7 @@ import { registerPortal } from "./commands/portal.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSkill } from "./commands/skill.js";
 import { registerStatus } from "./commands/status.js";
+import { registerSetup } from "./commands/setup.js";
 import { registerUpdate } from "./commands/update.js";
 import { notifyUpdate, wantsUpdateNotice } from "./update.js";
 import { registerVault } from "./commands/vault.js";
@@ -43,6 +44,7 @@ export function buildProgram(): Command {
     .exitOverride();
 
   registerStatus(program);
+  registerSetup(program);
   registerAuth(program);
   registerVault(program);
   registerSearch(program);

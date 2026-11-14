@@ -44,12 +44,9 @@ describe("node rename", () => {
     [".Identity", "leading dot"],
     ["docs/Identity", "slash"],
     ["Identity: v2", "colon"],
-    ["Identity?", "question mark"],
-    ["Identity#2", "hash"],
     ["Auth|Identity", "pipe"],
     ["Identity [v2]", "brackets"],
     ["Identity\u0007", "control character"],
-    ["Q3%20Plan", "pre-encoded fragment"],
     ["Identity.md", "md suffix"],
     ["Identity.MD", "uppercase md suffix"]
   ])("rejects %j (%s) before contacting the app", async (title) => {

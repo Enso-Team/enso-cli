@@ -5,6 +5,7 @@ import { BridgeClient, type RequestOptions } from "../client.js";
 import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { passageSelection, requireExcerptSupport } from "../excerpt-model.js";
 import { noteMatches } from "../note-identity.js";
+import { MARK_DEFAULT_FONT_SIZE } from "../mark-model.js";
 import { indexedNoteID } from "../vault-index.js";
 
 type PlacementOptions = { x?: number; y?: number; width?: number; fontSize?: number; align?: string; dryRun?: boolean };
@@ -26,13 +27,13 @@ function parseWidth(value: string): number {
 }
 
 function parseFontSize(value: string): number {
-  const size = parseNumber(value);
-  if (size < 8 || size > 96) throw new InvalidArgumentError("font size must be from 8 through 96 World points");
+  const size = Number(value);
+  if (value.trim() === "" || !Number.isFinite(size) || size < 8 || size > 96) throw new InvalidArgumentError("font size must be 8–96 finite world points");
   return size;
 }
 
 function parseAlignment(value: string): string {
-  if (!ALIGNMENTS.includes(value)) throw new InvalidArgumentError(`alignment must be ${ALIGNMENTS.join(", ")}`);
+  if (!ALIGNMENTS.includes(value)) throw new InvalidArgumentError("alignment must be left, center, right, or justified");
   return value;
 }
 
@@ -190,11 +191,13 @@ export function registerExcerpt(program: Command): void {
     excerpt
       .command("update")
       .description("Change an Excerpt's position, wrap width, font size, or alignment. Formatting needs a typed Excerpt.")
-      .argument("<excerpt-id>"),
+      .argument("<excerpt-id>")
+      .option("--reset-size", "reset text size to 17 World points, retaining wrap width"),
     "World-space top-left"
-  ).action(async (id: string, options: PlacementOptions) => {
-    const body = placementBody(options);
-    if (Object.keys(body).length === 0) throw new InvalidArgumentError("excerpt update requires --x and --y, --width, --font-size, or --align");
+  ).action(async (id: string, options: PlacementOptions & { resetSize?: boolean }) => {
+    if (options.resetSize && options.fontSize !== undefined) throw new InvalidArgumentError("choose --font-size or --reset-size");
+    const body = placementBody({ ...options, ...(options.resetSize ? { fontSize: MARK_DEFAULT_FONT_SIZE } : {}) });
+    if (Object.keys(body).length === 0) throw new InvalidArgumentError("excerpt update requires --x and --y, --width, --font-size, --reset-size, or --align");
     return mutate(excerptPath(id), "PUT", body, options.dryRun);
   });
   excerpt
