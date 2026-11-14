@@ -59,7 +59,7 @@ describe("skill", () => {
   });
   it("reports unknown app capabilities explicitly", async () => {
     mockInstaller();
-    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, data: { contractVersion: 2 } }));
+    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, data: { contractVersion: 3 } }));
     const result = await run(["setup", "--agent", "codex"]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).data).toMatchObject({ appVersion: "unknown", buildVersion: "unknown", capabilities: { status: "unknown", values: [] } });
@@ -75,7 +75,7 @@ describe("skill", () => {
   });
   it("completes setup with pairing, installed skill provenance, and explicit capability status", async () => {
     mockInstaller();
-    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, data: { appVersion: "1.5", contractVersion: 2, capabilities: ["mark.update"] } }));
+    vi.mocked(fetch).mockImplementation(async () => Response.json({ ok: true, data: { appVersion: "1.5", contractVersion: 3, capabilities: ["mark.update"] } }));
     const result = await run(["setup", "--agent", "codex"]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).data).toMatchObject({ ready: true, pairing: "linked", cliVersion, capabilities: { status: "reported", values: ["mark.update"] }, skill: { installed: true } });
