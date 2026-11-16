@@ -1,3 +1,4 @@
+import { EnsoError, type EnsoEnvelope } from "@enso-app/core";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -9,7 +10,6 @@ import { inspectInstallation, packageDirectory } from "../installation.js";
 import { configDir } from "../config.js";
 import { Command } from "commander";
 import { z } from "zod/v3";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 import { agentIdsForDisplayNames, discoverSkillAgents, supportedSkillAgents } from "../skill-agents.js";
 
 const execFileAsync = promisify(execFile);
@@ -85,13 +85,13 @@ export type SkillInstallOptions = { agent?: string[]; installer?: SkillInstaller
 type SkillInstaller = "npm" | "bun";
 export function parseSkillInstaller(value: string): SkillInstaller {
   if (value === "npm" || value === "bun") return value;
-  throw new EnsoCliError("invalid_installer", "Installer must be npm or bun", { value });
+  throw new EnsoError("invalid_installer", "Installer must be npm or bun", { value });
 }
 
 export function validateSkillTargets(options: SkillInstallOptions): void {
   for (const agent of options.agent ?? []) {
-    if (!supportedSkillAgents().includes(agent)) throw new EnsoCliError("invalid_agent", `Unknown coding agent ${agent}`, { agent, supportedAgents: supportedSkillAgents(), hint: "Use a supported id such as codex or claude-code" });
-    if (["eve", "promptscript"].includes(agent)) throw new EnsoCliError("project_only_agent", `${agent} requires a project skill destination`, { agent, hint: "Install the skill into that agent's project directory" });
+    if (!supportedSkillAgents().includes(agent)) throw new EnsoError("invalid_agent", `Unknown coding agent ${agent}`, { agent, supportedAgents: supportedSkillAgents(), hint: "Use a supported id such as codex or claude-code" });
+    if (["eve", "promptscript"].includes(agent)) throw new EnsoError("project_only_agent", `${agent} requires a project skill destination`, { agent, hint: "Install the skill into that agent's project directory" });
   }
 }
 

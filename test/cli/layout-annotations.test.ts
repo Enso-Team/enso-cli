@@ -1,8 +1,7 @@
+import { ANNOTATION_GEOMETRY, CARD_GEOMETRY, markWorldBox } from "@enso-app/core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ANNOTATION_GEOMETRY, CARD_GEOMETRY } from "../../src/layout.js";
-import { markWorldBox } from "../../src/mark-model.js";
 import { fixtureTarget, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();

@@ -1,5 +1,5 @@
 import { z } from "zod/v3";
-import { EnsoCliError } from "./errors.js";
+import { EnsoError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, linkDirectionSchema, visualColorSchema } from "./link-model.js";
 import { nodeAppearanceSchema } from "./node-appearance.js";
 
@@ -161,8 +161,8 @@ export function canvasSpecIssues(spec: CanvasSpec): SpecIssue[] {
   return issues;
 }
 
-export function specError(message: string, path: string, expected?: string): EnsoCliError {
-  return new EnsoCliError("invalid_input", message, {
+export function specError(message: string, path: string, expected?: string): EnsoError {
+  return new EnsoError("invalid_input", message, {
     path,
     expected: expected ?? "a graph JSON with canvas, members, and optional edges, clusters, and direction",
     hint: "Run `enso layout --schema` for the machine-readable canvas spec contract"

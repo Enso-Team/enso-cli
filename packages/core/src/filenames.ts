@@ -1,4 +1,4 @@
-import { EnsoCliError } from "./errors.js";
+import { EnsoError } from "./errors.js";
 
 /** UTF-8 byte length, counted by code point so it needs no Node Buffer. A lone surrogate encodes as U+FFFD, three bytes. */
 export function utf8Length(value: string): number {
@@ -16,7 +16,7 @@ export function validateFilename(value: string, path: string, suffix = ""): void
     value === "." || value === ".." ? "a filename other than . or .." :
     /[\\/:\u0000-\u001f\u007f]/u.test(value) ? "a filename without separators, colons, or control characters" :
     utf8Length(value + suffix) > 255 ? "a filename of at most 255 UTF-8 bytes including its extension" : undefined;
-  if (rule) throw new EnsoCliError("invalid_filename", `Invalid ${path} '${value}': expected ${rule}`, {
+  if (rule) throw new EnsoError("invalid_filename", `Invalid ${path} '${value}': expected ${rule}`, {
     path, value, expected: rule, hint: "Use a descriptive filename such as WaveSpeed – Higgsfield APIs; use separate folder components for a relative path"
   });
 }

@@ -1,10 +1,8 @@
+import { growthSteps, CANVAS_WORLD_HOME, CARD_GEOMETRY } from "@enso-app/core";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { landedGrowth } from "../../src/commands/canvas.js";
-import { growthSteps } from "../../src/growth-apply.js";
-import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
-import { CARD_GEOMETRY } from "../../src/layout.js";
 import { calls, fixtureTarget, requestBody, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();

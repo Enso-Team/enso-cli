@@ -1,8 +1,8 @@
+import { EnsoError, type EnsoEnvelope } from "@enso-app/core";
 import { Command } from "commander";
 import { defaultBridgeUrl, readConfig, removeConfig } from "../config.js";
 import { BridgeClient } from "../client.js";
 import { discoverAndLink } from "../discovery.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
 
 function formatAuthStatus(data: { status: string; linked: boolean; bridgeUrl: string; linkedAt?: string }): string {
   if (data.status === "unlinked") return "Enso CLI is not linked to the Enso app.";
@@ -45,7 +45,7 @@ export function registerAuth(program: Command): void {
           };
         }
       } catch (error) {
-        if (error instanceof EnsoCliError && isInstanceRefusal(error.body.code)) throw error;
+        if (error instanceof EnsoError && isInstanceRefusal(error.body.code)) throw error;
         // An unavailable or invalid existing configuration does not block a fresh pairing attempt.
       }
     }
@@ -53,7 +53,7 @@ export function registerAuth(program: Command): void {
     // the whole link.
     const discovered = await discoverAndLink();
     if (!discovered) {
-      throw new EnsoCliError("link_failed", "Could not link to the Enso app", {
+      throw new EnsoError("link_failed", "Could not link to the Enso app", {
         hint: "Open the Enso app, turn on Local agent access in its Settings, then run `enso auth link` again"
       });
     }
@@ -83,8 +83,8 @@ export function registerAuth(program: Command): void {
     } catch (error) {
       // A stale token the app could not replace through its token file is invalid, not
       // unreachable, and an app that refuses agent access says so itself.
-      if (error instanceof EnsoCliError && error.body.code === "access_disabled") throw error;
-      status = error instanceof EnsoCliError && error.body.code === "invalid_token" ? "invalid" : "configured";
+      if (error instanceof EnsoError && error.body.code === "access_disabled") throw error;
+      status = error instanceof EnsoError && error.body.code === "invalid_token" ? "invalid" : "configured";
     }
     const data = {
       status,

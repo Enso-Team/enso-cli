@@ -1,7 +1,6 @@
+import { parseWorldPoint, type WorldPoint, MARK_DEFAULT_FONT_SIZE, markFontSizeSchema, writingTextAlignmentSchema, parseMarkTextRuns, requireMarkSupport, runsOutsideText, type MarkTextRun, type WritingTextAlignment } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient, type RequestOptions } from "../client.js";
-import { parseWorldPoint, type WorldPoint } from "../link-model.js";
-import { MARK_DEFAULT_FONT_SIZE, markFontSizeSchema, writingTextAlignmentSchema, parseMarkTextRuns, requireMarkSupport, runsOutsideText, type MarkTextRun, type WritingTextAlignment } from "../mark-model.js";
 
 type MarkWriteOptions = { at?: WorldPoint; width?: number; fontSize?: number; align?: WritingTextAlignment; resetSize?: boolean; runs?: MarkTextRun[]; dryRun?: boolean };
 

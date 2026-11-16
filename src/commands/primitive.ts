@@ -1,6 +1,6 @@
+import { VISUAL_COLOR_GRAMMAR, isVisualColor } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient } from "../client.js";
-import { VISUAL_COLOR_GRAMMAR, isVisualColor } from "../link-model.js";
 
 type LineStyle = "solid" | "dashed" | "dotted";
 

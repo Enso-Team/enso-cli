@@ -3,12 +3,9 @@
 // is a prose line carrying a wikilink, and an outline is the markdown Enso generates for a
 // Canvas under `Canvases/`. Graph JSON is a layout command input, not a Vault file.
 
+import { compareStrings, EnsoError, FrontmatterError, hasFrontmatterFence, parseFrontmatter, noteKeys } from "@enso-app/core";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
-import { compareStrings } from "./canvas-spec.js";
-import { EnsoCliError } from "./errors.js";
-import { FrontmatterError, hasFrontmatterFence, parseFrontmatter } from "./frontmatter.js";
-import { noteKeys } from "./note-identity.js";
 
 export const MANIFEST_SUFFIX = ".canvas.md";
 /// The first line of every outline Enso writes. Matches `CanvasOutline.headerPrefix` in the app.
@@ -88,7 +85,7 @@ function readEntries(root: string) {
   try {
     return readdirSync(root, { withFileTypes: true });
   } catch (error) {
-    throw new EnsoCliError("invalid_input", `Folder '${root}' cannot be read: ${error instanceof Error ? error.message : "unknown error"}`, {
+    throw new EnsoError("invalid_input", `Folder '${root}' cannot be read: ${error instanceof Error ? error.message : "unknown error"}`, {
       path: "folder",
       expected: "a readable folder of authoring files",
       hint: "check lints files on disk; it does not inspect live canvases. After layout --apply, verify with `enso context --vision` instead."
@@ -129,7 +126,7 @@ function readNote(file: string, source: string): { note?: NoteFile; violations: 
 }
 
 function findingFromError(code: string, file: string, error: unknown, fallback: string): CheckFinding {
-  const body = error instanceof EnsoCliError ? error.body : undefined;
+  const body = error instanceof EnsoError ? error.body : undefined;
   const line = error instanceof FrontmatterError ? error.line : typeof body?.details?.line === "number" ? body.details.line : undefined;
   const path = typeof body?.details?.path === "string" ? body.details.path : "frontmatter";
   return {

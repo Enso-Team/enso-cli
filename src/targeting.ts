@@ -1,6 +1,6 @@
+import { EnsoError, type EnsoEnvelope } from "@enso-app/core";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod/v3";
-import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 
 const targetSchema = z.object({ vaultID: z.string().uuid(), canvasID: z.string().uuid() }).strict();
 export type CanvasTarget = Readonly<z.infer<typeof targetSchema>>;
@@ -9,7 +9,7 @@ type Bootstrap = (path: string) => Promise<EnsoEnvelope>;
 
 export function parseTarget(value: unknown): CanvasTarget {
   const parsed = targetSchema.safeParse(value);
-  if (!parsed.success) throw new EnsoCliError("invalid_target", "canvasTarget must contain exactly vaultID and canvasID UUID strings");
+  if (!parsed.success) throw new EnsoError("invalid_target", "canvasTarget must contain exactly vaultID and canvasID UUID strings");
   return Object.freeze({ vaultID: parsed.data.vaultID.toUpperCase(), canvasID: parsed.data.canvasID.toUpperCase() });
 }
 
@@ -20,7 +20,7 @@ export function sameTarget(a: CanvasTarget, b: CanvasTarget): boolean {
 function binding(vaultID: string | undefined, canvasID: string | undefined): CanvasTarget | undefined {
   if (vaultID === undefined && canvasID === undefined) return undefined;
   if (vaultID === undefined || canvasID === undefined) {
-    throw new EnsoCliError("invalid_target", "An immutable binding requires both --vault-id and --canvas-id (or both ENSO_VAULT_ID and ENSO_CANVAS_ID)");
+    throw new EnsoError("invalid_target", "An immutable binding requires both --vault-id and --canvas-id (or both ENSO_VAULT_ID and ENSO_CANVAS_ID)");
   }
   return parseTarget({ vaultID, canvasID });
 }
@@ -50,7 +50,7 @@ export class RequestContext {
   }
 
   rejectNavigation(): never {
-    throw new EnsoCliError("explicit_navigation_required", "This invocation is bound to one vault and canvas; run navigation separately without the binding");
+    throw new EnsoError("explicit_navigation_required", "This invocation is bound to one vault and canvas; run navigation separately without the binding");
   }
 
   async resolve(bootstrap: Bootstrap, selector?: string, supplied?: unknown): Promise<CanvasTarget> {
@@ -92,26 +92,26 @@ export class RequestContext {
   private canvases(bootstrap: Bootstrap): Promise<Record<string, unknown>[]> {
     return this.catalog ??= bootstrap("/v1/canvases").then(result => {
       const data = unwrap(result);
-      if (!Array.isArray(data.canvases)) throw new EnsoCliError("invalid_response", "Enso did not return a canvas discovery list");
+      if (!Array.isArray(data.canvases)) throw new EnsoError("invalid_response", "Enso did not return a canvas discovery list");
       return data.canvases as Record<string, unknown>[];
     });
   }
 
   private conflict(): never {
-    throw new EnsoCliError("target_conflict", "Canvas selectors and explicit targets must agree with the invocation's immutable target", {
+    throw new EnsoError("target_conflict", "Canvas selectors and explicit targets must agree with the invocation's immutable target", {
       hint: "Use one canvas selector, or supply only the stable --vault-id and --canvas-id pair"
     });
   }
 }
 
 function unwrap(result: EnsoEnvelope): Record<string, unknown> {
-  if (!result.ok) throw new EnsoCliError(result.error.code, result.error.message, result.error.details);
-  if (!result.data || typeof result.data !== "object") throw new EnsoCliError("invalid_response", "Enso returned invalid target discovery data");
+  if (!result.ok) throw new EnsoError(result.error.code, result.error.message, result.error.details);
+  if (!result.data || typeof result.data !== "object") throw new EnsoError("invalid_response", "Enso returned invalid target discovery data");
   return result.data as Record<string, unknown>;
 }
 
 function identity(canvas: Record<string, unknown>): CanvasTarget {
-  if (!canvas.canvasTarget) throw new EnsoCliError("target_not_found", "The canvas has no stable identity available", {
+  if (!canvas.canvasTarget) throw new EnsoError("target_not_found", "The canvas has no stable identity available", {
     hint: "Update Enso to a build with bridge contract 3, open the intended canvas, then run `enso canvas current`"
   });
   return parseTarget(canvas.canvasTarget);
@@ -122,7 +122,7 @@ function selectCanvas(canvases: Record<string, unknown>[], selector: string): Re
     const exact = [canvas.id, canvas.name, canvas.path, typeof canvas.name === "string" ? `${canvas.name}.json` : undefined];
     return exact.includes(selector) || [canvas.ref, canvas.canvasID].some(value => typeof value === "string" && value.toLowerCase() === selector.toLowerCase());
   });
-  if (matches.length !== 1) throw new EnsoCliError(matches.length ? "ambiguous_selector" : "missing_selector", `Expected one canvas matching '${selector}'`, {
+  if (matches.length !== 1) throw new EnsoError(matches.length ? "ambiguous_selector" : "missing_selector", `Expected one canvas matching '${selector}'`, {
     hint: "Run `enso canvas list` and use canvasID", candidates: matches
   });
   return matches[0];

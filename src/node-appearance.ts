@@ -1,7 +1,6 @@
-import { z } from "zod/v3";
 import { InvalidArgumentError } from "commander";
+import { nodeAppearanceSchema, nodeFontSizeSchema, nodeGlyphSizeSchema, nodeTitleGapSchema } from "@enso-app/core";
 
-export const nodeAppearanceSchema = z.enum(["card", "user", "developer", "player", "client", "mobileApp", "service", "api", "database", "server", "queue", "cache", "cloud", "storage", "external", "component", "auth", "loadBalancer", "ux", "decision", "terminal"]);
 
 export function parseNodeAppearance(value: string): string {
   const result = nodeAppearanceSchema.safeParse(value);
@@ -9,8 +8,6 @@ export function parseNodeAppearance(value: string): string {
   return result.data;
 }
 
-export const nodeGlyphSizeSchema = z.number().finite().min(24).max(160).nullable();
-export const nodeFontSizeSchema = z.number().finite().min(8).max(96);
 
 export function parseGlyphSize(value: string): number {
   const size = Number(value);
@@ -24,7 +21,6 @@ export function parseFontSize(value: string): number {
   return size;
 }
 
-export const nodeTitleGapSchema = z.number().finite().positive();
 
 export function parseTitleGap(value: string): number {
   const gap = Number(value);

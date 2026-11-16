@@ -5,7 +5,7 @@
 
 import { canvasSpecFromObject } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
-import { EnsoCliError } from "./errors.js";
+import { EnsoError } from "./errors.js";
 import { GrowthBlocked, growLayout, type GrowthEdge, type GrowthNode, type GrowthSpot } from "./growth-layout.js";
 import { CANVAS_WORLD_HOME, centeringOffset, contextNodeBox, contextObject, existingContent, readArray } from "./layout-centering.js";
 import { ANNOTATION_GEOMETRY, CARD_GEOMETRY, SYMBOL_GEOMETRY, computeCanvasLayout, isSymbolAppearance, linkCrossings } from "./layout.js";
@@ -178,7 +178,7 @@ export function planGrowth(intent: CanvasIntent, context: unknown, previous: Gro
   } catch (error) {
     if (!(error instanceof GrowthBlocked)) throw error;
     const region = regionOf(error.key);
-    throw new EnsoCliError("region_blocked", region ? `Region '${region.title}' has no room for '${error.key}'` : `No free spot for '${error.key}'`, {
+    throw new EnsoError("region_blocked", region ? `Region '${region.title}' has no room for '${error.key}'` : `No free spot for '${error.key}'`, {
       path: "nodes", expected: "a spot that covers no Node outside the Region",
       hint: region ? "Make the Region bigger, move what blocks it, or place the Node in another Region" : "Give the Node x and y"
     });
@@ -335,7 +335,7 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
     const byId = canvas.groups.filter((group) => typeof group.id === "string" && group.id.toLowerCase() === selector.toLowerCase());
     const found = byId.length > 0 ? byId : canvas.groups.filter((group) => group.title === selector);
     if (found.length > 1) {
-      throw new EnsoCliError("ambiguous_selector", `${found.length} Regions are titled '${selector}'`, {
+      throw new EnsoError("ambiguous_selector", `${found.length} Regions are titled '${selector}'`, {
         path: "regions", regions: found.map((group) => group.id), expected: "one Region", hint: "Name the Region by its id"
       });
     }
@@ -343,7 +343,7 @@ function collectRegions(intent: CanvasIntent, canvas: Canvas, growth: Growth | u
     const pending = regions.get(selector);
     if (pending) return pending;
     if (UUID.test(selector)) {
-      throw new EnsoCliError("missing_selector", `No Region has the id '${selector}'`, { path: "regions", expected: "a Region title or id", hint: "Inspect the Canvas and use a Region's id, or name a new Region by title" });
+      throw new EnsoError("missing_selector", `No Region has the id '${selector}'`, { path: "regions", expected: "a Region title or id", hint: "Inspect the Canvas and use a Region's id, or name a new Region by title" });
     }
     const region: Region = { title: selector, drawn: true, declared: false, touched: false, members: new Set() };
     regions.set(selector, region);
@@ -665,8 +665,8 @@ function stackAbove(items: LaneItem[], intent: CanvasIntent, canvas: Canvas): Ar
   });
 }
 
-function laneError(selector: string): EnsoCliError {
-  return new EnsoCliError("missing_selector", `No Node on the Canvas or in this intent matches '${selector}'`, {
+function laneError(selector: string): EnsoError {
+  return new EnsoError("missing_selector", `No Node on the Canvas or in this intent matches '${selector}'`, {
     path: "annotations", expected: "a Node the Canvas holds or this intent places", hint: "Place the Node first, or give the Excerpt or Mark x and y"
   });
 }

@@ -1,7 +1,7 @@
+import { type Growth } from "@enso-app/core";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "./config.js";
-import type { Growth } from "./growth-apply.js";
 
 // The growth lives beside the CLI config, one file per Canvas, so each apply continues the
 // diagram the previous one grew.

@@ -1,5 +1,5 @@
+import { utf8Length, validateFilename } from "@enso-app/core";
 import { describe, expect, it } from "vitest";
-import { utf8Length, validateFilename } from "../src/filenames.js";
 
 describe("utf8Length", () => {
   it.each(["plain.md", "café", "設計メモ", "rocket 🚀", "lone \ud800 surrogate", ""])("counts %j as Node's Buffer does", (value) => {

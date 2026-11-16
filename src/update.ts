@@ -1,3 +1,4 @@
+import { EnsoError } from "@enso-app/core";
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -6,7 +7,6 @@ import { promisify } from "node:util";
 import type { Command } from "commander";
 import { z } from "zod/v3";
 import { configDir } from "./config.js";
-import { EnsoCliError } from "./errors.js";
 import { inspectInstallation, type Installation } from "./installation.js";
 import { cliVersion } from "./version.js";
 
@@ -62,7 +62,7 @@ export async function latestVersion(): Promise<string> {
     const { version } = z.object({ version: stableVersion }).parse(await response.json());
     return version;
   } catch {
-    throw new EnsoCliError("update_check_failed", "Could not check npm for the latest CLI version", {
+    throw new EnsoError("update_check_failed", "Could not check npm for the latest CLI version", {
       hint: "Check your internet connection and retry `enso update`"
     });
   }
@@ -104,7 +104,7 @@ export async function updateCli(checkOnly: boolean): Promise<{ installedVersion:
   const result = { installedVersion: cliVersion, latestVersion: latest, updateAvailable, updated: false, installation };
   if (checkOnly || !updateAvailable) return result;
 
-  if (!installation.automatic) throw new EnsoCliError("update_install_location", "Use the installation's local update action", { ...installation, hint: installation.updateCommand });
+  if (!installation.automatic) throw new EnsoError("update_install_location", "Use the installation's local update action", { ...installation, hint: installation.updateCommand });
   try {
     if (installation.owner === "bun") {
       await execute("bun", ["add", "--global", `${packageName}@${latest}`, "--registry", registry], { cwd: dirname(packageDirectory), timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
@@ -121,8 +121,8 @@ export async function updateCli(checkOnly: boolean): Promise<{ installedVersion:
     if (installed.version !== latest) throw new Error("The installed version differs from the requested version");
     return { installedVersion: installed.version, latestVersion: latest, updateAvailable: false, updated: true, installation };
   } catch (error) {
-    if (error instanceof EnsoCliError) throw error;
-    throw new EnsoCliError("update_failed", `${installation.owner} could not update the CLI installation`, {
+    if (error instanceof EnsoError) throw error;
+    throw new EnsoError("update_failed", `${installation.owner} could not update the CLI installation`, {
       hint: installation.updateCommand
     });
   }

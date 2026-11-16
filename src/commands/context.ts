@@ -1,10 +1,9 @@
+import { EnsoError, type EnsoEnvelope, markWorldBox } from "@enso-app/core";
 import { Command } from "commander";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
-import { markWorldBox } from "../mark-model.js";
 
 const maxVisionImageEdge = 1568;
 
@@ -22,7 +21,7 @@ export function registerContext(program: Command): void {
     .description("Export a Canvas view: positions by default, --spec to build from it, --full for every stored field")
     .action(async (options: ContextOptions) => {
       if ((options.spec || options.full) && (options.spec && options.full || options.vision || options.diagnostics || options.node || options.query)) {
-        throw new EnsoCliError("invalid_input", "--spec and --full each stand alone", {
+        throw new EnsoError("invalid_input", "--spec and --full each stand alone", {
           path: "context", expected: "--spec or --full with an optional --canvas", hint: "Read each view in its own call"
         });
       }
@@ -62,7 +61,7 @@ function diagnosticsContext(envelope: EnsoEnvelope): EnsoEnvelope {
   const data = envelope.data as Record<string, unknown> | undefined;
   const vision = data?.vision as Record<string, unknown> | undefined;
   if (!vision?.diagnostics) {
-    throw new EnsoCliError("diagnostics_unavailable", "Enso returns no visual diagnostics", {
+    throw new EnsoError("diagnostics_unavailable", "Enso returns no visual diagnostics", {
       hint: "Open the intended Canvas in Enso and retry context --diagnostics",
       vision
     });
