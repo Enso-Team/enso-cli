@@ -1,14 +1,9 @@
+import { parseCanvasSpec, specError, compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, plannedExcerpts, regionWarnings, markWorldBox, centeringOffset, contextObject, patchBounds, existingContent, readArray, translatePatch, noteMatches, type CanvasIntent, EnsoError, errorEnvelope, type EnsoEnvelope } from "@enso-app/core";
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
-import { canvasSpecContract, parseCanvasSpec, specError } from "../canvas-spec.js";
-import { compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, plannedExcerpts, regionWarnings } from "../layout.js";
+import { canvasSpecContract } from "../canvas-spec-contract.js";
 import { checkExcerptSource } from "../excerpt-model.js";
-import { markWorldBox } from "../mark-model.js";
-import { centeringOffset, contextObject, patchBounds, existingContent, readArray, translatePatch } from "../layout-centering.js";
-import { noteMatches } from "../note-identity.js";
-import type { CanvasIntent } from "../canvas-intent.js";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { applyCanvasIntent, placementReport, requestCanvasContext } from "./canvas.js";
 import { moveExcerpt, placeNoteExcerpt } from "./excerpt.js";
 
@@ -119,7 +114,7 @@ export function registerLayout(program: Command): void {
 
 async function canvasContext(canvas: string): Promise<EnsoEnvelope> {
   const result = await requestCanvasContext(new BridgeClient(), canvas);
-  if (!result.ok) throw new EnsoCliError(result.error.code, result.error.message, result.error.details);
+  if (!result.ok) throw new EnsoError(result.error.code, result.error.message, result.error.details);
   return result;
 }
 
@@ -174,7 +169,7 @@ function reuseMarks(intent: CanvasIntent, onCanvas: OnCanvas): { intent: CanvasI
 
 async function vaultPath(): Promise<string> {
   const vault = await new BridgeClient().request("/v1/vault/current");
-  if (!vault.ok) throw new EnsoCliError(vault.error.code, vault.error.message, vault.error.details ?? {});
+  if (!vault.ok) throw new EnsoError(vault.error.code, vault.error.message, vault.error.details ?? {});
   return (vault.data as { path: string }).path;
 }
 
@@ -182,7 +177,7 @@ function spacingFactor(raw: string | undefined): number {
   if (raw === undefined) return 1;
   const factor = Number(raw);
   if (!Number.isFinite(factor) || factor < 1 || factor > 10) {
-    throw new EnsoCliError("invalid_input", `Spacing factor '${raw}' is out of range`, {
+    throw new EnsoError("invalid_input", `Spacing factor '${raw}' is out of range`, {
       path: "spacing",
       expected: "a number from 1 to 10",
       hint: "1 is the standard grid; 1.5 or 2 opens the gaps between nodes so link labels have room"
@@ -191,8 +186,8 @@ function spacingFactor(raw: string | undefined): number {
   return factor;
 }
 
-function usageError(message: string): EnsoCliError {
-  return new EnsoCliError("invalid_input", message, {
+function usageError(message: string): EnsoError {
+  return new EnsoError("invalid_input", message, {
     path: "usage",
     expected: "enso layout <graph.json> [--apply [--dry-run]], or enso layout --schema",
     hint: "Run `enso layout --help` for the flag list"
@@ -205,19 +200,19 @@ const RELAYOUT_CODES = new Set(["title_collision", "already_on_canvas"]);
  * Layout compiles a Canvas once. This folds the preflight title collision and the app's
  * already_on_canvas into one error that names the re-layout ticket.
  */
-function relayoutError(error: unknown, placement: ReturnType<typeof placementReport>): EnsoCliError | undefined {
-  const code = error instanceof EnsoCliError
+function relayoutError(error: unknown, placement: ReturnType<typeof placementReport>): EnsoError | undefined {
+  const code = error instanceof EnsoError
     ? error.body.code
     : typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string"
       ? (error as { code: string }).code
       : undefined;
   if (code === undefined || !RELAYOUT_CODES.has(code)) return undefined;
-  return new EnsoCliError("canvas_already_laid_out", "The target Canvas already contains members of this spec", {
+  return new EnsoError("canvas_already_laid_out", "The target Canvas already contains members of this spec", {
     path: "canvas",
     placement,
     expected: "a target Canvas free of the spec's members",
     hint: "Compile onto an empty Canvas, or remove the existing elements first. Re-layout and update mode are tracked in issue #25.",
-    cause: error instanceof EnsoCliError ? error.body : error
+    cause: error instanceof EnsoError ? error.body : error
   });
 }
 

@@ -1,5 +1,5 @@
 import { z } from "zod/v3";
-import { EnsoCliError, isMissingRoute, type EnsoEnvelope } from "./errors.js";
+import { EnsoError, isMissingRoute, type EnsoEnvelope } from "./errors.js";
 
 // A Mark is canvas-owned writing: typed text an agent or person places on the Canvas, or
 // handwriting a person draws. It labels, decorates, or expands on the Canvas without being a
@@ -54,8 +54,8 @@ export function markWorldBox(mark: { x: number; y: number; width?: number | null
   return { minX: mark.x, minY: mark.y, maxX: mark.x + width, maxY: mark.y + Math.max(1, lines) * (mark.fontSize ?? MARK_DEFAULT_FONT_SIZE) * 1.35 };
 }
 
-export function marksUnsupported(details: Record<string, unknown> = {}): EnsoCliError {
-  return new EnsoCliError("app_outdated", "The Enso app does not support Marks yet", {
+export function marksUnsupported(details: Record<string, unknown> = {}): EnsoError {
+  return new EnsoError("app_outdated", "The Enso app does not support Marks yet", {
     ...details,
     hint: "Update the Enso app"
   });

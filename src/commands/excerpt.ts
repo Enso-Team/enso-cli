@@ -1,11 +1,9 @@
+import { EnsoError, errorEnvelope, type EnsoEnvelope, noteMatches, MARK_DEFAULT_FONT_SIZE } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BridgeClient, type RequestOptions } from "../client.js";
-import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { passageSelection, requireExcerptSupport } from "../excerpt-model.js";
-import { noteMatches } from "../note-identity.js";
-import { MARK_DEFAULT_FONT_SIZE } from "../mark-model.js";
 import { indexedNoteID } from "../vault-index.js";
 
 type PlacementOptions = { x?: number; y?: number; width?: number; fontSize?: number; align?: string; dryRun?: boolean };
@@ -73,7 +71,7 @@ function placementBody(options: PlacementOptions): Record<string, unknown> {
 }
 
 function unwrap<T>(envelope: EnsoEnvelope): T {
-  if (!envelope.ok) throw new EnsoCliError(envelope.error.code, envelope.error.message, envelope.error.details ?? {});
+  if (!envelope.ok) throw new EnsoError(envelope.error.code, envelope.error.message, envelope.error.details ?? {});
   return envelope.data as T;
 }
 
@@ -82,12 +80,12 @@ async function noteNode(selector: string): Promise<NoteNode> {
   const { nodes } = unwrap<{ nodes: NoteNode[] }>(await request("/v1/nodes"));
   const matches = nodes.filter(node => node.kind === "note" && noteMatches({ ...node, ref: node.ref ?? undefined }, selector));
   if (matches.length === 0) {
-    throw new EnsoCliError("node_not_found", `No note node on the open canvas matches '${selector}'`, {
+    throw new EnsoError("node_not_found", `No note node on the open canvas matches '${selector}'`, {
       hint: "Place the note first with `enso node place <note>`, so the excerpt has a node to link from"
     });
   }
   if (matches.length > 1) {
-    throw new EnsoCliError("ambiguous_selector", `${matches.length} note nodes match '${selector}'`, {
+    throw new EnsoError("ambiguous_selector", `${matches.length} note nodes match '${selector}'`, {
       nodes: matches.map(node => ({ id: node.id, ref: node.ref })),
       hint: "Pass the note's vault-relative path or the node id"
     });
@@ -103,11 +101,11 @@ export async function placeNoteExcerpt(options: CreateOptions & { note: string }
   if (options.x === undefined || options.y === undefined) throw new InvalidArgumentError("--note requires --x and --y");
   const formatting = placementBody({ width: options.width, fontSize: options.fontSize, align: options.align });
   const node = await noteNode(options.note);
-  if (!node.ref) throw new EnsoCliError("invalid_input", "The note node has no file in the vault", { node: node.id });
+  if (!node.ref) throw new EnsoError("invalid_input", "The note node has no file in the vault", { node: node.id });
   const { path: vault } = unwrap<{ path: string }>(await request("/v1/vault/current"));
   const noteID = node.noteID ?? options.noteId ?? indexedNoteID(vault, node.ref);
   if (!noteID) {
-    throw new EnsoCliError("app_outdated", "The Enso app does not report the note's id", {
+    throw new EnsoError("app_outdated", "The Enso app does not report the note's id", {
       node: node.id,
       hint: "Update the Enso app, or pass --note-id with the noteID that `enso excerpt list` shows for an excerpt of this note"
     });

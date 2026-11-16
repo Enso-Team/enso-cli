@@ -1,7 +1,3 @@
-// Where a compiled canvas patch lands in world space.
-// `enso layout` compiles relative geometry around the origin; this post-pass moves the whole
-// cluster — nodes and primitives together — to a world position the app is looking at.
-
 import type { CanvasIntent } from "./canvas-intent.js";
 import { markWorldBox } from "./mark-model.js";
 import { LAYOUT_GEOMETRY, SYMBOL_GEOMETRY, isSymbolAppearance, type LayoutGeometry } from "./layout.js";

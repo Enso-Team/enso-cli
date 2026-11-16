@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { printEnvelope } from "../src/errors.js";
+import { CANVAS_INTENT_CONTRACT_HINT, errorEnvelope, parseCanvasIntent, specError, type EnsoEnvelope } from "@enso-app/core";
 
 describe("printEnvelope", () => {
   afterEach(() => {
@@ -35,5 +36,32 @@ describe("printEnvelope", () => {
         }
       }
     });
+  });
+});
+
+describe("core hints in CLI output", () => {
+  const printed = (run: () => unknown): Record<string, unknown> => {
+    let envelope: EnsoEnvelope | undefined;
+    try { run(); } catch (error) { envelope = errorEnvelope(error); }
+    const chunks: string[] = [];
+    const stream = { write: (chunk: string) => { chunks.push(chunk); return true; } } as unknown as NodeJS.WritableStream;
+    printEnvelope(envelope!, false, stream);
+    return JSON.parse(chunks.join("")).error.details;
+  };
+
+  it("points an invalid intent at `enso canvas apply --schema`", () => {
+    expect(printed(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "nope" }] })).hint).toBe("Run `enso canvas apply --schema` for the machine-readable contract");
+  });
+
+  it("keeps the CLI's name for the schema an invalid intent fails", () => {
+    expect(printed(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "nope" }] })).expected).toBe("canvas apply schema");
+  });
+
+  it("points an invalid canvas spec at `enso layout --schema`", () => {
+    expect(printed(() => { throw specError("bad graph", "members"); }).hint).toBe("Run `enso layout --schema` for the machine-readable canvas spec contract");
+  });
+
+  it("keeps core's door-neutral hint out of CLI output", () => {
+    expect(printed(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "nope" }] })).hint).not.toBe(CANVAS_INTENT_CONTRACT_HINT);
   });
 });

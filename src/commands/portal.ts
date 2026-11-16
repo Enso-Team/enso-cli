@@ -1,6 +1,6 @@
+import { validateFilename } from "@enso-app/core";
 import { Command } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
-import { validateFilename } from "../filenames.js";
 import { BridgeClient } from "../client.js";
 
 export function registerPortal(program: Command): void {

@@ -1,10 +1,10 @@
+import { EnsoError, errorEnvelope, type EnsoEnvelope } from "@enso-app/core";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Command } from "commander";
 import { BridgeClient } from "../client.js";
 import { assertCompatibleContract } from "../contract.js";
 import { discoverAndLink } from "../discovery.js";
-import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { inspectInstallation } from "../installation.js";
 import { cliVersion } from "../version.js";
 import { installSkill, parseSkillInstaller, validateSkillTargets, type SkillInstallOptions } from "./skill.js";
@@ -14,15 +14,15 @@ const execute = promisify(execFile);
 async function appStatus(): Promise<EnsoEnvelope> {
   try { return await new BridgeClient().request("/v1/status"); }
   catch (error) {
-    if (!(error instanceof EnsoCliError) || !["app_unavailable", "auth_required", "link_failed"].includes(error.body.code)) throw error;
-    if (process.platform !== "darwin") throw new EnsoCliError("app_launch_required", "Launch the Enso Mac app to complete setup", { stage: "app", hint: "Run setup on the Mac that has Enso installed" });
+    if (!(error instanceof EnsoError) || !["app_unavailable", "auth_required", "link_failed"].includes(error.body.code)) throw error;
+    if (process.platform !== "darwin") throw new EnsoError("app_launch_required", "Launch the Enso Mac app to complete setup", { stage: "app", hint: "Run setup on the Mac that has Enso installed" });
     try { await execute("open", ["-a", "Enso"], { timeout: 10000 }); }
-    catch { throw new EnsoCliError("app_missing", "The installed Enso app could not launch", { stage: "app", hint: "Install or launch Enso, then run enso setup" }); }
+    catch { throw new EnsoError("app_missing", "The installed Enso app could not launch", { stage: "app", hint: "Install or launch Enso, then run enso setup" }); }
     for (let attempt = 0; attempt < 12; attempt += 1) {
       if (await discoverAndLink()) return new BridgeClient().request("/v1/status");
       await new Promise(resolve => setTimeout(resolve, 250));
     }
-    throw new EnsoCliError("app_unavailable", "Enso's bridge is unavailable after launch", { stage: "app", hint: "Open Enso and check Local agent access in Settings, then run enso setup" });
+    throw new EnsoError("app_unavailable", "Enso's bridge is unavailable after launch", { stage: "app", hint: "Open Enso and check Local agent access in Settings, then run enso setup" });
   }
 }
 

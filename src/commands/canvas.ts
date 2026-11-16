@@ -1,15 +1,11 @@
+import { bindCreatedMarks, compileCanvasApply, createdMarkIds, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent, marksUnsupported, CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset, validateFilename, EnsoError, errorEnvelope, type EnsoEnvelope, planGrowth, type Growth } from "@enso-app/core";
 import { Command } from "commander";
+import { canvasApplyContract } from "../canvas-apply-contract.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { bindCreatedMarks, canvasApplyContract, compileCanvasApply, createdMarkIds, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent } from "../canvas-intent.js";
-import { marksUnsupported } from "../mark-model.js";
-import { CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset } from "../layout-centering.js";
 import { BridgeClient } from "../client.js";
-import { validateFilename } from "../filenames.js";
-import { EnsoCliError, errorEnvelope, type EnsoEnvelope } from "../errors.js";
 import { readGrowth, writeGrowth } from "../growth-store.js";
 import { checkExcerptSource } from "../excerpt-model.js";
-import { planGrowth, type Growth } from "../growth-apply.js";
 import { deleteExcerpt, placeNoteExcerpt, updateExcerpt } from "./excerpt.js";
 
 export function registerCanvas(program: Command): void {
@@ -69,7 +65,7 @@ export function registerCanvas(program: Command): void {
       const listed = readArray<{ id?: string; name?: string; ref?: string }>(canvases.data, "canvases");
       const found = listed.filter((item) => (item as { canvasID?: string }).canvasID?.toUpperCase() === target.canvasID);
       if (found.length !== 1) {
-        throw new EnsoCliError(found.length === 0 ? "missing_selector" : "ambiguous_selector",
+        throw new EnsoError(found.length === 0 ? "missing_selector" : "ambiguous_selector",
           found.length === 0 ? `No Canvas matches '${selector}'` : `Multiple Canvases match '${selector}'`,
           { path: "canvas", expected: "one Canvas name, stable canvasID, or ref", hint: "Run `enso canvas list` and copy one exactly" });
       }
@@ -77,13 +73,13 @@ export function registerCanvas(program: Command): void {
       if (!vault.ok) return vault;
       const root = (vault.data as { path?: string } | undefined)?.path;
       const ref = found[0].ref ?? `${found[0].name}.json`;
-      if (!root) throw new EnsoCliError("vault_unavailable", "The app reported no Vault path", { path: "vault", expected: "a Vault folder", hint: "Open a Vault in Enso" });
+      if (!root) throw new EnsoError("vault_unavailable", "The app reported no Vault path", { path: "vault", expected: "a Vault folder", hint: "Open a Vault in Enso" });
       const file = join(root, "Canvases", ref.replace(/^Canvases\//i, "").replace(/\.json$/i, "") + ".md");
       let markdown: string;
       try {
         markdown = readFileSync(file, "utf8");
       } catch {
-        throw new EnsoCliError("outline_missing", `No outline at ${file}`, { path: "outline", expected: "the outline Enso writes on Canvas save", hint: "Open the Canvas in Enso once so it writes its outline" });
+        throw new EnsoError("outline_missing", `No outline at ${file}`, { path: "outline", expected: "the outline Enso writes on Canvas save", hint: "Open the Canvas in Enso once so it writes its outline" });
       }
       return { ok: true, data: { canvas: found[0].name ?? selector, file, markdown } };
     });
@@ -128,7 +124,7 @@ export function registerCanvas(program: Command): void {
       try {
         decoded = JSON.parse(source);
       } catch (error) {
-        throw new EnsoCliError("invalid_input", "Canvas apply input is not valid JSON", {
+        throw new EnsoError("invalid_input", "Canvas apply input is not valid JSON", {
           path: "transport",
           expected: "a JSON object",
           hint: error instanceof Error ? error.message : "Check the JSON syntax"
@@ -233,8 +229,8 @@ export async function applyCanvasIntent(
   try {
     result = await executeCanvasIntent(intent, dryRun, preflightContext, placement);
   } catch (error) {
-    if (error instanceof EnsoCliError) {
-      throw new EnsoCliError(error.body.code, error.body.message, { ...error.body.details, placement });
+    if (error instanceof EnsoError) {
+      throw new EnsoError(error.body.code, error.body.message, { ...error.body.details, placement });
     }
     throw error;
   }
@@ -325,7 +321,7 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
         dryRun: false
       });
     } catch (error) {
-      if (!(error instanceof EnsoCliError)) throw error;
+      if (!(error instanceof EnsoError)) throw error;
       result = { ok: false, error: error.body };
     }
     if (!result.ok) {
@@ -360,7 +356,7 @@ async function executeCanvasIntent(intent: CanvasIntent, dryRun: boolean, prefli
     appliedBatches.push({ name: "excerpts", count: intent.excerpts.length });
   }
   const verification = await inspect().catch(error => {
-    if (error instanceof EnsoCliError) return { ok: false as const, error: error.body };
+    if (error instanceof EnsoError) return { ok: false as const, error: error.body };
     throw error;
   });
   const verificationResult = verification.ok ? verifyCanvasIntent(intent, verification.data, results) : { ok: false, mismatches: ["target unavailable"] };
@@ -414,8 +410,8 @@ function verificationFailure(mismatches: string[], appliedBatches: Array<{ name:
   };
 }
 
-function transportError(message: string): EnsoCliError {
-  return new EnsoCliError("invalid_input", message, {
+function transportError(message: string): EnsoError {
+  return new EnsoError("invalid_input", message, {
     path: "transport",
     expected: "exactly one of file, --json <literal>, or --json -",
     hint: "Run `enso canvas apply --schema` for transport details"

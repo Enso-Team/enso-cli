@@ -1,70 +1,10 @@
-export type EnsoErrorCode =
-  | "app_unavailable"
-  | "auth_required"
-  | "access_disabled"
-  | "cli_outdated"
-  | "app_outdated"
-  | "bridge_busy"
-  | "canvas_changed"
-  | "invalid_response"
-  | "invalid_input"
-  | "link_failed"
-  | "ambiguous_selector"
-  | string;
+import { CANVAS_INTENT_CONTRACT_HINT, CANVAS_INTENT_SCHEMA_EXPECTED, CANVAS_SPEC_CONTRACT_HINT, type EnsoEnvelope } from "@enso-app/core";
 
-export type EnsoErrorBody = {
-  code: EnsoErrorCode;
-  message: string;
-  details?: Record<string, unknown>;
+const commandHints: Record<string, string> = {
+  [CANVAS_INTENT_CONTRACT_HINT]: "Run `enso canvas apply --schema` for the machine-readable contract",
+  [CANVAS_SPEC_CONTRACT_HINT]: "Run `enso layout --schema` for the machine-readable canvas spec contract"
 };
-
-export type EnsoEnvelope<T = unknown> =
-  | { ok: true; data: T; text?: string }
-  | { ok: false; error: EnsoErrorBody; text?: string };
-
-export class EnsoCliError extends Error {
-  readonly body: EnsoErrorBody;
-
-  constructor(code: EnsoErrorCode, message: string, details: Record<string, unknown> = {}) {
-    super(message);
-    this.name = "EnsoCliError";
-    this.body = { code, message, details };
-  }
-}
-
-export function errorEnvelope(error: unknown): EnsoEnvelope {
-  if (error instanceof EnsoCliError) {
-    return { ok: false, error: error.body };
-  }
-
-  if (error instanceof Error) {
-    return {
-      ok: false,
-      error: {
-        code: "invalid_input",
-        message: error.message,
-        details: {}
-      }
-    };
-  }
-
-  return {
-    ok: false,
-    error: {
-      code: "invalid_input",
-      message: "Unknown CLI error",
-      details: { error }
-    }
-  };
-}
-
-/**
- * An app that predates a route answers it with the bridge's generic missing-route error. A
- * route's own not_found (a missing Mark, Node, or folder) carries its own message.
- */
-export function isMissingRoute(error: EnsoErrorBody): boolean {
-  return error.code === "not_found" && error.message === "Bridge route not found";
-}
+const commandExpectations: Record<string, string> = { [CANVAS_INTENT_SCHEMA_EXPECTED]: "canvas apply schema" };
 
 const DUPLICATE_LINK_HINT = "Use link update on the existing link id instead of link create";
 
@@ -93,8 +33,14 @@ export function printEnvelope(
   stream.write("\n");
 }
 
-function withRecovery(envelope: EnsoEnvelope): EnsoEnvelope {
-  if (envelope.ok) return envelope;
+function withRecovery(given: EnsoEnvelope): EnsoEnvelope {
+  if (given.ok) return given;
+  const { hint: coreHint, expected: coreExpected } = given.error.details ?? {};
+  const commandHint = typeof coreHint === "string" ? commandHints[coreHint] : undefined;
+  const commandExpected = typeof coreExpected === "string" ? commandExpectations[coreExpected] : undefined;
+  const envelope: EnsoEnvelope = commandHint || commandExpected
+    ? { ...given, error: { ...given.error, details: { ...given.error.details, ...(commandHint ? { hint: commandHint } : {}), ...(commandExpected ? { expected: commandExpected } : {}) } } }
+    : given;
   const hints: Record<string, string> = {
     bridge_instance_mismatch: "A different Enso app instance answers at this bridge address. Check which app you meant before setting ENSO_BRIDGE_INSTANCE_ID again; the CLI has not retried",
     bridge_instance_unavailable: "Update Enso to a build whose /v1/health reports bridgeInstanceID, or unset ENSO_BRIDGE_INSTANCE_ID",

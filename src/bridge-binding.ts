@@ -1,4 +1,4 @@
-import { EnsoCliError } from "./errors.js";
+import { EnsoError } from "@enso-app/core";
 
 export const bridgeInstanceEnv = "ENSO_BRIDGE_INSTANCE_ID";
 /** Sent with the expected instance on every bridge request; an app that advertises `bridgeInstanceID` refuses a mismatch. */
@@ -20,7 +20,7 @@ export function expectedBridgeInstance(): string | undefined {
   const value = process.env[bridgeInstanceEnv];
   if (value === undefined || value === "") return undefined;
   if (!isBridgeInstanceID(value)) {
-    throw new EnsoCliError("invalid_input", `${bridgeInstanceEnv} must be the bridge instance ID the Enso app advertises on /v1/health`);
+    throw new EnsoError("invalid_input", `${bridgeInstanceEnv} must be the bridge instance ID the Enso app advertises on /v1/health`);
   }
   return value;
 }
@@ -30,12 +30,12 @@ export function assertExpectedBridgeInstance(health: unknown, bridgeUrl: string,
   if (expected === undefined) return;
   const actual = advertisedInstance(health);
   if (actual === undefined) {
-    throw new EnsoCliError("bridge_instance_unavailable", "The Enso app at this bridge address advertises no bridge instance, so it cannot be checked against the expected one", {
+    throw new EnsoError("bridge_instance_unavailable", "The Enso app at this bridge address advertises no bridge instance, so it cannot be checked against the expected one", {
       bridgeUrl, expectedInstanceID: expected
     });
   }
   if (actual !== expected) {
-    throw new EnsoCliError("bridge_instance_mismatch", "A different Enso app instance answers at this bridge address than the one this invocation is bound to", {
+    throw new EnsoError("bridge_instance_mismatch", "A different Enso app instance answers at this bridge address than the one this invocation is bound to", {
       bridgeUrl, expectedInstanceID: expected, instanceID: actual
     });
   }

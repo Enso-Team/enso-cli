@@ -1,9 +1,7 @@
+import { computeCanvasLayout, LAYOUT_GEOMETRY, layoutGeometry, linkCrossings, regionWarnings, SYMBOL_GEOMETRY, type CanvasLayout, parseCanvasSpec, CANVAS_WORLD_HOME } from "@enso-app/core";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { computeCanvasLayout, LAYOUT_GEOMETRY, layoutGeometry, linkCrossings, regionWarnings, SYMBOL_GEOMETRY, type CanvasLayout } from "../../src/layout.js";
-import { parseCanvasSpec } from "../../src/canvas-spec.js";
-import { CANVAS_WORLD_HOME } from "../../src/layout-centering.js";
 import { fixtureTarget, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
