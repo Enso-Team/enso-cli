@@ -1,7 +1,7 @@
 import { z } from "zod/v3";
 import { defaultBridgeUrl, readConfig } from "./config.js";
-import { assertTargetingContract, contractHeader, contractVersion, oldestSupportedContractVersion } from "./contract.js";
-import { assertExpectedBridgeInstance, bridgeInstanceHeader, expectedBridgeInstance, runnerBridge, runnerBridgeEnv } from "./bridge-binding.js";
+import { assertCompatibleContract, contractHeader, contractVersion } from "./contract.js";
+import { assertExpectedBridgeInstance, bridgeInstanceHeader, expectedBridgeInstance } from "./bridge-binding.js";
 import { discoverAndLink } from "./discovery.js";
 import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 import { currentRequestContext, RequestContext, parseTarget, routeScope, sameTarget, type CanvasTarget, type RouteScope } from "./targeting.js";
@@ -119,7 +119,7 @@ export class BridgeClient {
     }
     const expectedVault = this.context.bound ?? this.context.resolvedTarget;
     if (scope === "vault" && method === "GET" && expectedVault) await this.assertVault();
-    const result = await this.transmit(url, method, body, options.auth !== false && scope !== "health", scope === "canvas" ? contractVersion : oldestSupportedContractVersion, scope);
+    const result = await this.transmit(url, method, body, options.auth !== false && scope !== "health", scope);
     if (result.ok && url.pathname === "/v1/vault/current" && expectedVault) this.checkVault(result);
     if (result.ok && scope === "vault" && method === "GET" && expectedVault) await this.assertVault();
     return result;
@@ -143,7 +143,7 @@ export class BridgeClient {
     return this.context.negotiated ??= (async () => {
       const data = await this.health();
       const connection = await this.connect();
-      assertTargetingContract((data as { contractVersion?: unknown })?.contractVersion, connection.bridgeUrl);
+      assertCompatibleContract((data as { contractVersion?: unknown })?.contractVersion, connection.bridgeUrl);
     })();
   }
 
@@ -173,18 +173,10 @@ export class BridgeClient {
   private async bootstrap(path: string, auth = true): Promise<EnsoEnvelope> {
     if (path !== "/v1/health") await this.verifyInstance();
     const connection = await this.connect();
-    return this.transmit(new URL(path, connection.bridgeUrl), "GET", undefined, auth, oldestSupportedContractVersion, routeScope(path, "GET"));
+    return this.transmit(new URL(path, connection.bridgeUrl), "GET", undefined, auth, routeScope(path, "GET"));
   }
 
   private async connect(discover = true): Promise<{ bridgeUrl: string; token?: string }> {
-    // A runner session's bridge and pairing come only from its binding: no configuration, discovery or override.
-    const runner = runnerBridge();
-    if (runner) {
-      if (this.baseUrl && new URL(this.baseUrl).origin !== runner.bridgeUrl) {
-        throw new EnsoCliError("target_conflict", "A request cannot override the runner session's bridge instance");
-      }
-      return { bridgeUrl: runner.bridgeUrl, token: runner.token };
-    }
     if (!discover && !this.context.connection) {
       const config = readConfig();
       const bridgeUrl = this.baseUrl ?? config?.bridgeUrl ?? defaultBridgeUrl;
@@ -214,18 +206,14 @@ export class BridgeClient {
     return connection;
   }
 
-  private async transmit(url: URL, method: string, body: unknown, auth: boolean, version: number, scope: RouteScope): Promise<EnsoEnvelope> {
+  private async transmit(url: URL, method: string, body: unknown, auth: boolean, scope: RouteScope): Promise<EnsoEnvelope> {
     const connection = await this.connect(auth);
     if (auth && !connection.token) {
-      if (runnerBridge()) throw new EnsoCliError("auth_required", "The runner found no Enso pairing for this session's bridge", {
-        hint: "Stop and tell the user to check that Enso is running with Local agent access on. A runner session cannot link the CLI"
-      });
       throw new EnsoCliError("auth_required", "Launch the Enso app, then run this command again to link the CLI", {
         hint: "Update Enso so it provisions a token file, or run `enso auth link` to pair through its prompt"
       });
     }
-    assertBridgeAllowed({ url, method, scope, bound: this.context.bound });
-    const headers: Record<string, string> = { Accept: "application/json", [contractHeader]: String(version) };
+    const headers: Record<string, string> = { Accept: "application/json", [contractHeader]: String(contractVersion) };
     const instance = expectedBridgeInstance();
     if (instance !== undefined) headers[bridgeInstanceHeader] = instance;
     if (auth) headers.Authorization = `Bearer ${connection.token}`;
@@ -233,7 +221,7 @@ export class BridgeClient {
     const serialized = body === undefined ? undefined : JSON.stringify(body);
     const result = await this.send(url, method, headers, serialized);
     // Only an explicit authentication rejection is safe to resend. Targeted work is never replayed.
-    if (auth && !this.tokenOverride && !this.context.bound && version < contractVersion && !result.ok && result.error.code === "invalid_token") {
+    if (auth && !this.tokenOverride && !this.context.bound && scope !== "canvas" && !result.ok && result.error.code === "invalid_token") {
       const discovered = await discoverAndLink([connection.bridgeUrl], { stay: true });
       if (!discovered) throw new EnsoCliError("invalid_token", "The stored Enso pairing is stale", {
         bridgeUrl: connection.bridgeUrl,
@@ -276,42 +264,6 @@ export class BridgeClient {
     }
 
     return parsed.data as EnsoEnvelope;
-  }
-}
-
-/**
- * The local runner marks the agents it runs with ENSO_RUNNER_BRIDGE. A session without a pinned bridge instance
- * (`disabled`, or any value but `bound`) gets no bridge at all. A bound session gets only requests bound to its own
- * bridge origin, instance and canvas: linking and pairing (called without a request), navigation, and vault changes stay
- * refused, as does a request whose binding is not the session's. Guards against mistakes, not against a same-user
- * process that rewrites its own environment.
- */
-export function assertBridgeAllowed(request?: { url: URL; method: string; scope: RouteScope; bound?: CanvasTarget }): void {
-  const mode = process.env[runnerBridgeEnv];
-  if (mode === undefined) return;
-  if (mode !== "bound") {
-    throw new EnsoCliError("bridge_unavailable", "The Enso app bridge is not available to this runner session", {
-      hint: "The session has no pinned bridge instance (it predates them, or its runner pins none). Work from the canvas selection captured with the prompt instead of reading or changing the canvas"
-    });
-  }
-  const runner = runnerBridge()!;
-  if (!request) {
-    throw new EnsoCliError("runner_bridge_refused", "A runner session cannot link or pair the CLI; the runner supplies the session's pairing", {
-      hint: "Stop and tell the user what you were trying to do"
-    });
-  }
-  if (request.url.origin !== runner.bridgeUrl) {
-    throw new EnsoCliError("target_conflict", "A request cannot override the runner session's bridge instance", { bridgeUrl: runner.bridgeUrl });
-  }
-  if (!request.bound || !sameTarget(request.bound, runner.target)) {
-    throw new EnsoCliError("runner_binding_required", "Every bridge request of a runner session must be bound to the session's canvas", {
-      target: runner.target,
-      hint: "Run enso commands without --vault-id or --canvas-id, and leave ENSO_VAULT_ID and ENSO_CANVAS_ID as the runner set them"
-    });
-  }
-  const { scope, method } = request;
-  if (scope === "pairing" || scope === "navigation" || scope === "vault" && method !== "GET" || /\/subcanvas\/open$/.test(request.url.pathname)) {
-    throw new EnsoCliError("explicit_navigation_required", "A runner session is bound to one canvas and cannot navigate, pair or change the vault");
   }
 }
 

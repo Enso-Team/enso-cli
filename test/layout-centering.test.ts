@@ -40,6 +40,10 @@ function contextWith(nodes: Array<{ x: number; y: number }>): Record<string, unk
 }
 
 describe("layout centering", () => {
+  it("uses reported mark font size for existing canvas bounds", () => {
+    const content = existingContent({ marks: [{ position: { x: 0, y: 0 }, width: 204, fontSize: 34, text: "12345678901" }] });
+    expect(content?.bounds.maxY).toBeCloseTo(91.8);
+  });
   it("centers on the app's empty-canvas home when the canvas holds nothing", () => {
     const placed = centerPatchOnCanvas(patch(), { nodes: [], links: [], diagramPrimitives: [] });
     expect(center(placed)).toEqual({ x: CANVAS_WORLD_HOME.x, y: CANVAS_WORLD_HOME.y });

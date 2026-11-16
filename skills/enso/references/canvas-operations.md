@@ -4,9 +4,11 @@ Read this before a first build, and when recovering from an apply failure.
 
 ## Files and target
 
-A Note's identity is the filename stem or Vault-relative path. Place members must exist as markdown files. Before placing new Notes or adding wikilinks, run `enso check "<path>"` on that folder. Wikilink examples inside backticks or fenced blocks are literal text.
+A Note's identity is the filename stem or Vault-relative path. Before writing a note, choose a nonempty filename other than `.` or `..`, with safe folder components and at most 255 UTF-8 bytes including `.md`. Use spaces, Unicode, and safe punctuation freely. Separators, colons, and control characters belong outside a filename component. The CLI validates canvas names, portal titles, and note placement paths before its mutations; the agent owns validation before direct filesystem writes. Place members must exist as markdown files. Before placing new Notes or adding wikilinks, run `enso check "<path>"` on that folder. Wikilink examples inside backticks or fenced blocks are literal text.
 
 Use an exact Canvas selector or stable `canvasID` from `enso canvas list`. Each invocation resolves one stable vault/canvas pair and reuses it across requests, batches and dry runs. Open another Canvas as a separate explicit `enso canvas open <target>` action before targeting it; named apply/layout commands also require that target to be active. With an immutable vault/canvas binding, keep apply/layout `canvas` as `current` or the bound `canvasID` and preserve the binding. Handle inactive or changed targets by reporting the error and inspecting partial effects before a retry.
+
+Use `enso setup` for agent onboarding and report its structured blockers and hints to the person. It preserves the person's Local agent access setting. Continue from `enso status` when `ok: true`. If Enso is closed, launch it and retry. For unavailable Local agent access or incompatible CLI/app versions, report `error.details.hint` so the user can resolve setup.
 
 ## Grow a diagram
 
@@ -23,6 +25,8 @@ Write each step's intent to a temporary JSON file outside the Vault, or pass it 
   "marks": [{ "mode": "create", "text": "Why retry here?", "connect": ["Sync server"] }]
 }
 ```
+
+Read the full contract with `enso canvas apply --schema`. A Mark's numeric `fontSize` ranges from 8 to 96 World points and defaults to 17, and `width` controls wrapping separately. Reset size with `enso mark update <id> --reset-size` or `enso excerpt update <id> --reset-size`. Inspected `kind: group` elements are Regions.
 
 ```sh
 enso canvas apply /tmp/enso-<task>-step.json

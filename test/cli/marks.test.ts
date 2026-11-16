@@ -5,6 +5,44 @@ import { requestPath, requestBody, calls, run, setupCliTest } from "../support/c
 
 setupCliTest();
 
+it("writes placement alignment through commands and canvas intent verification", async () => {
+  for (const alignment of ["left", "center", "right", "justified"]) {
+    await run(["mark", "update", MARK, "--align", alignment]);
+    expect(body(calls.length - 1)).toEqual({ textAlignment: alignment, dryRun: false });
+    await run(["excerpt", "update", MARK, "--align", alignment]);
+    expect(body(calls.length - 1)).toEqual({ textAlignment: alignment, dryRun: false });
+  }
+  await run(["mark", "create", "Aligned", "--at", "0,0", "--align", "right"]);
+  expect(body(calls.length - 1)).toEqual({ text: "Aligned", x: 0, y: 0, textAlignment: "right", dryRun: false });
+  const intent = parseCanvasIntent({ canvas: "current", marks: [{ mode: "update", id: MARK, textAlignment: "justified" }] });
+  const context = { marks: [{ id: MARK, kind: "text", text: "A thought", textAlignment: "left" }] };
+  expect(compileCanvasApply(intent, context).phases[0].operations).toEqual([{ type: "mark.update", id: MARK, textAlignment: "justified" }]);
+  expect(verifyCanvasIntent(intent, context).mismatches).toEqual([`marks:${MARK}:textAlignment`]);
+  expect(verifyCanvasIntent(intent, { marks: [{ ...context.marks[0], textAlignment: "justified" }] }).ok).toBe(true);
+});
+
+it("estimates sized text and updates excerpt size at the public route", async () => {
+  expect(markWorldBox({ x: 0, y: 0, width: 204, fontSize: 34, text: "12345678901" })).toEqual({ minX: 0, minY: 0, maxX: 204, maxY: 91.80000000000001 });
+  await run(["excerpt", "update", MARK, "--font-size", "34"]);
+  expect(calls[0].url).toContain(`/v1/excerpts/${MARK}`);
+  expect(body(0)).toEqual({ fontSize: 34, dryRun: false });
+});
+
+it("applies and verifies mark size through canvas intents", () => {
+  const intent = parseCanvasIntent({ canvas: "current", marks: [{ mode: "update", id: MARK, fontSize: 32 }] });
+  const context = { marks: [{ id: MARK, kind: "text", text: "A thought", fontSize: 17 }] };
+  expect(compileCanvasApply(intent, context).phases[0].operations).toEqual([{ type: "mark.update", id: MARK, fontSize: 32 }]);
+  expect(verifyCanvasIntent(intent, context).mismatches).toEqual([`marks:${MARK}:fontSize`]);
+  expect(verifyCanvasIntent(intent, { marks: [{ ...context.marks[0], fontSize: 32 }] }).ok).toBe(true);
+});
+
+it("sets and resets world font size without changing wrap width", async () => {
+  await run(["mark", "update", MARK, "--font-size", "32"]);
+  expect(body(0)).toEqual({ fontSize: 32, dryRun: false });
+  await run(["mark", "update", MARK, "--reset-size"]);
+  expect(body(1)).toEqual({ fontSize: 17, dryRun: false });
+});
+
 const MARK = "11111111-1111-4111-8111-111111111111";
 const INK = "22222222-2222-4222-8222-222222222222";
 
@@ -13,6 +51,22 @@ function body(index: number): unknown {
 }
 
 describe("mark commands", () => {
+  it.each(["natural", "justify", "RIGHT", "", "17"])("rejects alignment %s before mutation", async value => {
+    await expect(run(["mark", "update", MARK, "--align", value])).rejects.toThrow("left, center, right, or justified");
+    await expect(run(["excerpt", "update", MARK, "--align", value])).rejects.toThrow("left, center, right, or justified");
+    expect(() => parseCanvasIntent({ canvas: "current", marks: [{ mode: "update", id: MARK, textAlignment: value }] })).toThrow();
+    expect(calls).toHaveLength(0);
+  });
+  it.each(["7", "97", "NaN", "Infinity"])("rejects font size %s before mutation", async value => {
+    await expect(run(["mark", "update", MARK, "--font-size", value])).rejects.toThrow("8–96 finite world points");
+    await expect(run(["excerpt", "update", MARK, "--font-size", value])).rejects.toThrow("8–96 finite world points");
+    expect(calls).toHaveLength(0);
+  });
+  it("rejects simultaneous explicit size and reset before mutation", async () => {
+    const result = await run(["mark", "update", MARK, "--font-size", "32", "--reset-size"]);
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(0);
+  });
   it.each([
     [["mark", "list"], "/v1/marks", "GET"],
     [["mark", "get", MARK], `/v1/marks/${MARK}`, "GET"],

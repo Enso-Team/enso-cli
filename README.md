@@ -11,8 +11,7 @@ npm install -g @enso-app/cli
 enso status --pretty
 ```
 
-Run `enso update` to install the latest release for a global npm installation, or
-`enso update --check` to inspect the installed and available versions. Interactive
+Run `enso update` to install the latest release through the owning global npm or Bun installation. `enso update --check` reports the installed and available versions, installation owner, and update command. Project and linked installations report the exact local command to run. Interactive
 commands check npm at most once per day and print update notifications to stderr.
 Set `ENSO_CLI_NO_UPDATE_CHECK=1` to disable these checks. Checks use a 5-second
 timeout; CI and piped commands keep their structured output.
@@ -20,22 +19,26 @@ timeout; CI and piped commands keep their structured output.
 With the Enso app open, the first command links itself by reading the token
 file the app provisions. `enso auth link` relinks the same way.
 
-Canvas operations require an Enso app with **bridge contract 3**. The CLI checks
-`/v1/health` before targeting and sends `Enso-Contract-Version: 3` on canvas
-requests. An older app fails with `app_outdated` and upgrade guidance; canvas
-commands never fall back to implicit active-canvas execution. Health, pairing,
-discovery, vault operations and explicit navigation use the supported bootstrap
-contract (2), so you can inspect an older app before upgrading.
+The CLI requires an Enso app with **bridge contract 3** and sends
+`Enso-Contract-Version: 3` on every request. It checks `/v1/health` before
+linking or targeting; an older app fails with `app_outdated` and upgrade
+guidance, and canvas commands never fall back to implicit active-canvas
+execution. A contract 3 app still answers discovery (`enso status`,
+`enso canvas list`) from older CLIs, and refuses their other requests with
+`cli_outdated` and the update command.
 
 Install the bundled agent skill:
 
 ```sh
-enso skill install
-enso skill install --agent codex claude-code
+enso setup
+enso setup --agent codex claude-code
+enso skill install --installer bun --agent codex
 npx skills list -g
 ```
 
-`enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. The reply reports each target's installation status and any failures.
+`enso setup` launches the installed Mac app when its bridge needs discovery, pairs through the app token file, checks the bridge contract, and installs the bundled skill. It reports the app version and capabilities when the app provides them, and marks missing information as unknown. Disabled Local agent access requires the person to enable it in Enso Settings. Vault folder grants require the person to approve the app's permission panel when opening that vault.
+
+`enso skill install` detects installed agents and installs to every supported global target, including Codex and Claude Code. Detected project-only agents appear in `skippedAgents`. `--agent` selects specific targets. Both installation commands run without prompts and report each target's status, skipped project-only targets, failures, and package-owned skill provenance. Explicit targets use supported ids such as `codex` and `claude-code`.
 
 ## Canvas targets and immutable bindings
 
@@ -118,33 +121,6 @@ version rules as execution. Apply phases retain their existing partial-success
 reporting; rollback is a canvas snapshot operation, not a transaction covering
 notes, files and sync writes.
 
-## Local prompt runner
-
-Run `enso runner serve --provider fake` (deterministic test provider) or
-`enso runner serve --provider claude` (Claude Agent SDK, using your Claude Code
-sign-in) in its own terminal. The independent local service persists canvas-bound
-sessions, captured prompt context, lifecycle events, and results in a private
-SQLite database outside the vault. It needs the optional `better-sqlite3` native
-module, and the Claude provider the optional `@anthropic-ai/claude-agent-sdk`
-package; with npm 12, install the CLI with
-`npm install -g @enso-app/cli --allow-scripts=better-sqlite3`. `enso runner call`
-accesses its authenticated Unix socket; `enso runner shutdown` cancels active work
-and stops it. Claude runs in the session's codebase directory; permission and
-question prompts become pending requests to answer through the runner. No native
-prompt UI integration is included yet.
-
-A Claude session pins the bridge instance it is created against, and Claude can
-use the `enso` CLI on that session's canvas only: every request is checked
-against the session's canvas and instance, and navigation, linking and other
-canvases are refused. If the user has another canvas open, or Enso restarts,
-the command fails and Claude is told to stop and report it. Session creation
-fails if the app is not running, has Local agent access off, or predates bridge
-instances. Sessions from earlier runner versions keep the bridge disabled.
-
-See [Runner protocol v3](docs/runner-protocol.md) for a runnable example, private
-connection discovery, the native-client contract, the Claude provider, and
-restart/uncertainty rules.
-
 ## For agents
 
 The skill is `skills/enso/SKILL.md`. Paste this when onboarding an agent:
@@ -154,8 +130,8 @@ Use the Enso CLI to work with canvases in the Enso Mac app.
 
 Setup:
 1. npm install -g @enso-app/cli
-2. Launch Enso
-3. enso skill install
+2. enso setup
+3. Report any structured blocker and its hint to the person
 
 Read skills/enso/SKILL.md for the workflow. Frame the explanation around the
 user's question, then create or revise the Canvas through the CLI. Write Note
@@ -191,10 +167,13 @@ A Mark is typed text on the open Canvas that labels, decorates, or comments with
 ```sh
 enso mark create "Open question: does the retry reuse the token?" --at 120,-40 --width 260
 enso mark connect <mark-id> Auth
+enso mark update <mark-id> --font-size 32
+enso mark update <mark-id> --reset-size
+enso excerpt update <excerpt-id> --font-size 24
 enso mark list
 ```
 
-`enso mark update` edits a typed Mark. Handwritten Marks belong to the person who drew them, and `mark list` reports each one's interpretation and approval. `add-to-note` moves a Mark's writing into a Note as an Excerpt, and `drop-to-note` appends it to the Note and removes the Mark. `canvas apply` takes the same Marks in its `marks` section. An app without Marks answers with `app_outdated`.
+`enso mark update` edits a typed mark. `--font-size` sets a finite size from 8 to 96 world points; the default is 17. `--width` changes wrapping. `--reset-size` sets size to 17 and preserves width. Excerpts expose the same size and width controls through `enso excerpt update`. Canvas mark intents accept numeric `fontSize`. Handwritten Marks belong to the person who drew them, and `mark list` reports each one's interpretation and approval. `add-to-note` moves a Mark's writing into a Note as an Excerpt, and `drop-to-note` appends it to the Note and removes the Mark. `canvas apply` takes the same Marks in its `marks` section. An app without Marks answers with `app_outdated`.
 
 ## excerpt
 
@@ -215,7 +194,7 @@ enso excerpt list
 
 `enso layout` compiles graph JSON into a `canvas apply` patch. Declare the graph; the CLI owns every coordinate.
 
-The JSON is a command input, not a Vault file. Members are Notes that already exist, named by title or vault-relative path. Edges become Links. Clusters become regions. `direction` is `TB` or `LR`.
+The JSON is a command input, not a Vault file. Members are Notes that already exist, named by title or vault-relative path. Edges become Links. Clusters become regions. Canvas intents accept `region` and the stored `group` kind for the same region. `direction` is `TB` or `LR`.
 
 ```json
 {
