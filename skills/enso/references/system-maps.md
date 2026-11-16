@@ -23,13 +23,13 @@ Build a **crosswalk**: one row per source element with its Enso counterpart.
 - nested sub-diagram → Portal;
 - merged or dropped element → the reason.
 
-Each source group becomes a `layout` cluster, and the source's flow direction becomes the layout `direction`. A Node belongs to one cluster, so for nested boundaries such as subnets inside a VPC, lay out the innermost boundaries as clusters, then draw each enclosing region with `canvas apply` from the inner regions' bounds plus padding. Where the source is ambiguous, such as an unlabeled arrow or an overloaded box, ask in a question Mark and keep the source's wording until the user answers. When the user also wants the design checked against code, gather repository evidence as well and record each mismatch in the Note as an observation.
+Each source group becomes a Region: declare it in `regions` and place its Nodes `in` it. The source's flow direction becomes the intent's `direction`. For nested boundaries such as subnets inside a VPC, use `enso layout` with the innermost boundaries as clusters, then draw each enclosing region with `canvas apply` from the inner regions' bounds plus padding. Where the source is ambiguous, such as an unlabeled arrow or an overloaded box, ask in a question Mark and keep the source's wording until the user answers. When the user also wants the design checked against code, gather repository evidence as well and record each mismatch in the Note as an observation.
 
 The crosswalk is complete when every source box, arrow, boundary, and annotation has a row.
 
 ## Select Architectural Nodes
 
-The map's scope sets what a Node is: a subsystem for a whole codebase, a file or type for a module, a file or function for one question. When a file's functions matter separately, draw the file as a region labeled with its path, holding its functions as Nodes. In `enso layout`, that is one cluster per file.
+The map's scope sets what a Node is: a subsystem for a whole codebase, a file or type for a module, a file or function for one question. When a file's functions matter separately, draw the file as a region labeled with its path, holding its functions as Nodes: place each function `in` its file's Region.
 
 Choose the level of abstraction that best answers the map's question. For a port, the source's boxes set the default level; change it only for a stated reason recorded in the crosswalk. Possible signals for a Node include:
 

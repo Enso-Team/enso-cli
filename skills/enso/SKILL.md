@@ -8,11 +8,9 @@ description: Work with the user on an Enso Canvas. Use when they want something 
 
 The Canvas must immediately be comprehensible at a glance, without opening any of its Nodes. The broader message must be understandable from Note titles, Link labels, Marks, and Excerpts alone while deeper explanations reside in the Notes of the Nodes. Your chat reply is a caption. Name the Canvas and its key takeaways in a few lines, and put the explanation itself on the Canvas.
 
-Before building a new Canvas, work out what the user needs to understand, then offer two or three layouts as one-line sketches, such as "rows for each user flow, columns for each part of the flow such as the server and database". Recommend one and wait for the user's pick, then build the layout they chose. A revision keeps the Canvas's layout unless the user asks for a new one.
+Before offering layouts or changing an arrangement, read [references/diagram-design.md](references/diagram-design.md). When the Canvas maps code at any scope (the whole system, a module, or the files one question touches), or ports an existing diagram or design doc, also read [references/system-maps.md](references/system-maps.md).
 
-To sketch layouts or change an arrangement, read [references/diagram-design.md](references/diagram-design.md).
-
-For a map of code at any scope (the whole system, a module, or the files one question touches), or a port of an existing diagram or design doc, read [references/system-maps.md](references/system-maps.md).
+Then work out what the user needs to understand, and offer two or three layouts as one-line sketches, such as "a map of the files the question touches, each flow a path of Links in its own color". Recommend one and wait for the user's pick, then build the layout they chose. A revision keeps the Canvas's layout unless the user asks for a new one.
 
 ## Work through the CLI
 
@@ -47,11 +45,25 @@ When the user asks a follow-up about the Canvas, answer on the Canvas. Add or re
 
 ## Build
 
-Before a first build or a multi-element revision, and when an apply fails, read [references/canvas-operations.md](references/canvas-operations.md). Use `enso layout` for a new arrangement of Notes whose relationships, direction, and clusters determine placement. Use `canvas apply` for precise geometry, mixed elements, or multi-element revisions, collecting a coherent change in one temporary intent. Give a member an `excerpt` or `mark` in the layout graph and `enso layout` places it beside the member's Node. Add an Excerpt to a Node already on the Canvas with `enso excerpt create --note <node> --text "<passage>" --x <n> --y <n>`. Quote each passage exactly as the markdown file holds it. Use a typed command for a single edit. Dry-run CLI mutations before applying them.
+Before a first build, and when an apply fails, read [references/canvas-operations.md](references/canvas-operations.md).
+
+Write to the Canvas with `enso canvas apply` so the diagram grows while the user watches:
+
+1. Send one small intent per step: a Node with its Links, and its Excerpt or Mark. Leave out `x` and `y`, and the CLI places the Node beside its neighbors. When the Node belongs to a Region, place it `in` that Region.
+2. Start at the beginning of the main path, and link each new Node to one already placed.
+3. Set `direction` in the first intent.
+
+Quote each Excerpt passage exactly as the markdown file holds it.
+
+Small edits go through `canvas apply` too, as an intent carrying only the change. Apply without a dry run, except for the commands that rewrite Notes: `enso node rename`, `enso excerpt source`, `enso excerpt remove-from-note`, `enso mark add-to-note`, `enso mark drop-to-note`, and `enso link delete`. Use `enso layout` when the user asks to rearrange a Canvas, or for Regions nested inside Regions.
 
 ## Revise the existing explanation
 
-Treat each user revision as an edit to the current Canvas. Inspect its affected elements with `enso context --canvas <target>`, reuse their IDs, and preserve unaffected Notes, positions, and user adjustments. Anchor additions to inspected neighbors. When editing a Note's markdown, keep its `<!-- annotation:<id>:start -->` and `:end -->` markers, which hold its Excerpts' passages.
+Treat each user revision as an edit to the current Canvas. Inspect its affected elements with `enso context --canvas <target>`, reuse their IDs, and preserve unaffected Notes, positions, and user adjustments.
+
+Link each addition to the Nodes it relates to. It lands beside them, and Nodes that were on the Canvas before you started stay where they are.
+
+When editing a Note's markdown, keep its `<!-- annotation:<id>:start -->` and `:end -->` markers, which hold its Excerpts' passages.
 
 Move a Mark into a Note with `enso mark add-to-note` or `drop-to-note` when the user asks.
 
@@ -67,6 +79,6 @@ When a Canvas is the design for code or a mockup, read it with `enso context --c
 
 ## Verify
 
-After every build, layout change, or placement revision, run `enso context --canvas <target> --diagnostics` and follow "Inspect and repair" in [references/diagram-design.md](references/diagram-design.md). Once diagnostics are clean, run `--vision` once before finishing and read the image as a reader who opens no Note. The takeaway, the main path, and each key sentence should be legible at that glance.
+After every build, layout change, or placement revision, run `enso context --canvas <target> --diagnostics` and follow "Inspect and repair" in [references/diagram-design.md](references/diagram-design.md). When Links cross on the main path of a diagram you just built, apply `{"canvas":"current","tidy":true}`. It rearranges what you built only when that removes crossings. Once diagnostics are clean, run `--vision` once before finishing and read the image as a reader who opens no Note. The takeaway, the main path, and each key sentence should be legible at that glance.
 
 Finish when a reader who opens no Note can state the answer from the Canvas alone, diagnostics show no fault that obstructs that reading, and every region holds exactly its members. If the Canvas needs chat to be understood, redraw the Canvas.
