@@ -1,9 +1,9 @@
+import { EnsoError, type EnsoEnvelope } from "@enso-app/core";
 import { z } from "zod/v3";
 import { defaultBridgeUrl, readConfig } from "./config.js";
 import { assertTargetingContract, contractHeader, contractVersion, oldestSupportedContractVersion } from "./contract.js";
 import { assertExpectedBridgeInstance, bridgeInstanceHeader, expectedBridgeInstance, runnerBridge, runnerBridgeEnv } from "./bridge-binding.js";
 import { discoverAndLink } from "./discovery.js";
-import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
 import { currentRequestContext, RequestContext, parseTarget, routeScope, sameTarget, type CanvasTarget, type RouteScope } from "./targeting.js";
 
 const errorSchema = z.object({
@@ -47,7 +47,7 @@ export class BridgeClient {
     const url = new URL(pathname, connection.bridgeUrl);
     assertLoopbackBridge(url);
     if (url.origin !== new URL(connection.bridgeUrl).origin) {
-      throw new EnsoCliError("target_conflict", "A request cannot override the invocation's bridge instance");
+      throw new EnsoError("target_conflict", "A request cannot override the invocation's bridge instance");
     }
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
@@ -55,7 +55,7 @@ export class BridgeClient {
     if (options.dryRun !== undefined) url.searchParams.set("dryRun", String(options.dryRun));
     let body = options.body;
     if (body !== undefined && (!body || typeof body !== "object" || Array.isArray(body))) {
-      throw new EnsoCliError("invalid_input", "Bridge request bodies must be JSON objects");
+      throw new EnsoError("invalid_input", "Bridge request bodies must be JSON objects");
     }
     const object = { ...body as Record<string, unknown> | undefined };
     const scope = routeScope(url.pathname, method);
@@ -66,14 +66,14 @@ export class BridgeClient {
     let queryTarget: CanvasTarget | undefined;
     if (rawQueryTarget !== null) {
       try { queryTarget = parseTarget(JSON.parse(rawQueryTarget)); }
-      catch { throw new EnsoCliError("invalid_target", "The canvasTarget query parameter must be a JSON object with vaultID and canvasID UUIDs"); }
+      catch { throw new EnsoError("invalid_target", "The canvasTarget query parameter must be a JSON object with vaultID and canvasID UUIDs"); }
     }
     const bodyTarget = object.canvasTarget === undefined ? undefined : parseTarget(object.canvasTarget);
     if (queryTarget && bodyTarget && !sameTarget(queryTarget, bodyTarget)) {
-      throw new EnsoCliError("target_conflict", "The body and query targets must match");
+      throw new EnsoError("target_conflict", "The body and query targets must match");
     }
     if (scope !== "canvas" && (queryTarget || bodyTarget)) {
-      throw new EnsoCliError("target_not_allowed", "Omit canvasTarget on discovery, vault and navigation routes");
+      throw new EnsoError("target_not_allowed", "Omit canvasTarget on discovery, vault and navigation routes");
     }
     if (scope !== "health") await this.verifyInstance();
     if (scope === "canvas") {
@@ -82,7 +82,7 @@ export class BridgeClient {
       const selectors = [pathSelector && decodeURIComponent(pathSelector[1]), url.searchParams.get("canvas"), object.canvas];
       for (const selector of selectors) {
         if (selector !== undefined && selector !== null && selector !== false && typeof selector !== "string") {
-          throw new EnsoCliError("invalid_input", "Canvas selectors must be strings");
+          throw new EnsoError("invalid_input", "Canvas selectors must be strings");
         }
       }
       const target = await this.context.resolve(path => this.bootstrap(path), selectors.find(value => typeof value === "string") as string | undefined, bodyTarget ?? queryTarget);
@@ -94,16 +94,16 @@ export class BridgeClient {
       if (object.canvas !== undefined) object.canvas = target.canvasID;
       if (Array.isArray(object.operations)) {
         for (const operation of object.operations) {
-          if (!operation || typeof operation !== "object") throw new EnsoCliError("invalid_input", "Batch operations must be objects");
+          if (!operation || typeof operation !== "object") throw new EnsoError("invalid_input", "Batch operations must be objects");
           const op = operation as Record<string, unknown>;
           if (["canvas.open", "canvas.create", "portal.open"].includes(String(op.type))) {
-            throw new EnsoCliError("explicit_navigation_required", "Perform navigation separately from a targeted batch");
+            throw new EnsoError("explicit_navigation_required", "Perform navigation separately from a targeted batch");
           }
           if (op.canvasTarget !== undefined && !sameTarget(parseTarget(op.canvasTarget), target)) {
-            throw new EnsoCliError("target_conflict", "Every batch operation must share the invocation's canvasTarget");
+            throw new EnsoError("target_conflict", "Every batch operation must share the invocation's canvasTarget");
           }
           if (op.canvas !== undefined) {
-            if (typeof op.canvas !== "string") throw new EnsoCliError("invalid_input", "Canvas selectors must be strings");
+            if (typeof op.canvas !== "string") throw new EnsoError("invalid_input", "Canvas selectors must be strings");
             await this.context.resolve(path => this.bootstrap(path), op.canvas);
           }
         }
@@ -113,7 +113,7 @@ export class BridgeClient {
       if (method === "GET") url.searchParams.set("canvasTarget", JSON.stringify(target));
       else object.canvasTarget = target;
       if (method === "GET" && Object.keys(object).some(key => key !== "canvas")) {
-        throw new EnsoCliError("invalid_input", "GET request fields belong in the query; only canvasTarget and canvas selectors can be normalized from a body");
+        throw new EnsoError("invalid_input", "GET request fields belong in the query; only canvasTarget and canvas selectors can be normalized from a body");
       }
       body = method === "GET" ? undefined : object;
     }
@@ -131,11 +131,11 @@ export class BridgeClient {
   }
 
   private checkVault(result: EnsoEnvelope): void {
-    if (!result.ok) throw new EnsoCliError(result.error.code, result.error.message, result.error.details);
+    if (!result.ok) throw new EnsoError(result.error.code, result.error.message, result.error.details);
     const activeVaultID = (result.data as { vaultID?: string })?.vaultID;
     const target = this.context.bound ?? this.context.resolvedTarget;
     if (activeVaultID?.toUpperCase() !== target?.vaultID) {
-      throw new EnsoCliError("wrong_vault", "The invocation's vault is not active; open it explicitly in Enso", { activeVaultID, target });
+      throw new EnsoError("wrong_vault", "The invocation's vault is not active; open it explicitly in Enso", { activeVaultID, target });
     }
   }
 
@@ -150,7 +150,7 @@ export class BridgeClient {
   /** One health read per invocation, shared by contract negotiation and the instance check. */
   private health(): Promise<unknown> {
     return this.context.health ??= this.bootstrap("/v1/health", false).then(result => {
-      if (!result.ok) throw new EnsoCliError(result.error.code, result.error.message, result.error.details);
+      if (!result.ok) throw new EnsoError(result.error.code, result.error.message, result.error.details);
       return result.data;
     });
   }
@@ -181,7 +181,7 @@ export class BridgeClient {
     const runner = runnerBridge();
     if (runner) {
       if (this.baseUrl && new URL(this.baseUrl).origin !== runner.bridgeUrl) {
-        throw new EnsoCliError("target_conflict", "A request cannot override the runner session's bridge instance");
+        throw new EnsoError("target_conflict", "A request cannot override the runner session's bridge instance");
       }
       return { bridgeUrl: runner.bridgeUrl, token: runner.token };
     }
@@ -209,7 +209,7 @@ export class BridgeClient {
     }
     const connection = await this.context.connection;
     if (!this.ownsConnection && this.baseUrl && new URL(this.baseUrl).origin !== new URL(connection.bridgeUrl).origin) {
-      throw new EnsoCliError("target_conflict", "A client cannot override the invocation's bridge instance");
+      throw new EnsoError("target_conflict", "A client cannot override the invocation's bridge instance");
     }
     return connection;
   }
@@ -217,10 +217,10 @@ export class BridgeClient {
   private async transmit(url: URL, method: string, body: unknown, auth: boolean, version: number, scope: RouteScope): Promise<EnsoEnvelope> {
     const connection = await this.connect(auth);
     if (auth && !connection.token) {
-      if (runnerBridge()) throw new EnsoCliError("auth_required", "The runner found no Enso pairing for this session's bridge", {
+      if (runnerBridge()) throw new EnsoError("auth_required", "The runner found no Enso pairing for this session's bridge", {
         hint: "Stop and tell the user to check that Enso is running with Local agent access on. A runner session cannot link the CLI"
       });
-      throw new EnsoCliError("auth_required", "Launch the Enso app, then run this command again to link the CLI", {
+      throw new EnsoError("auth_required", "Launch the Enso app, then run this command again to link the CLI", {
         hint: "Update Enso so it provisions a token file, or run `enso auth link` to pair through its prompt"
       });
     }
@@ -235,7 +235,7 @@ export class BridgeClient {
     // Only an explicit authentication rejection is safe to resend. Targeted work is never replayed.
     if (auth && !this.tokenOverride && !this.context.bound && version < contractVersion && !result.ok && result.error.code === "invalid_token") {
       const discovered = await discoverAndLink([connection.bridgeUrl], { stay: true });
-      if (!discovered) throw new EnsoCliError("invalid_token", "The stored Enso pairing is stale", {
+      if (!discovered) throw new EnsoError("invalid_token", "The stored Enso pairing is stale", {
         bridgeUrl: connection.bridgeUrl,
         hint: "Open Enso, turn Local agent access off and on in Settings, then run `enso auth link`"
       });
@@ -250,7 +250,7 @@ export class BridgeClient {
     try {
       response = await fetch(requestUrl, { method, headers, body });
     } catch {
-      throw new EnsoCliError("app_unavailable", "The configured Enso app bridge is not available", {
+      throw new EnsoError("app_unavailable", "The configured Enso app bridge is not available", {
         bridgeUrl: requestUrl.origin,
         hint: method === "GET" ? "Run `enso auth link` to relink, or launch the configured Enso app" :
           "The request may have partially completed. Inspect the original target before deciding whether to retry; the CLI has not replayed it",
@@ -263,14 +263,14 @@ export class BridgeClient {
     try {
       json = await response.json();
     } catch {
-      throw new EnsoCliError("invalid_response", "Enso app bridge returned non-JSON output", {
+      throw new EnsoError("invalid_response", "Enso app bridge returned non-JSON output", {
         status: response.status, ...uncertain
       });
     }
 
     const parsed = envelopeSchema.safeParse(json);
     if (!parsed.success) {
-      throw new EnsoCliError("invalid_response", "Enso app bridge returned an invalid envelope", {
+      throw new EnsoError("invalid_response", "Enso app bridge returned an invalid envelope", {
         status: response.status, ...uncertain
       });
     }
@@ -290,34 +290,34 @@ export function assertBridgeAllowed(request?: { url: URL; method: string; scope:
   const mode = process.env[runnerBridgeEnv];
   if (mode === undefined) return;
   if (mode !== "bound") {
-    throw new EnsoCliError("bridge_unavailable", "The Enso app bridge is not available to this runner session", {
+    throw new EnsoError("bridge_unavailable", "The Enso app bridge is not available to this runner session", {
       hint: "The session has no pinned bridge instance (it predates them, or its runner pins none). Work from the canvas selection captured with the prompt instead of reading or changing the canvas"
     });
   }
   const runner = runnerBridge()!;
   if (!request) {
-    throw new EnsoCliError("runner_bridge_refused", "A runner session cannot link or pair the CLI; the runner supplies the session's pairing", {
+    throw new EnsoError("runner_bridge_refused", "A runner session cannot link or pair the CLI; the runner supplies the session's pairing", {
       hint: "Stop and tell the user what you were trying to do"
     });
   }
   if (request.url.origin !== runner.bridgeUrl) {
-    throw new EnsoCliError("target_conflict", "A request cannot override the runner session's bridge instance", { bridgeUrl: runner.bridgeUrl });
+    throw new EnsoError("target_conflict", "A request cannot override the runner session's bridge instance", { bridgeUrl: runner.bridgeUrl });
   }
   if (!request.bound || !sameTarget(request.bound, runner.target)) {
-    throw new EnsoCliError("runner_binding_required", "Every bridge request of a runner session must be bound to the session's canvas", {
+    throw new EnsoError("runner_binding_required", "Every bridge request of a runner session must be bound to the session's canvas", {
       target: runner.target,
       hint: "Run enso commands without --vault-id or --canvas-id, and leave ENSO_VAULT_ID and ENSO_CANVAS_ID as the runner set them"
     });
   }
   const { scope, method } = request;
   if (scope === "pairing" || scope === "navigation" || scope === "vault" && method !== "GET" || /\/subcanvas\/open$/.test(request.url.pathname)) {
-    throw new EnsoCliError("explicit_navigation_required", "A runner session is bound to one canvas and cannot navigate, pair or change the vault");
+    throw new EnsoError("explicit_navigation_required", "A runner session is bound to one canvas and cannot navigate, pair or change the vault");
   }
 }
 
 function assertLoopbackBridge(url: URL): void {
   if (isLoopbackBridgeUrl(url)) return;
-  throw new EnsoCliError("invalid_bridge_url", "Enso bridge requests are restricted to loopback HTTP hosts", {
+  throw new EnsoError("invalid_bridge_url", "Enso bridge requests are restricted to loopback HTTP hosts", {
     path: "bridgeUrl",
     expected: "http://127.0.0.1, http://[::1], or http://localhost",
     hint: "Set ENSO_BRIDGE_URL to a loopback Enso app bridge"

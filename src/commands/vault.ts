@@ -1,9 +1,9 @@
+import { EnsoError, isMissingRoute, type EnsoEnvelope } from "@enso-app/core";
 import { Command } from "commander";
 import { mkdirSync, rmdirSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { BridgeClient } from "../client.js";
-import { EnsoCliError, isMissingRoute, type EnsoEnvelope } from "../errors.js";
 
 type CreateOptions = { name?: string; sync?: boolean; team?: string; dryRun?: boolean };
 
@@ -17,7 +17,7 @@ export function registerVault(program: Command): void {
     .option("--dry-run", "validate folder access without switching vaults")
     .action(async (path: string, options: { dryRun?: boolean }) => {
       const folder = resolveVaultPath(path);
-      if (!statPath(folder)?.isDirectory()) throw new EnsoCliError("invalid_input", "Vault path must be an existing folder", { path: folder });
+      if (!statPath(folder)?.isDirectory()) throw new EnsoError("invalid_input", "Vault path must be an existing folder", { path: folder });
       return new BridgeClient().request("/v1/vault/open", {
         method: "POST", body: { path: folder, dryRun: Boolean(options.dryRun) }, dryRun: Boolean(options.dryRun)
       });
@@ -32,7 +32,7 @@ export function registerVault(program: Command): void {
       const folder = resolveVaultPath(path);
       const dryRun = Boolean(options.dryRun);
       if (options.team !== undefined && !options.sync) {
-        throw new EnsoCliError("invalid_input", "--team requires --sync", { team: options.team });
+        throw new EnsoError("invalid_input", "--team requires --sync", { team: options.team });
       }
       const created = prepareVaultFolder(folder, dryRun);
       try {
@@ -65,16 +65,16 @@ function statPath(path: string): Stats | undefined {
   }
 }
 
-function folderError(error: unknown, path: string, message: string): EnsoCliError {
+function folderError(error: unknown, path: string, message: string): EnsoError {
   const { code, message: reason } = error as NodeJS.ErrnoException;
   if (code === "EACCES" || code === "EPERM" || code === "EROFS") {
-    return new EnsoCliError("folder_access_denied", "The CLI does not have permission to use this folder", {
+    return new EnsoError("folder_access_denied", "The CLI does not have permission to use this folder", {
       path,
       reason,
       hint: "Choose a folder you can write to, or allow this terminal in System Settings > Privacy & Security > Files and Folders"
     });
   }
-  return new EnsoCliError("invalid_input", message, { path, reason });
+  return new EnsoError("invalid_input", message, { path, reason });
 }
 
 /**
@@ -87,7 +87,7 @@ function prepareVaultFolder(folder: string, dryRun: boolean): boolean {
   if (isExistingFolder(folder)) return false;
   const parent = dirname(folder);
   if (!statPath(parent)?.isDirectory()) {
-    throw new EnsoCliError("invalid_input", "The vault folder's parent must be an existing folder", { path: folder, parent });
+    throw new EnsoError("invalid_input", "The vault folder's parent must be an existing folder", { path: folder, parent });
   }
   if (dryRun) return false;
   try {
@@ -102,7 +102,7 @@ function prepareVaultFolder(folder: string, dryRun: boolean): boolean {
 
 function isExistingFolder(folder: string): boolean {
   const existing = statPath(folder);
-  if (existing && !existing.isDirectory()) throw new EnsoCliError("invalid_input", "Vault path is a file, not a folder", { path: folder });
+  if (existing && !existing.isDirectory()) throw new EnsoError("invalid_input", "Vault path is a file, not a folder", { path: folder });
   return existing !== undefined;
 }
 
@@ -114,7 +114,7 @@ function removeEmptyFolder(folder: string): void {
 /** An app that predates vault creation lacks the route. Every other refusal is the app's own. */
 function requireVaultCreateSupport(envelope: EnsoEnvelope): EnsoEnvelope {
   if (!envelope.ok && isMissingRoute(envelope.error)) {
-    throw new EnsoCliError("app_outdated", "The Enso app does not support creating vaults yet", {
+    throw new EnsoError("app_outdated", "The Enso app does not support creating vaults yet", {
       ...envelope.error.details,
       hint: "Update the Enso app, or create the vault from Enso's vault menu"
     });

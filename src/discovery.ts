@@ -1,10 +1,10 @@
+import { EnsoError } from "@enso-app/core";
 import { readFileSync } from "node:fs";
 import { z } from "zod/v3";
 import { assertBridgeAllowed, envelopeSchema, isLoopbackBridgeUrl } from "./client.js";
 import { assertExpectedBridgeInstance, bridgeInstanceHeader, expectedBridgeInstance } from "./bridge-binding.js";
 import { writeConfig, type EnsoConfig } from "./config.js";
 import { assertCompatibleContract } from "./contract.js";
-import { EnsoCliError } from "./errors.js";
 
 export const tokenFileSchema = z.object({
   token: z.string().min(1),
@@ -51,7 +51,7 @@ async function tryLink(bridgeUrl: string, stay: boolean, instance: string | unde
   if (health?.ok === true) assertExpectedBridgeInstance(data, bridgeUrl, instance);
   if (data) assertCompatibleContract(data.contractVersion, bridgeUrl);
   if (data?.agentAccess === "disabled") {
-    throw new EnsoCliError("access_disabled", "Local agent access is turned off in Enso's Settings", {
+    throw new EnsoError("access_disabled", "Local agent access is turned off in Enso's Settings", {
       bridgeUrl,
       hint: "Turn on Local agent access in Enso's Settings, then retry"
     });
@@ -107,7 +107,7 @@ async function fetchEnvelope(url: URL, token?: string, instance?: string): Promi
   if (instance !== undefined) {
     const parsed = envelopeSchema.safeParse(envelope);
     if (parsed.success && !parsed.data.ok) {
-      throw new EnsoCliError(parsed.data.error.code, parsed.data.error.message, parsed.data.error.details);
+      throw new EnsoError(parsed.data.error.code, parsed.data.error.message, parsed.data.error.details);
     }
   }
   return envelope;

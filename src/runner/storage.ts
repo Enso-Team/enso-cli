@@ -1,10 +1,10 @@
+import { EnsoError } from "@enso-app/core";
 import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type BetterSqlite3 from "better-sqlite3";
 import { configDir } from "../config.js";
-import { EnsoCliError } from "../errors.js";
 import { activeStatuses, canonical, eventSchema, terminal, terminalStatuses, type Change, type Run, type RunnerEvent, type Session } from "./protocol.js";
 
 /** Protocol 2 and 3 stores live beside, never inside, the protocol 1 directory: neither opens the other's store. Protocol 3
@@ -193,13 +193,13 @@ function sqlite(): typeof BetterSqlite3 {
     return Sqlite;
   } catch { throw unavailable(); }
 }
-function invalid(message: string, details?: Record<string, unknown>): EnsoCliError {
-  return new EnsoCliError("invalid_runner_storage", message, details);
+function invalid(message: string, details?: Record<string, unknown>): EnsoError {
+  return new EnsoError("invalid_runner_storage", message, details);
 }
 /** Startup, unlike the read-only `check`, says what it does about a store it judged invalid. Amends the error in place
  * so it keeps the stack of the check that failed. */
 function refused(error: unknown): unknown {
-  if (error instanceof EnsoCliError && error.body.code === "invalid_runner_storage") {
+  if (error instanceof EnsoError && error.body.code === "invalid_runner_storage") {
     error.message = error.body.message = `${error.body.message}; refusing to dispatch or overwrite it`;
   }
   return error;
@@ -213,24 +213,24 @@ const judgment = (code: string) => code === "SQLITE_ERROR" || code === "SQLITE_N
  * events. Only this, and the SQLite codes in `judgment`, refuse a store; any other error is reported as itself. */
 class Mismatch extends Error {}
 /** Keeps the SQLite or filesystem cause, and reports a lock or I/O failure as such rather than as a refused store. */
-function failure(error: unknown, message: string): EnsoCliError {
-  if (error instanceof EnsoCliError) return error;
+function failure(error: unknown, message: string): EnsoError {
+  if (error instanceof EnsoError) return error;
   if (error instanceof Mismatch) return invalid(message);
   const code = (error as { code?: unknown } | null)?.code;
   // Neither SQLite nor the file system, and no verdict (a bug, say): report it as itself, without judging the store
   // or claiming the check it interrupted failed.
-  if (typeof code !== "string") return new EnsoCliError("runner_storage_failure", "Runner storage failed unexpectedly", { cause: { message: error instanceof Error ? error.message : String(error) } });
+  if (typeof code !== "string") return new EnsoError("runner_storage_failure", "Runner storage failed unexpectedly", { cause: { message: error instanceof Error ? error.message : String(error) } });
   const cause = { cause: { code, message: (error as Error).message } };
-  if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) return new EnsoCliError("runner_locked", "Runner database is locked by another process", cause);
+  if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) return new EnsoError("runner_locked", "Runner database is locked by another process", cause);
   // Missing, or not readable by this user: nothing was judged, so nothing is refused.
-  if (code.startsWith("SQLITE_CANTOPEN")) return new EnsoCliError("runner_storage_failure", "Runner database could not be opened", cause);
+  if (code.startsWith("SQLITE_CANTOPEN")) return new EnsoError("runner_storage_failure", "Runner database could not be opened", cause);
   if (judgment(code)) return invalid(message, cause);
   return storageFailure(error);
 }
 /** A file system or SQLite failure that is not a verdict on the store. */
-function storageFailure(error: unknown, message = "Runner database could not be read or written"): EnsoCliError {
+function storageFailure(error: unknown, message = "Runner database could not be read or written"): EnsoError {
   const { code, message: cause } = error as NodeJS.ErrnoException;
-  return new EnsoCliError("runner_storage_failure", message, { cause: { code, message: cause } });
+  return new EnsoError("runner_storage_failure", message, { cause: { code, message: cause } });
 }
 /** Runs one of `verify`'s checks: a `Mismatch` it throws is the store failing that check, reported as `message`. */
 function judged<T>(statement: () => T, message: string): T {
@@ -262,8 +262,8 @@ function openDatabase(Sqlite: typeof BetterSqlite3, path: string, options: Bette
   try { return new Sqlite(path, options); }
   catch (error) { throw failure(error, "Unreadable runner database"); }
 }
-function unavailable(): EnsoCliError {
-  return new EnsoCliError("runner_storage_unavailable", "The runner needs the better-sqlite3 native module. npm 12 skips its install script by default: reinstall with `npm install -g @enso-app/cli --allow-scripts=better-sqlite3` (Node versions without a prebuilt binary, such as 20, also need a C++ toolchain to build it)");
+function unavailable(): EnsoError {
+  return new EnsoError("runner_storage_unavailable", "The runner needs the better-sqlite3 native module. npm 12 skips its install script by default: reinstall with `npm install -g @enso-app/cli --allow-scripts=better-sqlite3` (Node versions without a prebuilt binary, such as 20, also need a C++ toolchain to build it)");
 }
 
 /**
@@ -285,29 +285,29 @@ export class RunnerStorage {
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const stat = lstatSync(this.directory);
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.()) {
-      throw new EnsoCliError("unsafe_storage", "Runner storage must be a directory owned by the current user");
+      throw new EnsoError("unsafe_storage", "Runner storage must be a directory owned by the current user");
     }
     chmodSync(this.directory, 0o700);
     // Serialize lock reclamation as well as acquisition. Never steal from a live PID.
     // An orphaned acquisition guard fails closed (see runner protocol recovery docs).
     const guard = join(this.directory, "acquiring");
     try { mkdirSync(guard, { mode: 0o700 }); }
-    catch { throw new EnsoCliError("runner_locked", "Runner startup is already in progress, or its acquisition guard needs recovery"); }
+    catch { throw new EnsoError("runner_locked", "Runner startup is already in progress, or its acquisition guard needs recovery"); }
     try {
       const lock = join(this.directory, "owner");
       let owner: string | undefined;
       try { owner = readlinkSync(lock); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw new EnsoCliError("runner_locked", "Unreadable runner owner record; refusing recovery");
+          throw new EnsoError("runner_locked", "Unreadable runner owner record; refusing recovery");
         }
       }
       if (owner !== undefined) {
         const pid = Number(owner);
-        if (!Number.isSafeInteger(pid) || pid <= 0) throw new EnsoCliError("runner_locked", "Invalid runner owner record; refusing recovery");
+        if (!Number.isSafeInteger(pid) || pid <= 0) throw new EnsoError("runner_locked", "Invalid runner owner record; refusing recovery");
         let alive = true;
         try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") alive = false; }
-        if (alive) throw new EnsoCliError("runner_locked", "A runner already owns this storage");
+        if (alive) throw new EnsoError("runner_locked", "A runner already owns this storage");
         unlinkSync(lock);
       }
       symlinkSync(String(process.pid), lock);
@@ -341,9 +341,9 @@ export class RunnerStorage {
     catch (error) {
       const { code, message } = error as NodeJS.ErrnoException;
       if (code === "ENOENT" || code === "ENOTDIR") {
-        throw new EnsoCliError("runner_storage_not_found", `No runner store in ${storage.directory}; \`enso runner serve\` creates one`, { directory: storage.directory });
+        throw new EnsoError("runner_storage_not_found", `No runner store in ${storage.directory}; \`enso runner serve\` creates one`, { directory: storage.directory });
       }
-      throw new EnsoCliError("runner_storage_failure", "Runner database could not be opened", { directory: storage.directory, cause: { code, message } });
+      throw new EnsoError("runner_storage_failure", "Runner database could not be opened", { directory: storage.directory, cause: { code, message } });
     }
     // What startup refuses before opening the file, check reports too.
     storage.preflight(storage.entries());
@@ -404,7 +404,7 @@ export class RunnerStorage {
     const db = this.db = openDatabase(Sqlite, path, { fileMustExist: true, timeout: 1000 });
     try {
       // Ownership excludes other writers, so this is the file just judged.
-      if (this.identify(db) !== identity) throw new EnsoCliError("runner_storage_failure", "Runner database changed during startup");
+      if (this.identify(db) !== identity) throw new EnsoError("runner_storage_failure", "Runner database changed during startup");
       // Lets retention return freed pages to the file system. It must precede the first table, and WAL mode, which
       // writes the header; an empty file whose header was written by a crash takes it through VACUUM instead.
       if (identity === "empty") {
@@ -424,7 +424,7 @@ export class RunnerStorage {
       };
       const wanted = { journal_mode: "wal", synchronous: 2, fullfsync: 1, checkpoint_fullfsync: 1, foreign_keys: 1, auto_vacuum: 2 };
       if (JSON.stringify(actual) !== JSON.stringify(wanted)) {
-        throw new EnsoCliError("unsafe_storage", "SQLite did not apply the runner's durability and space settings", { actual, wanted });
+        throw new EnsoError("unsafe_storage", "SQLite did not apply the runner's durability and space settings", { actual, wanted });
       }
       if (identity === "empty") {
         db.transaction(() => {

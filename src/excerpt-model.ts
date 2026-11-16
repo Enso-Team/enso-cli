@@ -1,7 +1,6 @@
+import { EnsoError, type EnsoEnvelope, noteMatches } from "@enso-app/core";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { EnsoCliError, type EnsoEnvelope } from "./errors.js";
-import { noteMatches } from "./note-identity.js";
 
 // An Excerpt places a span of a Note's text on the Canvas. The Note owns the text, so the
 // app addresses the span by the Note's id and a range of its markdown source.
@@ -44,22 +43,22 @@ export function passageOffsets(markdown: string, passage: string): number[] {
  * passage is the markdown exactly as the file holds it.
  */
 export function passageSelection(noteID: string, markdown: string, passage: string, occurrence?: number): NoteExcerptSelection {
-  if (passage.trim().length === 0) throw new EnsoCliError("invalid_input", "Excerpt text must contain a nonblank character");
+  if (passage.trim().length === 0) throw new EnsoError("invalid_input", "Excerpt text must contain a nonblank character");
   const offsets = passageOffsets(markdown, passage);
   if (offsets.length === 0) {
-    throw new EnsoCliError("passage_not_found", "The note body does not contain that text", {
+    throw new EnsoError("passage_not_found", "The note body does not contain that text", {
       hint: "Quote the passage exactly as the markdown file holds it, including markup such as ** or [[ ]]"
     });
   }
   if (occurrence === undefined && offsets.length > 1) {
-    throw new EnsoCliError("ambiguous_passage", `The note contains that text ${offsets.length} times`, {
+    throw new EnsoError("ambiguous_passage", `The note contains that text ${offsets.length} times`, {
       occurrences: offsets.length,
       hint: "Quote a longer passage, or pass --occurrence <n> to pick one"
     });
   }
   const index = (occurrence ?? 1) - 1;
   if (index >= offsets.length) {
-    throw new EnsoCliError("invalid_input", `The note contains that text ${offsets.length} times`, { occurrences: offsets.length });
+    throw new EnsoError("invalid_input", `The note contains that text ${offsets.length} times`, { occurrences: offsets.length });
   }
   return { noteID, rawRange: [offsets[index], passage.length], capturedMarkdown: passage, selectedMarkdown: passage };
 }
@@ -70,7 +69,7 @@ export function passageSelection(noteID: string, markdown: string, passage: stri
  */
 export function requireExcerptSupport(envelope: EnsoEnvelope): EnsoEnvelope {
   if (!envelope.ok && envelope.error.code === "not_found" && envelope.error.message === "Bridge route not found") {
-    throw new EnsoCliError("app_outdated", "The Enso app does not support Excerpts yet", {
+    throw new EnsoError("app_outdated", "The Enso app does not support Excerpts yet", {
       ...(envelope.error.details ?? {}),
       hint: "Update the Enso app"
     });
@@ -95,7 +94,7 @@ function markdownFiles(root: string, folder = ""): string[] {
 export function checkExcerptSource(vaultRoot: string, note: string, passage: string): void {
   const files = markdownFiles(vaultRoot).filter((ref) => noteMatches({ ref }, note));
   if (files.length !== 1) {
-    throw new EnsoCliError(files.length === 0 ? "note_not_found" : "note_ambiguous",
+    throw new EnsoError(files.length === 0 ? "note_not_found" : "note_ambiguous",
       files.length === 0 ? `No markdown file in the Vault matches '${note}'` : `${files.length} markdown files match '${note}'`, {
         note,
         ...(files.length > 1 ? { candidates: files } : {}),
@@ -105,7 +104,7 @@ export function checkExcerptSource(vaultRoot: string, note: string, passage: str
   try {
     passageSelection("00000000-0000-0000-0000-000000000000", readFileSync(join(vaultRoot, files[0]), "utf8"), passage);
   } catch (error) {
-    if (!(error instanceof EnsoCliError)) throw error;
-    throw new EnsoCliError(error.body.code, error.body.message, { ...error.body.details, note });
+    if (!(error instanceof EnsoError)) throw error;
+    throw new EnsoError(error.body.code, error.body.message, { ...error.body.details, note });
   }
 }

@@ -1,8 +1,8 @@
+import { EnsoError } from "@enso-app/core";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setImmediate as yieldTurn } from "node:timers/promises";
-import { EnsoCliError } from "../errors.js";
 import { answerSchema, canonical, defaultFakeOptions, outcomeSchema, parse, pendingSchema, sessionInputSchema, sessionSchema, submitSchema, terminal, type Answer, type Change, type Json, type Pending, type Prompt, type Run, type RunnerEvent, type Session, type SessionInput } from "./protocol.js";
 import type { RunnerProvider } from "./provider.js";
 import type { RunnerStorage } from "./storage.js";
@@ -59,10 +59,10 @@ export class RunnerEngine {
     const expected = binding.bridgeInstanceID;
     delete binding.bridgeInstanceID;
     if (expected !== undefined && bridgeInstanceID === undefined) {
-      throw new EnsoCliError("invalid_input", "binding.bridgeInstanceID applies only when the runner pins a bridge instance, which it does not for this provider");
+      throw new EnsoError("invalid_input", "binding.bridgeInstanceID applies only when the runner pins a bridge instance, which it does not for this provider");
     }
     if (expected !== undefined && expected !== bridgeInstanceID) {
-      throw new EnsoCliError("bridge_instance_mismatch", "The bridge instance answering at bridgeUrl is not the one the client expected; no session was created", {
+      throw new EnsoError("bridge_instance_mismatch", "The bridge instance answering at bridgeUrl is not the one the client expected; no session was created", {
         bridgeUrl: binding.bridgeUrl, expectedInstanceID: expected, instanceID: bridgeInstanceID!
       });
     }
@@ -77,11 +77,11 @@ export class RunnerEngine {
     const request = parse(sessionInputSchema, input);
     const { binding, provider } = request;
     if (provider !== undefined && provider !== this.provider.name) throw this.mismatch(provider);
-    if (!isAbsolute(binding.workingDirectory)) throw new EnsoCliError("invalid_input", "workingDirectory must be absolute");
+    if (!isAbsolute(binding.workingDirectory)) throw new EnsoError("invalid_input", "workingDirectory must be absolute");
     try {
       binding.workingDirectory = realpathSync(binding.workingDirectory);
       if (!statSync(binding.workingDirectory).isDirectory()) throw new Error();
-    } catch { throw new EnsoCliError("invalid_input", "workingDirectory must be an existing codebase directory"); }
+    } catch { throw new EnsoError("invalid_input", "workingDirectory must be an existing codebase directory"); }
     return request;
   }
 
@@ -94,22 +94,22 @@ export class RunnerEngine {
     const request = session ? normalized(parsed, session) : parsed;
     // Idempotency precedes busy/stopping checks, including after a service restart.
     if (existing) {
-      if (canonical(existing.request) !== canonical(request)) throw new EnsoCliError("request_conflict", "requestID already belongs to a different payload");
+      if (canonical(existing.request) !== canonical(request)) throw new EnsoError("request_conflict", "requestID already belongs to a different payload");
       return existing;
     }
     this.assertAccepting();
-    if (!session) throw new EnsoCliError("session_not_found", "Session not found");
+    if (!session) throw new EnsoError("session_not_found", "Session not found");
     if (session.provider !== this.provider.name) throw this.mismatch(session.provider);
     if (this.read(() => this.storage.busy(request.sessionID))) {
-      throw new EnsoCliError("session_busy", "Only one active prompt is allowed per session");
+      throw new EnsoError("session_busy", "Only one active prompt is allowed per session");
     }
     // An uncertain session never continues by default: the client names the uncertain run and a recovery mode.
     if (session.uncertain && request.recovery?.after !== session.uncertain.requestID) {
-      throw new EnsoCliError("session_uncertain", "The session's last run ended uncertain; resubmit with recovery naming it and a mode (resume or fresh)", {
+      throw new EnsoError("session_uncertain", "The session's last run ended uncertain; resubmit with recovery naming it and a mode (resume or fresh)", {
         requestID: session.uncertain.requestID, modes: ["resume", "fresh"]
       });
     }
-    if (!session.uncertain && request.recovery) throw new EnsoCliError("invalid_input", "recovery applies only while the session is uncertain");
+    if (!session.uncertain && request.recovery) throw new EnsoError("invalid_input", "recovery applies only while the session is uncertain");
     const now = new Date().toISOString();
     const run: Run = { request, status: "accepted", createdAt: now, updatedAt: now };
     this.commit([{ type: "run_accepted", run }]);
@@ -125,10 +125,10 @@ export class RunnerEngine {
   events(after: number): { events: RunnerEvent[]; cursor: number } {
     this.assertHealthy();
     if (!Number.isSafeInteger(after) || after < 0 || after > this.read(() => this.storage.cursor())) {
-      throw new EnsoCliError("invalid_cursor", "Cursor must be an existing sequence in this runner's durable history");
+      throw new EnsoError("invalid_cursor", "Cursor must be an existing sequence in this runner's durable history");
     }
     if (after < this.read(() => this.storage.expiredThrough())) {
-      throw new EnsoCliError("cursor_expired", "Retention deleted events after this cursor; take a new snapshot");
+      throw new EnsoError("cursor_expired", "Retention deleted events after this cursor; take a new snapshot");
     }
     const events = this.read(() => this.storage.events(after, eventPageBytes));
     return { events, cursor: events.at(-1)?.sequence ?? after };
@@ -136,13 +136,13 @@ export class RunnerEngine {
   session(id: string): Session {
     this.assertHealthy();
     const session = this.read(() => this.storage.session(id));
-    if (!session) throw new EnsoCliError("session_not_found", "Session not found");
+    if (!session) throw new EnsoError("session_not_found", "Session not found");
     return session;
   }
   run(id: string): Run {
     this.assertHealthy();
     const run = this.read(() => this.storage.run(id));
-    if (!run) throw new EnsoCliError("run_not_found", "Run not found");
+    if (!run) throw new EnsoError("run_not_found", "Run not found");
     return run;
   }
 
@@ -160,7 +160,7 @@ export class RunnerEngine {
     const active = this.active.get(id);
     if (!run.pending || !active?.answer || run.pending.id !== response.pendingID ||
       !["waiting_permission", "waiting_input"].includes(run.status)) {
-      throw new EnsoCliError("pending_not_found", "No matching pending request; inspect the current run");
+      throw new EnsoError("pending_not_found", "No matching pending request; inspect the current run");
     }
     validateAnswer(run.pending, response.value);
     // The answer is not replayed on restart: crossing this boundary is uncertain execution.
@@ -328,8 +328,8 @@ export class RunnerEngine {
   private sessionUpdate(sessionID: string, providerState: Json | undefined, uncertain: Session["uncertain"]): Change {
     return { type: "session_updated", sessionID, ...(providerState !== undefined ? { providerState } : {}), ...(uncertain ? { uncertain } : {}) };
   }
-  private mismatch(provider: string): EnsoCliError {
-    return new EnsoCliError("provider_mismatch", `This runner serves the ${this.provider.name} provider`, { provider, runnerProvider: this.provider.name });
+  private mismatch(provider: string): EnsoError {
+    return new EnsoError("provider_mismatch", `This runner serves the ${this.provider.name} provider`, { provider, runnerProvider: this.provider.name });
   }
 
   private cancelling(run: Run): Change[] {
@@ -352,30 +352,30 @@ export class RunnerEngine {
     this.assertHealthy();
     try { return statement(); }
     catch (error) {
-      if (error instanceof EnsoCliError) throw error;
+      if (error instanceof EnsoError) throw error;
       throw this.fail("Durable read failed; runner stopped. Restart and inspect durable state");
     }
   }
-  private fail(message: string): EnsoCliError {
+  private fail(message: string): EnsoError {
     this.healthy = false;
     this.accepting = false;
     for (const active of this.active.values()) active.controller.abort();
     this.options.onFatal?.();
-    return new EnsoCliError("runner_storage_failure", message);
+    return new EnsoError("runner_storage_failure", message);
   }
   private assertHealthy(): void {
-    if (!this.healthy) throw new EnsoCliError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");
+    if (!this.healthy) throw new EnsoError("runner_storage_failure", "Runner storage failed; restart and inspect durable state");
   }
   private assertAccepting(): void {
     this.assertHealthy();
-    if (!this.accepting) throw new EnsoCliError("runner_stopping", "Runner is shutting down");
+    if (!this.accepting) throw new EnsoError("runner_stopping", "Runner is shutting down");
   }
 }
 
 /** Fake sessions store the default test controls; other providers refuse them. */
 function normalized(request: Prompt, session: Session): Prompt {
   if (session.provider === "fake") return { ...request, fake: request.fake ?? { ...defaultFakeOptions } };
-  if (request.fake) throw new EnsoCliError("invalid_input", "fake options apply only to fake sessions");
+  if (request.fake) throw new EnsoError("invalid_input", "fake options apply only to fake sessions");
   return request;
 }
 
@@ -384,10 +384,10 @@ function validateAnswer(pending: Pending, value: Answer["value"]): void {
   if (pending.questions) {
     const ids = pending.questions.map(question => question.id).sort();
     if (typeof value === "string" ? ids.length !== 1 : canonical(Object.keys(value).sort()) !== canonical(ids)) {
-      throw new EnsoCliError("invalid_input", "Response must answer every pending question by id", { questions: ids });
+      throw new EnsoError("invalid_input", "Response must answer every pending question by id", { questions: ids });
     }
     return;
   }
-  if (typeof value !== "string") throw new EnsoCliError("invalid_input", "Response must be a string");
-  if (pending.choices && !pending.choices.includes(value)) throw new EnsoCliError("invalid_input", "Response must match a pending choice");
+  if (typeof value !== "string") throw new EnsoError("invalid_input", "Response must be a string");
+  if (pending.choices && !pending.choices.includes(value)) throw new EnsoError("invalid_input", "Response must match a pending choice");
 }

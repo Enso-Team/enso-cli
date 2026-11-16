@@ -1,0 +1,28 @@
+{
+  "name": "@enso-app/core",
+  "version": "0.1.0",
+  "description": "Canvas intents, specs and the layout engine shared by the enso CLI and the Enso app's canvas MCP server.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --platform neutral",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Enso-Team/enso-cli.git",
+    "directory": "packages/core"
+  },
+  "license": "Apache-2.0"
+}

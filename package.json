@@ -9,6 +9,9 @@
   "engines": {
     "node": ">=20"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "files": [
     "dist",
     "skills",
@@ -20,7 +23,7 @@
     "dev": "tsx src/index.ts",
     "dev:install": "npm run build && npm link",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/core"
   },
   "dependencies": {
     "commander": "^12.1.0",

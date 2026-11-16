@@ -1,3 +1,4 @@
+import { EnsoError } from "@enso-app/core";
 import { execFile } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -6,7 +7,6 @@ import { promisify } from "node:util";
 import type { Command } from "commander";
 import { z } from "zod/v3";
 import { configDir } from "./config.js";
-import { EnsoCliError } from "./errors.js";
 import { cliVersion } from "./version.js";
 
 const execute = promisify(execFile);
@@ -61,7 +61,7 @@ export async function latestVersion(): Promise<string> {
     const { version } = z.object({ version: stableVersion }).parse(await response.json());
     return version;
   } catch {
-    throw new EnsoCliError("update_check_failed", "Could not check npm for the latest CLI version", {
+    throw new EnsoError("update_check_failed", "Could not check npm for the latest CLI version", {
       hint: "Check your internet connection and retry `enso update`"
     });
   }
@@ -106,7 +106,7 @@ export async function updateCli(checkOnly: boolean): Promise<{ installedVersion:
     const { stdout } = await execute("npm", ["root", "--global"], { timeout: 5000 });
     const globalPackageDirectory = join(stdout.trim(), packageName);
     if (realpathSync(globalPackageDirectory) !== realpathSync(packageDirectory) || lstatSync(globalPackageDirectory).isSymbolicLink()) {
-      throw new EnsoCliError("update_install_location", "Use npm to update this installation", {
+      throw new EnsoError("update_install_location", "Use npm to update this installation", {
         hint: "Run `npm install -g @enso-app/cli@latest` with the npm prefix that owns this installation. For a project dependency, run `npm install @enso-app/cli@latest` in that project."
       });
     }
@@ -125,8 +125,8 @@ export async function updateCli(checkOnly: boolean): Promise<{ installedVersion:
     if (installed.version !== latest) throw new Error("The installed version differs from the requested version");
     return { installedVersion: installed.version, latestVersion: latest, updateAvailable: false, updated: true };
   } catch (error) {
-    if (error instanceof EnsoCliError) throw error;
-    throw new EnsoCliError("update_failed", "npm could not update the CLI installation", {
+    if (error instanceof EnsoError) throw error;
+    throw new EnsoError("update_failed", "npm could not update the CLI installation", {
       hint: "Run `npm install -g @enso-app/cli@latest` using the npm prefix and permissions that own this installation"
     });
   }

@@ -1,3 +1,4 @@
+import { type EnsoEnvelope } from "@enso-app/core";
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,7 +7,6 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { z } from "zod/v3";
-import type { EnsoEnvelope } from "../errors.js";
 import { agentIdsForDisplayNames, discoverSkillAgents } from "../skill-agents.js";
 
 const execFileAsync = promisify(execFile);

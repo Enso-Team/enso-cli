@@ -1,7 +1,7 @@
+import { EnsoError } from "@enso-app/core";
 import { z } from "zod/v3";
 import { isBridgeInstanceID } from "../bridge-binding.js";
 import { isLoopbackBridgeUrl } from "../client.js";
-import { EnsoCliError } from "../errors.js";
 import { parseTarget } from "../targeting.js";
 
 /**
@@ -33,7 +33,7 @@ export type Json = string | number | boolean | null | Json[] | { [key: string]: 
 /** Reports a bad target as an issue so safeParse stays non-throwing; `parse()` restores its error code. */
 const target = z.unknown().transform((value, ctx) => {
   try { return parseTarget(value); } catch (error) {
-    if (!(error instanceof EnsoCliError)) throw error;
+    if (!(error instanceof EnsoError)) throw error;
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: error.message, params: { code: error.body.code } });
     return z.NEVER;
   }
@@ -150,8 +150,8 @@ export function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.outp
   const result = schema.safeParse(value);
   if (result.success) return result.data;
   const coded = result.error.issues.find(issue => issue.code === z.ZodIssueCode.custom && issue.params?.code);
-  if (coded?.code === z.ZodIssueCode.custom) throw new EnsoCliError(coded.params!.code, coded.message);
-  throw new EnsoCliError("invalid_input", result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "));
+  if (coded?.code === z.ZodIssueCode.custom) throw new EnsoError(coded.params!.code, coded.message);
+  throw new EnsoError("invalid_input", result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "));
 }
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;

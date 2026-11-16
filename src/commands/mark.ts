@@ -1,7 +1,6 @@
+import { parseWorldPoint, type WorldPoint, parseMarkTextRuns, requireMarkSupport, runsOutsideText, type MarkTextRun } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
 import { BridgeClient, type RequestOptions } from "../client.js";
-import { parseWorldPoint, type WorldPoint } from "../link-model.js";
-import { parseMarkTextRuns, requireMarkSupport, runsOutsideText, type MarkTextRun } from "../mark-model.js";
 
 type MarkWriteOptions = { at?: WorldPoint; width?: number; runs?: MarkTextRun[]; dryRun?: boolean };
 

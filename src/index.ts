@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { EnsoError, errorEnvelope, type EnsoEnvelope } from "@enso-app/core";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
@@ -20,12 +21,12 @@ import { registerStatus } from "./commands/status.js";
 import { registerUpdate } from "./commands/update.js";
 import { notifyUpdate, wantsUpdateNotice } from "./update.js";
 import { registerVault } from "./commands/vault.js";
-import { EnsoCliError, errorEnvelope, hasOwnOutput, printEnvelope, type EnsoEnvelope } from "./errors.js";
+import { hasOwnOutput, printEnvelope } from "./errors.js";
 import { withRequestContext, currentRequestContext, type TargetOptions } from "./targeting.js";
 import { cliVersion } from "./version.js";
 
 function immutableOption(value: string, previous?: string): string {
-  if (previous !== undefined && previous !== value) throw new EnsoCliError("target_conflict", "Repeated target options must agree");
+  if (previous !== undefined && previous !== value) throw new EnsoError("target_conflict", "Repeated target options must agree");
   return value;
 }
 
@@ -90,7 +91,7 @@ function wrapActions(command: Command): void {
       const options = command.optsWithGlobals() as TargetOptions;
       const rootCanvas = program.opts().canvas as string | undefined;
       const localCanvas = command.opts().canvas as string | undefined;
-      if (rootCanvas && localCanvas && rootCanvas !== localCanvas) throw new EnsoCliError("target_conflict", "Conflicting canvas selectors");
+      if (rootCanvas && localCanvas && rootCanvas !== localCanvas) throw new EnsoError("target_conflict", "Conflicting canvas selectors");
       if (options.canvas !== undefined) command.setOptionValue("canvas", options.canvas);
       const result = await withRequestContext(options, async () => {
         const context = currentRequestContext()!;
@@ -102,7 +103,7 @@ function wrapActions(command: Command): void {
         return await action(processedArgs) as EnsoEnvelope | undefined;
       });
       // A missing envelope is a bug, not a silent success, unless the command printed its own output.
-      if (result === undefined && !hasOwnOutput(command)) throw new EnsoCliError("internal_error", `${command.name()} returned no result`);
+      if (result === undefined && !hasOwnOutput(command)) throw new EnsoError("internal_error", `${command.name()} returned no result`);
       command.setOptionValue("__ensoResult", result);
       process.exitCode = result === undefined || result.ok ? 0 : 1;
     } catch (error) {

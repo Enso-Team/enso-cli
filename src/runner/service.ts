@@ -1,9 +1,9 @@
+import { EnsoError, errorEnvelope } from "@enso-app/core";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { finished } from "node:stream/promises";
-import { EnsoCliError, errorEnvelope } from "../errors.js";
 import { readBridgeInstance, type BridgeInstanceReader } from "./bridge.js";
 import { RunnerEngine } from "./engine.js";
 import { FakeProvider, type RunnerProvider } from "./provider.js";
@@ -43,14 +43,14 @@ export async function startRunner(options: { directory?: string; provider?: Runn
   // Checked before ownership: 0 or a negative count would delete every finished run, and NaN would fail every pass.
   const retain = options.retainDays;
   if (retain !== undefined && !(Number.isFinite(retain) && retain > 0 && retain <= maxRetainDays)) {
-    throw new EnsoCliError("invalid_input", `retainDays must be a number of days greater than 0 and at most ${maxRetainDays}`);
+    throw new EnsoError("invalid_input", `retainDays must be a number of days greater than 0 and at most ${maxRetainDays}`);
   }
   const storage = new RunnerStorage(options.directory);
   storage.acquire();
   const socketPath = join(storage.directory, "control.sock");
   if (Buffer.byteLength(socketPath) > 103) {
     try { storage.release(); } catch { /* report the path, not a failure to clean up after it */ }
-    throw new EnsoCliError("runner_path_too_long", "Unix socket path exceeds macOS limits; choose a shorter --directory");
+    throw new EnsoError("runner_path_too_long", "Unix socket path exceeds macOS limits; choose a shorter --directory");
   }
   const token = randomBytes(32).toString("hex");
   let engine: RunnerEngine;
@@ -117,10 +117,10 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     const supplied = Buffer.from(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
     const expected = Buffer.from(`Bearer ${token}`);
     if (request.headers.origin || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-      throw new EnsoCliError("unauthorized", "Runner authentication required");
+      throw new EnsoError("unauthorized", "Runner authentication required");
     }
     if (request.headers[runnerVersionHeader.toLowerCase()] !== String(runnerVersion)) {
-      throw new EnsoCliError("incompatible_runner_version", `This runner requires protocol version ${runnerVersion}`, { supportedVersions: [runnerVersion] });
+      throw new EnsoError("incompatible_runner_version", `This runner requires protocol version ${runnerVersion}`, { supportedVersions: [runnerVersion] });
     }
     const target = request.url ?? "/";
     // Route on the raw path: URL normalization would rewrite dot segments (even percent-encoded) into other routes.
@@ -130,7 +130,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
     if (method === "GET" && path === "/v1/snapshot") return send(response, 200, { ok: true, data: engine.snapshot() });
     if (method === "GET" && path === "/v1/events") {
       const after = url.searchParams.get("after");
-      if (after === null || !/^\d+$/.test(after)) throw new EnsoCliError("invalid_cursor", "events requires an integer after cursor");
+      if (after === null || !/^\d+$/.test(after)) throw new EnsoError("invalid_cursor", "events requires an integer after cursor");
       return send(response, 200, { ok: true, data: engine.events(Number(after)) });
     }
     const session = /^\/v1\/sessions\/([^/]+)$/.exec(path);
@@ -155,7 +155,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
       if (fatalError) throw fatalError;
       return send(response, 200, { ok: true, data: { stopped: true } });
     }
-    throw new EnsoCliError("route_not_found", "Runner route not found");
+    throw new EnsoError("route_not_found", "Runner route not found");
   }
 
   try {
@@ -163,7 +163,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
       autoDispatch: options.autoDispatch,
       onFatal: () => {
         if (initialized) {
-          fatalError = new EnsoCliError("runner_storage_failure", "Runner stopped after a durable write failed; restart and inspect state");
+          fatalError = new EnsoError("runner_storage_failure", "Runner stopped after a durable write failed; restart and inspect state");
           setImmediate(() => { void stop(); });
         }
       }
@@ -207,7 +207,7 @@ export async function startRunner(options: { directory?: string; provider?: Runn
 
 async function body(request: IncomingMessage): Promise<unknown> {
   if (request.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
-    throw new EnsoCliError("invalid_input", "JSON requests require Content-Type: application/json");
+    throw new EnsoError("invalid_input", "JSON requests require Content-Type: application/json");
   }
   // Oversized bodies are drained here rather than buffered; see the error handler.
   const limit = 1024 * 1024;
@@ -217,9 +217,9 @@ async function body(request: IncomingMessage): Promise<unknown> {
     size += chunk.length;
     if (size <= limit) chunks.push(Buffer.from(chunk));
   }
-  if (size > limit) throw new EnsoCliError("payload_too_large", "Request exceeds 1 MiB");
+  if (size > limit) throw new EnsoError("payload_too_large", "Request exceeds 1 MiB");
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { throw new EnsoCliError("invalid_input", "Request body must be valid JSON"); }
+  catch { throw new EnsoError("invalid_input", "Request body must be valid JSON"); }
 }
 function send(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", [runnerVersionHeader]: String(runnerVersion) });

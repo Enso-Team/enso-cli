@@ -1,6 +1,6 @@
+import { type EnsoEnvelope } from "@enso-app/core";
 import { Command } from "commander";
 import { checkEnsoFolder, type CheckReport } from "../enso-folder.js";
-import type { EnsoEnvelope } from "../errors.js";
 
 export function registerCheck(program: Command): void {
   program

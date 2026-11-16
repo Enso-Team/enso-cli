@@ -1,10 +1,10 @@
+import { EnsoError } from "@enso-app/core";
 import { readFileSync } from "node:fs";
 import { advertisedInstance, bindingEnvNames, bridgeInstanceEnv, bridgeTokenEnv, bridgeUrlEnv, canvasEnv, runnerBridgeEnv, vaultEnv } from "../bridge-binding.js";
 import { envelopeSchema, isLoopbackBridgeUrl } from "../client.js";
 import { readConfig } from "../config.js";
 import { assertTargetingContract } from "../contract.js";
 import { tokenFileSchema } from "../discovery.js";
-import { EnsoCliError } from "../errors.js";
 import type { Binding } from "./protocol.js";
 
 /** Reads the bridge instance at `bridgeUrl` for a new session to pin. */
@@ -18,14 +18,14 @@ async function health(bridgeUrl: string): Promise<unknown> {
   let response: Response;
   try { response = await fetch(new URL("/v1/health", bridgeUrl), { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(healthTimeoutMs) }); }
   catch {
-    throw new EnsoCliError("app_unavailable", "The Enso app bridge at the session's bridgeUrl did not answer, so the session cannot pin its bridge instance", {
+    throw new EnsoError("app_unavailable", "The Enso app bridge at the session's bridgeUrl did not answer, so the session cannot pin its bridge instance", {
       bridgeUrl, hint: "Launch Enso with Local agent access on, then create the session again"
     });
   }
   let parsed;
   try { parsed = envelopeSchema.safeParse(await response.json()); } catch { parsed = undefined; }
-  if (!parsed?.success) throw new EnsoCliError("invalid_response", "The bridge returned an invalid /v1/health reply", { bridgeUrl });
-  if (!parsed.data.ok) throw new EnsoCliError(parsed.data.error.code, parsed.data.error.message, { ...parsed.data.error.details, bridgeUrl });
+  if (!parsed?.success) throw new EnsoError("invalid_response", "The bridge returned an invalid /v1/health reply", { bridgeUrl });
+  if (!parsed.data.ok) throw new EnsoError(parsed.data.error.code, parsed.data.error.message, { ...parsed.data.error.details, bridgeUrl });
   return parsed.data.data;
 }
 
@@ -37,12 +37,12 @@ async function health(bridgeUrl: string): Promise<unknown> {
 export const readBridgeInstance: BridgeInstanceReader = async bridgeUrl => {
   const data = await health(bridgeUrl) as { agentAccess?: unknown; contractVersion?: unknown } | undefined;
   if (data?.agentAccess === "disabled") {
-    throw new EnsoCliError("access_disabled", "Local agent access is turned off in Enso's Settings", { bridgeUrl, hint: "Turn on Local agent access in Enso's Settings, then create the session again" });
+    throw new EnsoError("access_disabled", "Local agent access is turned off in Enso's Settings", { bridgeUrl, hint: "Turn on Local agent access in Enso's Settings, then create the session again" });
   }
   assertTargetingContract(data?.contractVersion, bridgeUrl);
   const instance = advertisedInstance(data);
   if (instance === undefined) {
-    throw new EnsoCliError("bridge_instance_unavailable", "The Enso app at the session's bridgeUrl advertises no bridge instance, so the session cannot pin one", {
+    throw new EnsoError("bridge_instance_unavailable", "The Enso app at the session's bridgeUrl advertises no bridge instance, so the session cannot pin one", {
       bridgeUrl, hint: "Update Enso to a build whose /v1/health reports bridgeInstanceID, then create the session again"
     });
   }

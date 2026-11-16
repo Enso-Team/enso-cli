@@ -1,6 +1,5 @@
+import { markWorldBox, bindCreatedMarks, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "@enso-app/core";
 import { describe, expect, it, vi } from "vitest";
-import { markWorldBox } from "../../src/mark-model.js";
-import { bindCreatedMarks, compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
 import { requestPath, requestBody, calls, run, setupCliTest } from "../support/cli-harness.js";
 
 setupCliTest();

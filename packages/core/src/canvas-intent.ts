@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
-import { EnsoCliError } from "./errors.js";
+import { EnsoError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, lineStyleSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
 import { markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
 import { nodeSelector, noteMatches, placementSelector } from "./note-identity.js";
@@ -500,7 +500,7 @@ function resolveId(items: Array<{ id?: string }>, id: string, noun: string): voi
 function sameId(a?: string | null, b?: string | null): boolean { return typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase(); }
 function unorderedPair(a?: string | null, b?: string | null): string { return [a?.toLowerCase() ?? "", b?.toLowerCase() ?? ""].sort().join("\u0000"); }
 function defined<T extends Record<string, unknown>>(value: T): Record<string, unknown> { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
-function fail(code: string, message: string, path: string, hint: string): never { throw new EnsoCliError(code, message, { path, expected: "one unambiguous declaration", hint }); }
+function fail(code: string, message: string, path: string, hint: string): never { throw new EnsoError(code, message, { path, expected: "one unambiguous declaration", hint }); }
 
 export const canvasApplyContract = {
   transports: ["file", "--json <literal>", "--json -"],
@@ -571,7 +571,7 @@ export function parseCanvasIntent(input: unknown): CanvasIntent {
   const parsed = canvasIntentSchema.safeParse(input);
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
-  throw new EnsoCliError("invalid_input", issue?.message ?? "Canvas intent is invalid", {
+  throw new EnsoError("invalid_input", issue?.message ?? "Canvas intent is invalid", {
     path: issue?.path.join(".") || "intent",
     expected: issue?.code === "unrecognized_keys" ? "only documented fields" : "canvas apply schema",
     hint: "Run `enso canvas apply --schema` for the machine-readable contract"

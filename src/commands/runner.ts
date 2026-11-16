@@ -1,7 +1,8 @@
+import { EnsoError } from "@enso-app/core";
 import { accessSync, constants, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
-import { EnsoCliError, printEnvelope, printsOwnOutput } from "../errors.js";
+import { printEnvelope, printsOwnOutput } from "../errors.js";
 import { ClaudeProvider, claudePermissionModes, loadClaudeQuery } from "../runner/claude.js";
 import { runnerCall, shutdownRunner } from "../runner/client.js";
 import { runnerVersion } from "../runner/protocol.js";
@@ -13,21 +14,21 @@ import { withoutUpdateNotice } from "../update.js";
 
 function parseTimeout(value: string): number {
   const timeout = Number(value);
-  if (!/^\d+$/.test(value) || timeout <= 0 || timeout > 2 ** 31 - 1) throw new EnsoCliError("invalid_input", "--timeout must be a positive integer of milliseconds");
+  if (!/^\d+$/.test(value) || timeout <= 0 || timeout > 2 ** 31 - 1) throw new EnsoError("invalid_input", "--timeout must be a positive integer of milliseconds");
   return timeout;
 }
 function parseProvider(value: string): "fake" | "claude" {
-  if (value !== "fake" && value !== "claude") throw new EnsoCliError("invalid_input", "--provider must be fake or claude");
+  if (value !== "fake" && value !== "claude") throw new EnsoError("invalid_input", "--provider must be fake or claude");
   return value;
 }
 function parsePermissionMode(value: string): (typeof claudePermissionModes)[number] {
   const mode = claudePermissionModes.find(candidate => candidate === value);
-  if (!mode) throw new EnsoCliError("invalid_input", `--claude-permission-mode must be one of ${claudePermissionModes.join(", ")}`);
+  if (!mode) throw new EnsoError("invalid_input", `--claude-permission-mode must be one of ${claudePermissionModes.join(", ")}`);
   return mode;
 }
 function parseDays(value: string): number {
   const days = Number(value);
-  if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoCliError("invalid_input", `--retain-days must be a whole number of days from 1 to ${maxRetainDays}`);
+  if (!/^\d+$/.test(value) || days <= 0 || days > maxRetainDays) throw new EnsoError("invalid_input", `--retain-days must be a whole number of days from 1 to ${maxRetainDays}`);
   return days;
 }
 /** The SDK spawns Claude in each session's working directory, so a relative path must be fixed against this one. */
@@ -35,7 +36,7 @@ function parseExecutable(value: string): string {
   const path = resolve(value);
   try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path; }
   catch { /* missing or not executable; refused below */ }
-  throw new EnsoCliError("invalid_input", "--claude-executable must be an executable file");
+  throw new EnsoError("invalid_input", "--claude-executable must be an executable file");
 }
 
 export function registerRunner(program: Command): void {
@@ -51,9 +52,9 @@ export function registerRunner(program: Command): void {
     .action(async function (this: Command) {
       const options = this.opts();
       const claudeOptions = ["claudeModel", "claudePermissionMode", "claudeExecutable"].filter(key => options[key] !== undefined);
-      if (options.provider !== "claude" && claudeOptions.length) throw new EnsoCliError("invalid_input", "--claude-* options require --provider claude");
+      if (options.provider !== "claude" && claudeOptions.length) throw new EnsoError("invalid_input", "--claude-* options require --provider claude");
       if (currentRequestContext()?.bound || this.optsWithGlobals().canvas) {
-        throw new EnsoCliError("target_conflict", "Runner sessions carry their own explicit binding; omit global target options and unset ENSO_VAULT_ID/ENSO_CANVAS_ID when starting the service");
+        throw new EnsoError("target_conflict", "Runner sessions carry their own explicit binding; omit global target options and unset ENSO_VAULT_ID/ENSO_CANVAS_ID when starting the service");
       }
       // Handlers precede startup so an early signal stops the service once it exists instead of killing a half-acquired lock.
       let service: RunnerService | undefined;
@@ -90,11 +91,11 @@ export function registerRunner(program: Command): void {
     .option("--directory <path>", "private runner storage directory")
     .option("--timeout <ms>", "request timeout in milliseconds", parseTimeout)
     .action(async function (this: Command, method: string, path: string) {
-      if (!["GET", "POST"].includes(method)) throw new EnsoCliError("invalid_input", "Runner methods are GET and POST");
+      if (!["GET", "POST"].includes(method)) throw new EnsoError("invalid_input", "Runner methods are GET and POST");
       let body: unknown;
       if (this.opts().json !== undefined) {
         try { body = JSON.parse(this.opts().json); }
-        catch { throw new EnsoCliError("invalid_input", "--json must contain valid JSON"); }
+        catch { throw new EnsoError("invalid_input", "--json must contain valid JSON"); }
       }
       return runnerCall(method, path, body, this.opts().directory, { timeoutMs: this.opts().timeout });
     });
@@ -104,7 +105,7 @@ export function registerRunner(program: Command): void {
     .action(async function (this: Command) {
       const { differences, ...summary } = RunnerStorage.check(this.opts().directory);
       if (differences.length) {
-        throw new EnsoCliError("invalid_runner_storage", `Runner rows disagree with the event history in ${differences.length} place(s)`, { ...summary, differences: differences.slice(0, 50) });
+        throw new EnsoError("invalid_runner_storage", `Runner rows disagree with the event history in ${differences.length} place(s)`, { ...summary, differences: differences.slice(0, 50) });
       }
       return { ok: true, data: summary };
     });

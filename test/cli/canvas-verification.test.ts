@@ -1,5 +1,5 @@
+import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "@enso-app/core";
 import { describe, expect, it } from "vitest";
-import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
 
 const linkId = "00000000-0000-4000-8000-000000000003";
 const context = {

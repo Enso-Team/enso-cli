@@ -1,7 +1,7 @@
+import { EnsoError } from "@enso-app/core";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { CanUseTool, Options, PermissionResult, SDKMessage, SDKResultMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { EnsoCliError } from "../errors.js";
 import { cliVersion } from "../version.js";
 import { bridgeEnvironment, readBridgeToken, type BridgeTokenReader } from "./bridge.js";
 import { conversationOptions, isConversationNotFound, isLaunchError, isPromptUUID, isResultForOtherTurn, messageSessionID, permissionRequest, permissionResultFromDecision, resultOutcome, sdkUserInputAnswers, stopConfirmTimeoutMs, userInputQuestions, type PermissionDecision } from "./claude-sdk.js";
@@ -60,13 +60,13 @@ export async function loadClaudeQuery(): Promise<ClaudeQuery> {
 }
 
 /** Only the package itself missing means it was omitted; a missing dependency of it, or a throw while loading, is reported with its cause. */
-export function claudeLoadError(error: unknown): EnsoCliError {
+export function claudeLoadError(error: unknown): EnsoError {
   const code = (error as { code?: unknown } | null)?.code;
   const message = error instanceof Error ? error.message : String(error);
   if ((code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && /['"]@anthropic-ai\/claude-agent-sdk['"]/.test(message)) {
-    return new EnsoCliError("runner_provider_unavailable", "The Claude provider needs the optional @anthropic-ai/claude-agent-sdk package; reinstall the CLI without omitting optional dependencies");
+    return new EnsoError("runner_provider_unavailable", "The Claude provider needs the optional @anthropic-ai/claude-agent-sdk package; reinstall the CLI without omitting optional dependencies");
   }
-  return new EnsoCliError("runner_provider_unavailable", "The Claude provider's @anthropic-ai/claude-agent-sdk package failed to load", { cause: message });
+  return new EnsoError("runner_provider_unavailable", "The Claude provider's @anthropic-ai/claude-agent-sdk package failed to load", { cause: message });
 }
 
 /**

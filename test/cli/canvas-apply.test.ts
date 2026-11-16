@@ -1,6 +1,6 @@
+import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "@enso-app/core";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { compileCanvasApply, parseCanvasIntent, verifyCanvasIntent } from "../../src/canvas-intent.js";
 import { describe, expect, it, vi } from "vitest";
 import { fixtureTarget, requestBody, calls, run, setupCliTest, tempDir } from "../support/cli-harness.js";
 

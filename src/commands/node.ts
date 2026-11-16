@@ -1,9 +1,7 @@
+import { safeTitle, EnsoError, type EnsoEnvelope, placementSelector } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
-import { safeTitle } from "../canvas-intent.js";
-import { EnsoCliError, type EnsoEnvelope } from "../errors.js";
-import { placementSelector } from "../note-identity.js";
 
 function parseCoord(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -31,7 +29,7 @@ function parseRenameTitle(value: string): string {
  */
 function requireRenameSupport(envelope: EnsoEnvelope): EnsoEnvelope {
   if (!envelope.ok && envelope.error.code === "not_found" && envelope.error.message === "Node route not found") {
-    throw new EnsoCliError("app_outdated", "The Enso app does not support renaming Nodes yet", {
+    throw new EnsoError("app_outdated", "The Enso app does not support renaming Nodes yet", {
       ...(envelope.error.details ?? {}),
       hint: "Update the Enso app"
     });
