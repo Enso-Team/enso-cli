@@ -554,7 +554,7 @@ function placeAnnotations(intent: CanvasIntent, canvas: Canvas, direction: Direc
     return others.some((other) => Math.abs(other.y - point.y) < geometry.nodeHeight && other.x > point.x + 1 && other.x - point.x < geometry.nodeWidth + ANNOTATION_GEOMETRY.gap + ANNOTATION_GEOMETRY.width);
   };
   const cursors = new Map<string, Point>();
-  const lane = (selector: string, text: string, width?: number): { x: number; y: number; width: number } => {
+  const lane = (selector: string, text: string, width?: number, fontSize?: number): { x: number; y: number; width: number } => {
     const node = nodeAt(selector);
     if (!node) throw laneError(selector);
     const laneWidth = width ?? defaultLaneWidth(direction, node.geometry);
@@ -562,16 +562,16 @@ function placeAnnotations(intent: CanvasIntent, canvas: Canvas, direction: Direc
     const left = direction === "TB" && occupiedRight(node.point, node.geometry);
     const start = cursors.get(key) ?? laneOrigin(node.point, node.geometry, direction, laneWidth, left);
     const placed = { x: start.x, y: start.y, width: laneWidth };
-    cursors.set(key, { x: start.x, y: markWorldBox({ ...placed, text }).maxY + ANNOTATION_GEOMETRY.stackGap });
+    cursors.set(key, { x: start.x, y: markWorldBox({ ...placed, text, fontSize }).maxY + ANNOTATION_GEOMETRY.stackGap });
     return placed;
   };
   const excerpts = intent.excerpts.map((excerpt) => excerpt.mode === "create" && excerpt.x === undefined ? { ...excerpt, ...lane(excerpt.note, excerpt.text, excerpt.width) } : excerpt);
   const free = intent.marks.filter((mark) => mark.mode === "create" && mark.x === undefined && !mark.connect?.length);
-  const above = stackAbove(free.map((mark) => mark.mode === "create" ? { text: mark.text, width: mark.width } : { text: "" }), intent, canvas);
+  const above = stackAbove(free.map((mark) => mark.mode === "create" ? { text: mark.text, width: mark.width, fontSize: mark.fontSize } : { text: "" }), intent, canvas);
   let freeIndex = 0;
   const marks = intent.marks.map((mark) => {
     if (mark.mode !== "create" || mark.x !== undefined) return mark;
-    if (mark.connect?.length) return { ...mark, ...lane(mark.connect[0], mark.text, mark.width) };
+    if (mark.connect?.length) return { ...mark, ...lane(mark.connect[0], mark.text, mark.width, mark.fontSize) };
     return { ...mark, ...above[freeIndex++] };
   });
   return { ...intent, excerpts, marks };
@@ -581,6 +581,9 @@ function defaultLaneWidth(direction: Direction, geometry: Geometry): number {
   return direction === "TB" ? ANNOTATION_GEOMETRY.width : geometry.colStep - 2 * ANNOTATION_GEOMETRY.gap;
 }
 
+/** An Excerpt or Mark waiting for a place in a lane. Only Marks carry a font size. */
+type LaneItem = { text: string; width?: number; fontSize?: number };
+
 /** Top-left of a Node's annotation lane: beside it for TB, on the left when `left`, and below it for LR. */
 function laneOrigin(point: Point, geometry: Geometry, direction: Direction, laneWidth: number, left: boolean): Point {
   if (direction === "LR") return { x: point.x - geometry.nodeWidth / 2, y: point.y + geometry.nodeHeight / 2 + ANNOTATION_GEOMETRY.gap };
@@ -589,12 +592,12 @@ function laneOrigin(point: Point, geometry: Geometry, direction: Direction, lane
 }
 
 /** The boxes a lane's items stack into, in the order placeAnnotations places them. */
-function stackLane(point: Point, geometry: Geometry, direction: Direction, items: Array<{ text: string; width?: number }>): WorldBox[] {
+function stackLane(point: Point, geometry: Geometry, direction: Direction, items: LaneItem[]): WorldBox[] {
   let cursor: Point | undefined;
-  return items.map(({ text, width }) => {
+  return items.map(({ text, width, fontSize }) => {
     const laneWidth = width ?? defaultLaneWidth(direction, geometry);
     const start = cursor ?? laneOrigin(point, geometry, direction, laneWidth, false);
-    const box = markWorldBox({ x: start.x, y: start.y, width: laneWidth, text });
+    const box = markWorldBox({ x: start.x, y: start.y, width: laneWidth, text, fontSize });
     cursor = { x: start.x, y: box.maxY + ANNOTATION_GEOMETRY.stackGap };
     return box;
   });
@@ -614,13 +617,13 @@ function annotationLanes(intent: CanvasIntent, canvas: Canvas, tracked: (selecto
     const node = canvas.find(selector);
     return typeof node?.id === "string" ? OLDER + node.id : undefined;
   };
-  const items = new Map<string, Array<{ text: string; width?: number }>>();
-  const add = (selector: string, item: { text: string; width?: number }): void => {
+  const items = new Map<string, LaneItem[]>();
+  const add = (selector: string, item: LaneItem): void => {
     const key = keyOf(selector);
     if (key !== undefined) items.set(key, [...(items.get(key) ?? []), item]);
   };
   for (const excerpt of intent.excerpts) if (excerpt.mode === "create" && excerpt.x === undefined) add(excerpt.note, { text: excerpt.text, width: excerpt.width });
-  for (const mark of intent.marks) if (mark.mode === "create" && mark.x === undefined && mark.connect?.length) add(mark.connect[0], { text: mark.text, width: mark.width });
+  for (const mark of intent.marks) if (mark.mode === "create" && mark.x === undefined && mark.connect?.length) add(mark.connect[0], { text: mark.text, width: mark.width, fontSize: mark.fontSize });
   const nodeId = (key: string): string | undefined => {
     if (key.startsWith(OLDER)) return key.slice(OLDER.length);
     const id = canvas.find(key)?.id;
@@ -640,7 +643,7 @@ function annotationLanes(intent: CanvasIntent, canvas: Canvas, tracked: (selecto
   };
 }
 
-function stackAbove(items: Array<{ text: string; width?: number }>, intent: CanvasIntent, canvas: Canvas): Array<{ x: number; y: number; width: number }> {
+function stackAbove(items: LaneItem[], intent: CanvasIntent, canvas: Canvas): Array<{ x: number; y: number; width: number }> {
   if (items.length === 0) return [];
   const points = [
     ...intent.nodes.flatMap((node) => "x" in node && node.x !== undefined && node.y !== undefined ? [{ x: node.x, y: node.y }] : []),
@@ -649,9 +652,9 @@ function stackAbove(items: Array<{ text: string; width?: number }>, intent: Canv
   const boxes = points.map((point) => centered(point, CARD_GEOMETRY.nodeWidth, CARD_GEOMETRY.nodeHeight));
   const left = boxes.length === 0 ? CANVAS_WORLD_HOME.x : Math.min(...boxes.map((box) => box.minX));
   const top = boxes.length === 0 ? CANVAS_WORLD_HOME.y : Math.min(...boxes.map((box) => box.minY));
-  const sized = items.map(({ text, width }) => {
+  const sized = items.map(({ text, width, fontSize }) => {
     const wrap = width ?? ANNOTATION_GEOMETRY.canvasWidth;
-    const box = markWorldBox({ x: 0, y: 0, width: wrap, text });
+    const box = markWorldBox({ x: 0, y: 0, width: wrap, text, fontSize });
     return { width: wrap, height: box.maxY - box.minY };
   });
   let y = top - ANNOTATION_GEOMETRY.canvasGap - sized.reduce((total, item) => total + item.height, ANNOTATION_GEOMETRY.stackGap * (sized.length - 1));
@@ -685,5 +688,5 @@ function textBox(item: Item): WorldBox[] {
   if (!value || typeof value !== "object") return [];
   const { x, y } = value as { x?: unknown; y?: unknown };
   if (typeof x !== "number" || typeof y !== "number") return [];
-  return [markWorldBox({ x, y, width: typeof item.width === "number" ? item.width : undefined, text: typeof item.text === "string" ? item.text : undefined })];
+  return [markWorldBox({ x, y, width: typeof item.width === "number" ? item.width : undefined, fontSize: typeof item.fontSize === "number" ? item.fontSize : undefined, text: typeof item.text === "string" ? item.text : undefined })];
 }

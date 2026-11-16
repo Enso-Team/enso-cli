@@ -152,6 +152,19 @@ describe("growth on canvas apply", () => {
     expect(free.y).toBeLessThan(node.y - CARD_GEOMETRY.nodeHeight / 2);
   });
 
+  it("stacks the next Mark in a lane below a large-font Mark's full height", () => {
+    const plan = planGrowth(parseCanvasIntent({
+      canvas: "current",
+      nodes: [place("Sync server")],
+      marks: [
+        { mode: "create", text: "Why retry here?", fontSize: 48, connect: ["Sync server"] },
+        { mode: "create", text: "And how often?", connect: ["Sync server"] }
+      ]
+    }), { nodes: [] }, undefined, CANVAS, 0);
+    const [large, next] = plan.intent.marks as Array<{ x: number; y: number; width: number; text: string; fontSize?: number }>;
+    expect(next.y).toBe(markWorldBox(large).maxY + ANNOTATION_GEOMETRY.stackGap);
+  });
+
   it("keeps a new Node off the Excerpt lane below its neighbor growing left to right", () => {
     const long = "Retries with exponential backoff and jitter, then parks the update in a dead-letter queue the operator drains by hand.";
     const plan = planGrowth(parseCanvasIntent({
