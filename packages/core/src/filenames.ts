@@ -1,6 +1,5 @@
 import { EnsoError } from "./errors.js";
 
-/** UTF-8 byte length, counted by code point so it needs no Node Buffer. A lone surrogate encodes as U+FFFD, three bytes. */
 export function utf8Length(value: string): number {
   let bytes = 0;
   for (const char of value) {

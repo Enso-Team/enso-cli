@@ -161,7 +161,6 @@ export function canvasSpecIssues(spec: CanvasSpec): SpecIssue[] {
   return issues;
 }
 
-/** The hint on a canvas spec that fails its schema. Each door points it at where it publishes the contract. */
 export const CANVAS_SPEC_CONTRACT_HINT = "Read the canvas spec contract for the graph's fields";
 
 export function specError(message: string, path: string, expected?: string): EnsoError {

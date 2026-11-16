@@ -1,10 +1,10 @@
-import { CANVAS_INTENT_CONTRACT_HINT, CANVAS_SPEC_CONTRACT_HINT, type EnsoEnvelope } from "@enso-app/core";
+import { CANVAS_INTENT_CONTRACT_HINT, CANVAS_INTENT_SCHEMA_EXPECTED, CANVAS_SPEC_CONTRACT_HINT, type EnsoEnvelope } from "@enso-app/core";
 
-/** Core's hints name no command, so the CLI points them at its own `--schema` output. */
 const commandHints: Record<string, string> = {
   [CANVAS_INTENT_CONTRACT_HINT]: "Run `enso canvas apply --schema` for the machine-readable contract",
   [CANVAS_SPEC_CONTRACT_HINT]: "Run `enso layout --schema` for the machine-readable canvas spec contract"
 };
+const commandExpectations: Record<string, string> = { [CANVAS_INTENT_SCHEMA_EXPECTED]: "canvas apply schema" };
 
 const DUPLICATE_LINK_HINT = "Use link update on the existing link id instead of link create";
 
@@ -35,9 +35,11 @@ export function printEnvelope(
 
 function withRecovery(given: EnsoEnvelope): EnsoEnvelope {
   if (given.ok) return given;
-  const coreHint = given.error.details?.hint;
-  const envelope: EnsoEnvelope = typeof coreHint === "string" && commandHints[coreHint]
-    ? { ...given, error: { ...given.error, details: { ...given.error.details, hint: commandHints[coreHint] } } }
+  const { hint: coreHint, expected: coreExpected } = given.error.details ?? {};
+  const commandHint = typeof coreHint === "string" ? commandHints[coreHint] : undefined;
+  const commandExpected = typeof coreExpected === "string" ? commandExpectations[coreExpected] : undefined;
+  const envelope: EnsoEnvelope = commandHint || commandExpected
+    ? { ...given, error: { ...given.error, details: { ...given.error.details, ...(commandHint ? { hint: commandHint } : {}), ...(commandExpected ? { expected: commandExpected } : {}) } } }
     : given;
   const hints: Record<string, string> = {
     bridge_instance_mismatch: "A different Enso app instance answers at this bridge address. Check which app you meant before setting ENSO_BRIDGE_INSTANCE_ID again; the CLI has not retried",

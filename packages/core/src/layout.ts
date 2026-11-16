@@ -1,6 +1,3 @@
-// Shared diagram spacing conventions (see skills/enso/references/diagram-design.md).
-// A canvas spec compiles onto these steps, and an apply forwards the result.
-
 import { compareStrings, type CanvasSpec } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
 import { parseCanvasIntent } from "./canvas-intent.js";

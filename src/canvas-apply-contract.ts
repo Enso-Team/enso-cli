@@ -1,6 +1,5 @@
 import { VISUAL_COLOR_GRAMMAR, lineStyleSchema, markStyleSchema, nodeAppearanceSchema, primitiveKinds, writingTextAlignmentSchema } from "@enso-app/core";
 
-/** What `enso canvas apply --schema` prints. */
 export const canvasApplyContract = {
   transports: ["file", "--json <literal>", "--json -"],
   input: {

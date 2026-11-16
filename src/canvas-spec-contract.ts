@@ -1,6 +1,5 @@
 import { VISUAL_COLOR_GRAMMAR } from "@enso-app/core";
 
-/** What `enso layout --schema` prints. */
 export const canvasSpecContract = {
   file: "command-input graph JSON, not a Vault file",
   graph: {

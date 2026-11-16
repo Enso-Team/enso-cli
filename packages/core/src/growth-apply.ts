@@ -1,8 +1,3 @@
-// Fills in the positions an intent leaves out, so an agent adds one Node at a time and the
-// Canvas grows. The caller stores the growth between applies: the Nodes this agent placed on this Canvas,
-// each with its spot in the growth layout, and the Regions it drew or grew. Nodes from before
-// the growth never move.
-
 import { canvasSpecFromObject } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
 import { EnsoError } from "./errors.js";

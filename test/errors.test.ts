@@ -53,6 +53,10 @@ describe("core hints in CLI output", () => {
     expect(printed(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "nope" }] })).hint).toBe("Run `enso canvas apply --schema` for the machine-readable contract");
   });
 
+  it("keeps the CLI's name for the schema an invalid intent fails", () => {
+    expect(printed(() => parseCanvasIntent({ canvas: "current", nodes: [{ kind: "nope" }] })).expected).toBe("canvas apply schema");
+  });
+
   it("points an invalid canvas spec at `enso layout --schema`", () => {
     expect(printed(() => { throw specError("bad graph", "members"); }).hint).toBe("Run `enso layout --schema` for the machine-readable canvas spec contract");
   });

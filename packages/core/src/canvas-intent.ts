@@ -62,7 +62,7 @@ const linkRemove = z.object({ mode: z.literal("remove"), id: z.string().uuid(), 
 const intentLink = z.union([linkCreate, linkUpdate, linkRemove]);
 
 const primitiveVisual = { title: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), lineStyle: lineStyleSchema.optional(), strokeWidth: positiveFinite.optional() };
-/** The hint on an intent that fails its schema. Each door points it at where it publishes the contract. */
+export const CANVAS_INTENT_SCHEMA_EXPECTED = "canvas intent schema";
 export const CANVAS_INTENT_CONTRACT_HINT = "Read the canvas intent contract for the fields each section takes";
 
 export const primitiveKinds = ["region", "line"] as const;
@@ -553,7 +553,7 @@ export function parseCanvasIntent(input: unknown): CanvasIntent {
       if (primitive && typeof primitive === "object" && "kind" in primitive && !["region", "group", "line"].includes(String(primitive.kind))) {
         throw new EnsoError("invalid_input", `Primitive kind '${String(primitive.kind)}' must be region, group, or line`, {
           path: `primitives.${index}.kind`, value: primitive.kind, expected: "region, group, line",
-          hint: "Use region for a region; context reports its stored kind as group"
+          hint: "Use region for a region. A Region is stored with kind group"
         });
       }
     });
@@ -563,7 +563,7 @@ export function parseCanvasIntent(input: unknown): CanvasIntent {
   const issue = parsed.error.issues[0];
   throw new EnsoError("invalid_input", issue?.message ?? "Canvas intent is invalid", {
     path: issue?.path.join(".") || "intent",
-    expected: issue?.code === "unrecognized_keys" ? "only documented fields" : "canvas intent schema",
+    expected: issue?.code === "unrecognized_keys" ? "only documented fields" : CANVAS_INTENT_SCHEMA_EXPECTED,
     hint: CANVAS_INTENT_CONTRACT_HINT
   });
 }
