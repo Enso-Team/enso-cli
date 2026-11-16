@@ -1,5 +1,6 @@
-import { buildLinkCreateBody, buildLinkUpdateBody, parseWorldPoint, lineStyleSchema, type LinkDirection, type LinkUpdateOptions, type WorldPoint } from "@enso-app/core";
+import { lineStyleSchema, type LinkDirection, type WorldPoint } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
+import { buildLinkCreateBody, buildLinkUpdateBody, parseWorldPoint, type LinkUpdateOptions } from "../link-options.js";
 import { BridgeClient } from "../client.js";
 
 function parseLinkDirection(value: string): LinkDirection {

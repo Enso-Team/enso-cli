@@ -1,5 +1,5 @@
 // Where a compiled canvas patch lands in world space.
-// `enso layout` compiles relative geometry around the origin; this post-pass moves the whole
+// The layout compiles relative geometry around the origin; this post-pass moves the whole
 // cluster — nodes and primitives together — to a world position the app is looking at.
 
 import type { CanvasIntent } from "./canvas-intent.js";

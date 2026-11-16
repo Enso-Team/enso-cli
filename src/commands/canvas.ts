@@ -1,5 +1,6 @@
-import { bindCreatedMarks, canvasApplyContract, compileCanvasApply, createdMarkIds, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent, marksUnsupported, CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset, validateFilename, EnsoError, errorEnvelope, type EnsoEnvelope, planGrowth, type Growth } from "@enso-app/core";
+import { bindCreatedMarks, compileCanvasApply, createdMarkIds, parseCanvasIntent, verifyCanvasIntent, type CanvasIntent, marksUnsupported, CANVAS_WORLD_HOME, centeringOffset, existingContent, isPureCreation, patchBounds, translatePatch, type WorldOffset, validateFilename, EnsoError, errorEnvelope, type EnsoEnvelope, planGrowth, type Growth } from "@enso-app/core";
 import { Command } from "commander";
+import { canvasApplyContract } from "../canvas-apply-contract.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BridgeClient } from "../client.js";

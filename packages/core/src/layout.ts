@@ -1,5 +1,5 @@
 // Shared diagram spacing conventions (see skills/enso/references/diagram-design.md).
-// `enso layout` compiles a canvas spec onto these steps; canvas apply forwards the result.
+// A canvas spec compiles onto these steps, and an apply forwards the result.
 
 import { compareStrings, type CanvasSpec } from "./canvas-spec.js";
 import type { CanvasIntent } from "./canvas-intent.js";
@@ -203,7 +203,7 @@ export function regionWarnings(spec: CanvasSpec, layout: Pick<CanvasLayout, "nod
         code: "region_overlap",
         message: `Regions '${region.name}' and '${other.name}' overlap`,
         details: { regions: [region.name, other.name] },
-        hint: "Redraw each region from its own members' bounds plus padding with canvas apply, moving members apart where the boxes still meet"
+        hint: "Redraw each region from its own members' bounds plus padding, moving members apart where the boxes still meet"
       });
     }
     for (const node of layout.nodes) {
@@ -213,7 +213,7 @@ export function regionWarnings(spec: CanvasSpec, layout: Pick<CanvasLayout, "nod
         code: "region_contains_nonmember",
         message: `'${node.title}' sits inside region '${region.name}' without being a member`,
         details: { region: region.name, member: node.title },
-        hint: "Add it to the cluster if it belongs there; otherwise move it clear of the region or redraw the region with canvas apply"
+        hint: "Add it to the cluster if it belongs there; otherwise move it clear of the region or redraw the region from its members' bounds"
       });
     }
   });

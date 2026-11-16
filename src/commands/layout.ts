@@ -1,6 +1,7 @@
-import { canvasSpecContract, parseCanvasSpec, specError, compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, plannedExcerpts, regionWarnings, markWorldBox, centeringOffset, contextObject, patchBounds, existingContent, readArray, translatePatch, noteMatches, type CanvasIntent, EnsoError, errorEnvelope, type EnsoEnvelope } from "@enso-app/core";
+import { parseCanvasSpec, specError, compileCanvasSpec, computeCanvasLayout, layoutGeometry, linkCrossings, plannedExcerpts, regionWarnings, markWorldBox, centeringOffset, contextObject, patchBounds, existingContent, readArray, translatePatch, noteMatches, type CanvasIntent, EnsoError, errorEnvelope, type EnsoEnvelope } from "@enso-app/core";
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
+import { canvasSpecContract } from "../canvas-spec-contract.js";
 import { checkExcerptSource } from "../excerpt-model.js";
 import { BridgeClient } from "../client.js";
 import { applyCanvasIntent, placementReport, requestCanvasContext } from "./canvas.js";

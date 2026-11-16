@@ -1,4 +1,10 @@
-import type { EnsoEnvelope } from "@enso-app/core";
+import { CANVAS_INTENT_CONTRACT_HINT, CANVAS_SPEC_CONTRACT_HINT, type EnsoEnvelope } from "@enso-app/core";
+
+/** Core's hints name no command, so the CLI points them at its own `--schema` output. */
+const commandHints: Record<string, string> = {
+  [CANVAS_INTENT_CONTRACT_HINT]: "Run `enso canvas apply --schema` for the machine-readable contract",
+  [CANVAS_SPEC_CONTRACT_HINT]: "Run `enso layout --schema` for the machine-readable canvas spec contract"
+};
 
 const DUPLICATE_LINK_HINT = "Use link update on the existing link id instead of link create";
 
@@ -27,8 +33,12 @@ export function printEnvelope(
   stream.write("\n");
 }
 
-function withRecovery(envelope: EnsoEnvelope): EnsoEnvelope {
-  if (envelope.ok) return envelope;
+function withRecovery(given: EnsoEnvelope): EnsoEnvelope {
+  if (given.ok) return given;
+  const coreHint = given.error.details?.hint;
+  const envelope: EnsoEnvelope = typeof coreHint === "string" && commandHints[coreHint]
+    ? { ...given, error: { ...given.error, details: { ...given.error.details, hint: commandHints[coreHint] } } }
+    : given;
   const hints: Record<string, string> = {
     bridge_instance_mismatch: "A different Enso app instance answers at this bridge address. Check which app you meant before setting ENSO_BRIDGE_INSTANCE_ID again; the CLI has not retried",
     bridge_instance_unavailable: "Update Enso to a build whose /v1/health reports bridgeInstanceID, or unset ENSO_BRIDGE_INSTANCE_ID",
