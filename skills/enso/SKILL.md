@@ -82,3 +82,5 @@ When a Canvas is the design for code or a mockup, read it with `enso context --c
 After every build, layout change, or placement revision, run `enso context --canvas <target> --diagnostics` and follow "Inspect and repair" in [references/diagram-design.md](references/diagram-design.md). When Links cross on the main path of a diagram you just built, apply `{"canvas":"current","tidy":true}`. It rearranges what you built only when that removes crossings. Once diagnostics are clean, run `--vision` once before finishing and read the image as a reader who opens no Note. The takeaway, the main path, and each key sentence should be legible at that glance.
 
 Finish when a reader who opens no Note can state the answer from the Canvas alone, diagnostics show no fault that obstructs that reading, and every region holds exactly its members. If the Canvas needs chat to be understood, redraw the Canvas.
+
+Dress a Note’s Node in a screenshot with `enso node update <selector> --picture Screens/Login.png --picture-width 110`; take it off with `--clear-picture`. Canvas apply note place/update accepts `appearancePicture`, `width`, and `titleWidth`.

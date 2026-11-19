@@ -80,3 +80,5 @@ An apply runs in phases, and phases that succeeded stay applied when a later one
 For `ambiguous_selector` or `note_ambiguous`, pick one returned candidate, usually a Vault-relative path. Prose edits can remove a Link, so refresh the inventory before removing one.
 
 If `enso check` rejects a reference the app resolves, report the discrepancy and keep the reference that names the intended Note.
+
+Dress a Note’s Node in a screenshot with `enso node update <selector> --picture Screens/Login.png --picture-width 110`; take it off with `--clear-picture`. Canvas apply note place/update accepts `appearancePicture`, `width`, and `titleWidth`.

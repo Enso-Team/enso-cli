@@ -1,4 +1,4 @@
-import { safeTitle, EnsoError, type EnsoEnvelope, placementSelector, validateNotePath } from "@enso-app/core";
+import { safeTitle, EnsoError, type EnsoEnvelope, placementSelector, validateNotePath, nodePictureSchema, nodePictureWidthSchema } from "@enso-app/core";
 import { Command, InvalidArgumentError } from "commander";
 import { parseNodeAppearance, parseGlyphSize, parseFontSize, parseTitleGap, parseRatioLock } from "../node-appearance.js";
 import { BridgeClient } from "../client.js";
@@ -84,6 +84,9 @@ export function registerNode(program: Command): void {
     });
   node
     .command("update")
+    .option("--picture <path-or-identity>", "Vault picture path or identity")
+    .option("--clear-picture", "Take off the picture")
+    .option("--picture-width <points>", "Picture width in World points")
     .argument("<selector>")
     .option("--appearance <value>", "Node visual form; card resets it", parseNodeAppearance)
     .option("--glyph-size <points>", "Icon width in World points", parseGlyphSize)
@@ -92,14 +95,19 @@ export function registerNode(program: Command): void {
     .option("--title-gap <points>", "Icon/title gap in World points", parseTitleGap)
     .option("--lock-ratio <boolean>", "Scale the whole Node proportionally: true or false", parseRatioLock)
     .option("--dry-run", "validate without mutating")
-    .action(async (selector: string, options: { appearance?: string; glyphSize?: number; clearGlyphSize?: boolean; fontSize?: number; titleGap?: number; lockRatio?: boolean; dryRun?: boolean }) => {
+    .action(async (selector: string, options: { appearance?: string; glyphSize?: number; clearGlyphSize?: boolean; picture?: string; clearPicture?: boolean; pictureWidth?: string; fontSize?: number; titleGap?: number; lockRatio?: boolean; dryRun?: boolean }) => {
+      if (options.clearPicture && (options.picture !== undefined || options.pictureWidth !== undefined)) throw new InvalidArgumentError("Choose clear-picture or picture and picture-width");
+      const picture = options.picture === undefined ? undefined : nodePictureSchema.parse(options.picture);
+      const width = options.pictureWidth === undefined ? undefined : nodePictureWidthSchema.parse(Number(options.pictureWidth));
       if (options.clearGlyphSize && options.glyphSize !== undefined) throw new InvalidArgumentError("Choose glyph-size or clear-glyph-size");
-      if (options.appearance === undefined && options.glyphSize === undefined && !options.clearGlyphSize && options.fontSize === undefined && options.titleGap === undefined && options.lockRatio === undefined) {
+      if (picture === undefined && !options.clearPicture && width === undefined && options.appearance === undefined && options.glyphSize === undefined && !options.clearGlyphSize && options.fontSize === undefined && options.titleGap === undefined && options.lockRatio === undefined) {
         throw new InvalidArgumentError("Provide appearance, glyph-size, clear-glyph-size, font-size, title-gap, or lock-ratio");
       }
       return new BridgeClient().request(`/v1/nodes/${encodeURIComponent(selector)}`, {
         method: "PUT",
         body: {
+          ...(picture !== undefined ? { appearancePicture: picture } : options.clearPicture ? { appearancePicture: null } : {}),
+          ...(width !== undefined ? { width } : {}),
           ...(options.appearance !== undefined ? { appearance: options.appearance } : {}),
           ...(options.clearGlyphSize ? { glyphSize: null } : options.glyphSize !== undefined ? { glyphSize: options.glyphSize } : {}),
           ...(options.fontSize !== undefined ? { fontSize: options.fontSize } : {}),
