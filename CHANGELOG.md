@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.10.0](https://github.com/Enso-Team/enso-cli/compare/v0.9.2...v0.10.0) (2026-11-20)
+
+
+### Features
+
+* **cli:** add durable runner service and local protocol ([#128](https://github.com/Enso-Team/enso-cli/issues/128)) ([3117ce4](https://github.com/Enso-Team/enso-cli/commit/3117ce41b800265db315058bf06a16fcdd1d9c78))
+* **cli:** agents create new Vaults with `enso vault create` ([#121](https://github.com/Enso-Team/enso-cli/issues/121)) ([8e73912](https://github.com/Enso-Team/enso-cli/commit/8e73912bc6a8683bf4332ea3efc5badf242f3b95))
+* **cli:** agents grow diagrams one Node at a time instead of in one slow batch ([#137](https://github.com/Enso-Team/enso-cli/issues/137)) ([d7cc4ff](https://github.com/Enso-Team/enso-cli/commit/d7cc4ff3f1c1f1e1d3c5b6d8aa12137f43091e26))
+* **cli:** agents lay out Excerpts and Marks without picking coordinates ([#123](https://github.com/Enso-Team/enso-cli/issues/123)) ([d3e09c0](https://github.com/Enso-Team/enso-cli/commit/d3e09c00b1364d2223b21f29fa6a219ce3df4594))
+* **cli:** agents place note excerpts on a canvas ([#112](https://github.com/Enso-Team/enso-cli/issues/112)) ([ff8dc56](https://github.com/Enso-Team/enso-cli/commit/ff8dc568f72e2d336efb15c6ccea87229680cc33))
+* **cli:** bind canvas commands to stable vault and canvas targets ([#127](https://github.com/Enso-Team/enso-cli/issues/127)) ([48d32ff](https://github.com/Enso-Team/enso-cli/commit/48d32ff9beae61b129b9d80621c476cb7573e1c0))
+* **cli:** rename Notes without breaking their Links ([#120](https://github.com/Enso-Team/enso-cli/issues/120)) ([b463565](https://github.com/Enso-Team/enso-cli/commit/b463565ed08e89358885dac618d23a41ecc8a4d5))
+* dress note nodes in Vault pictures ([#146](https://github.com/Enso-Team/enso-cli/issues/146)) ([3237645](https://github.com/Enso-Team/enso-cli/commit/3237645f4fb1774e6b313ef5d249d3409de37400))
+* **runner:** let Claude sessions use the enso CLI on their own canvas ([#135](https://github.com/Enso-Team/enso-cli/issues/135)) ([84c683d](https://github.com/Enso-Team/enso-cli/commit/84c683d69aadae9814dc04179905d086150b65fb))
+
+
+### Bug Fixes
+
+* **cli:** land contract 3 and the stranded staging work on main ([#141](https://github.com/Enso-Team/enso-cli/issues/141)) ([b2caad7](https://github.com/Enso-Team/enso-cli/commit/b2caad7c7444cc09e3c4c3fcc06322fb06b16b07))
+
 ## [0.9.2](https://github.com/Enso-Team/enso-cli/compare/v0.9.1...v0.9.2) (2026-10-22)
 
 
