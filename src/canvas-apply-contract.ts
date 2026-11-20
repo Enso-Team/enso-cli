@@ -14,9 +14,12 @@ export const canvasApplyContract = {
       fontSize: { minimum: 8, maximum: 96 },
       titleGap: { exclusiveMinimum: 0, default: 8 },
       isResizeLocked: { type: "boolean", default: false },
+      appearancePicture: "Note only: Vault-relative picture path or identity, or null to take it off. Supply width: 110 for a screenshot.",
+      width: { exclusiveMinimum: 0, unit: "World points", scope: "note picture" },
+      titleWidth: "Note picture title wrap in World points, or null for default wrap",
       note: {
-        place: { identity: "note", required: ["kind", "mode", "note"], optional: ["in", "x", "y", "titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", position: "omit x and y to let the growth layout place the Node beside its neighbors; x and y pin it", in: "a Region title or id; the Node lands inside that Region, which grows to hold it" },
-        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["titleGap", "isResizeLocked", "glyphSize", "fontSize", "appearance", "x", "y"] },
+        place: { identity: "note", required: ["kind", "mode", "note"], optional: ["appearancePicture", "width", "titleWidth", "in", "x", "y", "titleGap", "isResizeLocked", "appearance", "glyphSize", "fontSize"], note: "the Note's title or Vault-relative path; the markdown file already exists in the Vault", position: "omit x and y to let the growth layout place the Node beside its neighbors; x and y pin it", in: "a Region title or id; the Node lands inside that Region, which grows to hold it" },
+        update: { identity: "selector", required: ["kind", "mode", "selector"], optional: ["appearancePicture", "width", "titleWidth", "titleGap", "isResizeLocked", "glyphSize", "fontSize", "appearance", "x", "y"] },
         remove: { identity: "selector", required: ["kind", "mode", "selector"] }
       },
       portal: {

@@ -7,6 +7,18 @@ import { fixtureTarget, requestBody, calls, run, setupCliTest, tempDir } from ".
 setupCliTest();
 
 describe("canvas apply", () => {
+  it("passes picture placement, resizing, and clearing to patches", () => {
+    const intent = parseCanvasIntent({ canvas: "current", nodes: [
+      { kind: "note", mode: "place", note: "Login", x: 0, y: 0, appearancePicture: "Screens/Login.png", width: 110, titleWidth: 120 },
+      { kind: "note", mode: "update", selector: "Existing", appearancePicture: null }
+    ] });
+    const operations = compileCanvasApply(intent, { nodes: [{ id: "existing", title: "Existing" }] }).phases.flatMap(phase => phase.operations);
+    expect(operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "node.create", appearancePicture: "Screens/Login.png", width: 110, titleWidth: 120 }),
+      expect.objectContaining({ type: "node.update", appearancePicture: null })
+    ]));
+  });
+
   it("carries Appearance through place, update, and verification", () => {
     const intent = parseCanvasIntent({ canvas: "current", nodes: [
       { kind: "note", mode: "place", note: "API", appearance: "api", x: 0, y: 0 },

@@ -76,3 +76,24 @@ describe("node rename", () => {
     expect(JSON.parse(result.stderr).error.code).toBe("not_found");
   });
 });
+
+describe("node pictures", () => {
+  it("sets and resizes a picture", async () => {
+    expect((await run(["node", "update", "Login", "--picture", "Screens/Login.png", "--picture-width", "110"])).code).toBe(0);
+    expect(body(0)).toEqual({ appearancePicture: "Screens/Login.png", width: 110, dryRun: false });
+  });
+  it("clears a picture", async () => {
+    expect((await run(["node", "update", "Login", "--clear-picture"])).code).toBe(0);
+    expect(body(0)).toEqual({ appearancePicture: null, dryRun: false });
+  });
+  it.each([
+    ["--picture", "../escape.png"],
+    ["--picture-width", "0"],
+    ["--picture-width", "Infinity"],
+    ["--picture", "Screens/Login.png", "--clear-picture"],
+    ["--clear-picture", "--picture-width", "110"]
+  ])("rejects invalid picture options %j", async (...args) => {
+    expect((await run(["node", "update", "Login", ...args])).code).not.toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+});

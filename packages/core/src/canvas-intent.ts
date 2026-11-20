@@ -1,5 +1,5 @@
 import { z } from "zod/v3";
-import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema } from "./node-appearance.js";
+import { nodeAppearanceSchema, nodeGlyphSizeSchema, nodeFontSizeSchema, nodeTitleGapSchema, nodePictureSchema, nodePictureWidthSchema, nodePictureTitleWidthSchema } from "./node-appearance.js";
 import { EnsoError } from "./errors.js";
 import { VISUAL_COLOR_GRAMMAR, labelFontSizeSchema, lineStyleSchema, linkDirectionSchema, validateLinkEndpointMove, visualColorSchema, worldPointSchema } from "./link-model.js";
 import { markFontSizeSchema, writingTextAlignmentSchema, markStyleSchema, markTextRunSchema, markTextSchema, runsOutsideText, type MarkTextRun } from "./mark-model.js";
@@ -29,16 +29,17 @@ function pairedCoordinates(value: { x?: number; y?: number }, ctx: z.RefinementC
 
 // How a Note or Portal Node looks. Every Node schema takes the same fields.
 const nodeVisual = { appearance: nodeAppearanceSchema.optional(), glyphSize: nodeGlyphSizeSchema.optional(), fontSize: nodeFontSizeSchema.optional(), titleGap: nodeTitleGapSchema.optional(), isResizeLocked: z.boolean().optional() };
+const notePicture = { appearancePicture: nodePictureSchema.optional(), width: nodePictureWidthSchema.optional(), titleWidth: nodePictureTitleWidthSchema.optional() };
 const setsNodeVisual = (value: Record<string, unknown>): boolean => Object.keys(nodeVisual).some((key) => value[key] !== undefined);
 
 // A Node is a placement of a Note. The Note is a markdown file the agent already wrote into
 // the Vault, named by its title or its Vault-relative path. The intent carries no content.
 // A place without x and y lets the growth layout choose the spot beside the Node's neighbors.
 // `in` names the Region the Node lands inside, by title or id.
-const notePlace = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("place"), note: safeString, in: safeString.optional(), ...optionalCoordinates }).strict().superRefine(pairedCoordinates);
-const noteUpdate = z.object({ ...nodeVisual, kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
+const notePlace = z.object({ ...nodeVisual, ...notePicture, kind: z.literal("note"), mode: z.literal("place"), note: safeString, in: safeString.optional(), ...optionalCoordinates }).strict().superRefine(pairedCoordinates);
+const noteUpdate = z.object({ ...nodeVisual, ...notePicture, kind: z.literal("note"), mode: z.literal("update"), selector, ...optionalCoordinates }).strict().superRefine((value, ctx) => {
   pairedCoordinates(value, ctx);
-  if (!setsNodeVisual(value) && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, glyphSize, fontSize, titleGap, isResizeLocked, or x and y" });
+  if (!setsNodeVisual(value) && !Object.keys(notePicture).some(key => value[key as keyof typeof value] !== undefined) && value.x === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "note update requires appearance, glyphSize, fontSize, titleGap, isResizeLocked, or x and y" });
 });
 const noteRemove = z.object({ kind: z.literal("note"), mode: z.literal("remove"), selector }).strict();
 const portalCreate = z.object({ ...nodeVisual, kind: z.literal("portal"), mode: z.literal("create"), title: safeTitle, subcanvasRef: safeString, ...coordinates }).strict();
@@ -452,7 +453,7 @@ function nodeTarget(node: CanvasIntent["nodes"][number]): string {
 
 function nodeWriteOperations(node: CanvasIntent["nodes"][number], nodes: ContextNode[]): Record<string, unknown>[] {
   if (node.mode === "remove") return [];
-  const appearance = defined({ appearance: node.appearance, glyphSize: node.glyphSize, fontSize: node.fontSize, titleGap: node.titleGap, isResizeLocked: node.isResizeLocked });
+  const appearance = defined({ ...(node.kind === "note" ? { appearancePicture: node.appearancePicture, width: node.width, titleWidth: node.titleWidth } : {}), appearance: node.appearance, glyphSize: node.glyphSize, fontSize: node.fontSize, titleGap: node.titleGap, isResizeLocked: node.isResizeLocked });
   if (node.mode === "create") {
     if (matches(nodes, node.title).length > 0) return [];
     return [{ type: "portal.create", ...appearance, title: node.title, subcanvasRef: node.subcanvasRef, x: node.x, y: node.y }];
