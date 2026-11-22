@@ -101,7 +101,7 @@ export function registerLink(program: Command): void {
   link
     .command("delete")
     .argument("<link-id>")
-    .description("Remove from Note: delete the first mentioning sentence from the source Note. The Link leaves every canvas when it was the last mention.")
+    .description("Remove from Note: delete the Link's sentence from the source Note. Every Link on that sentence leaves every canvas.")
     .option("--dry-run", "validate without mutating")
     .action(async (linkId: string, options: { dryRun?: boolean }) =>
       new BridgeClient().request(`/v1/links/${encodeURIComponent(linkId)}`, {
