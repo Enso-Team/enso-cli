@@ -3,13 +3,17 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlink
 import { dirname, join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/index.js";
+import * as installation from "../../src/installation.js";
 import * as skillAgents from "../../src/skill-agents.js";
 import { refreshInstalledSkill, staleSkillCopies } from "../../src/commands/skill.js";
 import { cliVersion } from "../../src/version.js";
 import { run, setupCliTest, tempDir } from "../support/cli-harness.js";
 
 setupCliTest();
-beforeEach(() => vi.spyOn(skillAgents, "discoverSkillAgents").mockReturnValue({ agents: ["codex", "claude-code"], skippedAgents: [] }));
+beforeEach(() => {
+  vi.spyOn(skillAgents, "discoverSkillAgents").mockReturnValue({ agents: ["codex", "claude-code"], skippedAgents: [] });
+  vi.spyOn(installation, "inspectInstallation").mockResolvedValue({ owner: "npm", automatic: true, updateCommand: "npm install -g @enso-app/cli@latest", installer: "npx" });
+});
 
 function mockInstaller(stdout?: string, exitCode = 0, failedAgent?: string): string {
   const executable = join(tempDir, "mock-npx.js");
