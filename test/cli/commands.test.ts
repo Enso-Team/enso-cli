@@ -386,6 +386,19 @@ describe("commands", () => {
     });
   });
 
+  it("passes the mention a Link points at on create and update", async () => {
+    await run(["link", "create", "A", "B", "--mention-index", "1", "--label", "subscribes to"]);
+    expect(requestBody(calls[0])).toMatchObject({ source: "A", target: "B", mentionIndex: 1, label: "subscribes to" });
+
+    await run(["link", "update", "abc", "--mention-index", "0"]);
+    expect(requestBody(calls[1])).toMatchObject({ mentionIndex: 0 });
+    const unreadable = await run(["link", "create", "A", "B", "--mention-index", "first"]);
+    expect(JSON.parse(unreadable.stderr).error.message).toContain("mention index must be a whole number from 0");
+    const moved = await run(["link", "update", "abc", "--mention-index", "0", "--target", "C"]);
+    expect(JSON.parse(moved.stderr).error.message).toContain("Choose the mention after moving an endpoint");
+    expect(calls).toHaveLength(2);
+  });
+
   it("rejects invalid link directions before sending", async () => {
     await expect(run(["link", "create", "A", "B", "--direction", "sideways"])).rejects.toThrow(
       "expected directed, undirected, or bidirectional"

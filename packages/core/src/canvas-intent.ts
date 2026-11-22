@@ -51,8 +51,10 @@ const portalRemove = z.object({ kind: z.literal("portal"), mode: z.literal("remo
 const intentNode = z.union([notePlace, noteUpdate, noteRemove, portalCreate, portalUpdate, portalRemove]);
 
 const linkVisual = { label: z.string().nullable().optional(), color: visualColorSchema.nullable().optional(), direction: linkDirectionSchema.optional(), lineStyle: lineStyleSchema.optional(), labelFontSize: labelFontSizeSchema.optional() };
-const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, ...linkVisual }).strict();
-const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), ...linkVisual, source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
+/** Zero-based entry in the Link's `mentions`, the sentence in the source Note the Link points at. */
+const mentionIndex = z.number().int().min(0).optional();
+const linkCreate = z.object({ mode: z.literal("create"), source: selector, target: selector, mentionIndex, ...linkVisual }).strict();
+const linkUpdate = z.object({ mode: z.literal("update"), id: z.string().uuid(), mentionIndex, ...linkVisual, source: selector.optional(), target: selector.nullable().optional(), targetPosition: worldPointSchema.optional() }).strict().superRefine((value, ctx) => {
   try {
     validateLinkEndpointMove(value);
   } catch (error) {
@@ -123,7 +125,7 @@ export const canvasIntentSchema = z.object({
 }).strict().superRefine((intent, ctx) => {
   addDuplicates(ctx, "nodes", intent.nodes.flatMap((node) => node.mode === "place" ? [node.note] : "title" in node ? [node.title] : []));
   const linkPairs = intent.links.flatMap((link) => link.mode === "create"
-    ? [[link.source, link.target].sort((a, b) => a.localeCompare(b)).join("\u0000")]
+    ? [[...[link.source, link.target].sort((a, b) => a.localeCompare(b)), link.mentionIndex ?? ""].join("\u0000")]
     : []);
   addDuplicates(ctx, "links", linkPairs);
   addDuplicates(ctx, "links", intent.links.flatMap((link) => link.mode !== "create" ? [link.id] : []));
@@ -153,7 +155,7 @@ export type CompiledCanvasApply = { phases: CanvasPhase[]; sharedNoteWrites: str
 export const CREATED_MARK_PREFIX = "created:";
 
 type ContextNode = { titleGap?: number; isResizeLocked?: boolean; glyphSize?: number | null; fontSize?: number; appearance?: string; id?: string; kind?: string; title?: string; displayTitle?: string; ref?: string; position?: { x?: number; y?: number } } & Record<string, unknown>;
-type ContextLink = { labelFontSize?: number; id?: string; sourceNodeID?: string; targetNodeID?: string | null; label?: string | null; color?: string | null; direction?: string; lineStyle?: string } & Record<string, unknown>;
+type ContextLink = { labelFontSize?: number; mentionIndex?: number | null; id?: string; sourceNodeID?: string; targetNodeID?: string | null; label?: string | null; color?: string | null; direction?: string; lineStyle?: string } & Record<string, unknown>;
 type ContextMark = { id?: string; kind?: string; text?: string; position?: { x?: number; y?: number }; width?: number; textRuns?: MarkTextRun[]; connectedNodeIDs?: string[] } & Record<string, unknown>;
 type ContextPrimitive = { id?: string; kind?: string; position?: { x?: number; y?: number }; bounds?: { x?: number; y?: number; width?: number; height?: number }; start?: { x?: number; y?: number }; end?: { x?: number; y?: number } } & Record<string, unknown>;
 
@@ -194,7 +196,7 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
         const mismatches: string[] = [];
         compareRequestedFields(link, existing, Object.keys(linkVisual), "links", mismatches);
         if (!sameId(existing.sourceNodeID, source) || !sameId(existing.targetNodeID, target) || mismatches.length > 0) {
-          fail("link_conflict", "A Link already exists for this unordered endpoint pair with different state", "links", "Update the existing Link by id");
+          fail("link_conflict", "A Link already exists for these endpoints with different state", "links", "Update the existing Link by id, or name another sentence with mentionIndex");
         }
       }
     } else {
@@ -234,9 +236,9 @@ export function compileCanvasApply(intent: CanvasIntent, context: unknown): Comp
   const linkWrites: Record<string, unknown>[] = [];
   for (const link of intent.links) {
     if (link.mode === "create" && matchingLinks(link, nodes, links).length === 0) {
-      linkWrites.push({ type: "link.create", source: endpointSelector(link.source, nodes, intent), target: endpointSelector(link.target, nodes, intent), ...defined(linkVisualValues(link)) });
+      linkWrites.push({ type: "link.create", source: endpointSelector(link.source, nodes, intent), target: endpointSelector(link.target, nodes, intent), ...defined({ mentionIndex: link.mentionIndex }), ...defined(linkVisualValues(link)) });
     }
-    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined(linkVisualValues(link)), ...defined({ source: link.source === undefined ? undefined : endpointSelector(link.source, nodes, intent), target: typeof link.target === "string" ? endpointSelector(link.target, nodes, intent) : link.target, targetPosition: link.targetPosition }) });
+    if (link.mode === "update") linkWrites.push({ type: "link.update", id: link.id, ...defined({ mentionIndex: link.mentionIndex }), ...defined(linkVisualValues(link)), ...defined({ source: link.source === undefined ? undefined : endpointSelector(link.source, nodes, intent), target: typeof link.target === "string" ? endpointSelector(link.target, nodes, intent) : link.target, targetPosition: link.targetPosition }) });
   }
   const primitiveOps = intent.primitives.map((primitive) => primitiveOperation(primitive));
   const markOps = [
@@ -302,7 +304,8 @@ function matchingLinks(
   const source = matches(nodes, link.source);
   const target = matches(nodes, link.target);
   if (source.length !== 1 || target.length !== 1 || !source[0].id || !target[0].id) return [];
-  return links.filter(candidate => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source[0].id, target[0].id));
+  return links.filter(candidate => unorderedPair(candidate.sourceNodeID, candidate.targetNodeID) === unorderedPair(source[0].id, target[0].id)
+    && (link.mentionIndex === undefined || candidate.mentionIndex === link.mentionIndex));
 }
 
 /**

@@ -32,7 +32,7 @@ describe("printEnvelope", () => {
         code: "duplicate_link",
         message: "Link already exists",
         details: {
-          hint: "Use link update on the existing link id instead of link create"
+          hint: "Use link update on the existing link id, or pass --mention-index to link create to point a new link at another sentence from its mentions"
         }
       }
     });

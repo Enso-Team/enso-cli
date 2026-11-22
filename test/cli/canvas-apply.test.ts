@@ -19,6 +19,35 @@ describe("canvas apply", () => {
     ]));
   });
 
+  describe("several Links between two Nodes", () => {
+    const a = "00000000-0000-4000-8000-000000000001";
+    const b = "00000000-0000-4000-8000-000000000002";
+    const first = "00000000-0000-4000-8000-000000000003";
+    const context = { nodes: [{ id: a, title: "A" }, { id: b, title: "B" }], links: [{ id: first, sourceNodeID: a, targetNodeID: b, mentionIndex: 0 }], diagramPrimitives: [], marks: [] };
+    const linkWrites = (links: unknown[]) => compileCanvasApply(parseCanvasIntent({ canvas: "current", links }), context)
+      .phases.find((phase) => phase.name === "linkWrites")?.operations ?? [];
+
+    it("creates a second Link when the intent names a mention no Link points at", () => {
+      expect(linkWrites([{ mode: "create", source: "A", target: "B", mentionIndex: 1, label: "subscribes to" }]))
+        .toEqual([{ type: "link.create", source: "A", target: "B", mentionIndex: 1, label: "subscribes to" }]);
+    });
+
+    it("leaves the Canvas alone when the named mention already has its Link, or when no mention is named", () => {
+      expect(linkWrites([{ mode: "create", source: "A", target: "B", mentionIndex: 0 }])).toEqual([]);
+      expect(linkWrites([{ mode: "create", source: "A", target: "B" }])).toEqual([]);
+    });
+
+    it("accepts two creates for one pair on different mentions and refuses two on the same one", () => {
+      expect(linkWrites([{ mode: "create", source: "A", target: "B", mentionIndex: 1 }, { mode: "create", source: "A", target: "B", mentionIndex: 2 }])).toHaveLength(2);
+      expect(() => parseCanvasIntent({ canvas: "current", links: [{ mode: "create", source: "A", target: "B", mentionIndex: 1 }, { mode: "create", source: "B", target: "A", mentionIndex: 1 }] }))
+        .toThrow(/Conflicting links declarations/);
+    });
+
+    it("moves a Link to another mention on update", () => {
+      expect(linkWrites([{ mode: "update", id: first, mentionIndex: 1 }])).toEqual([{ type: "link.update", id: first, mentionIndex: 1 }]);
+    });
+  });
+
   it("carries Appearance through place, update, and verification", () => {
     const intent = parseCanvasIntent({ canvas: "current", nodes: [
       { kind: "note", mode: "place", note: "API", appearance: "api", x: 0, y: 0 },

@@ -35,32 +35,36 @@ export function registerLink(program: Command): void {
   link
     .command("create")
     .description(
-      "Show a Link over a pair the source Note already mentions with [[Target]]. Returns wikilink_required when it does not: write the sentence first. A mention alone draws nothing."
+      "Show a Link on a sentence in the source Note that mentions [[Target]]. Returns wikilink_required when the Note has none: write the sentence first. Two Nodes can share several Links: each create takes the first mention with no Link, and duplicate_link means none is left."
     )
     .argument("<source-node>")
     .argument("<target-node>")
+    .option("--mention-index <n>", "point the Link at this entry of its mentions, counted from 0, even when another Link is on that sentence")
     .option("--label <label>", "label override on the curve; empty displays a blank label; omit to use the Note-derived label")
     .option("--color <color>", "relationship line color, such as #3B82F6 or blue")
     .option("--direction <direction>", "arrow direction: directed, undirected, or bidirectional", parseLinkDirection)
     .option("--line-style <style>", "solid, dashed, or dotted", parseLineStyle)
     .option("--label-font-size <points>", "label size in World points, 8 to 32; new links default to 12")
     .option("--dry-run", "validate without mutating")
-    .action(async (source: string, target: string, options: LinkUpdateOptions) =>
-      new BridgeClient().request("/v1/links", {
-        method: "POST",
-        body: buildLinkCreateBody(source, target, options),
-        dryRun: Boolean(options.dryRun)
-      })
-    );
+    .action(async (source: string, target: string, options: LinkUpdateOptions) => {
+      let body: ReturnType<typeof buildLinkCreateBody>;
+      try {
+        body = buildLinkCreateBody(source, target, options);
+      } catch (error) {
+        throw new InvalidArgumentError(error instanceof Error ? error.message : "Invalid link create options");
+      }
+      return new BridgeClient().request("/v1/links", { method: "POST", body, dryRun: Boolean(options.dryRun) });
+    });
   link
     .command("update")
     .description(
-      "Update a Link's presentation. --label sets the override and never edits the Note. --source, --target, and --delink move one endpoint and edit the first mention themselves."
+      "Update a Link's presentation. --label sets the override and never edits the Note. --mention-index moves the Link to another sentence. --source, --target, and --delink move one endpoint and edit the Link's own mention themselves."
     )
     .argument("<link-id>")
     .option("--source <node>", "move the tail to this Node; the old sentence stays and the new source gets one when it needs it")
-    .option("--target <node>", "move the head to this Node; the token in the first mention is rewritten")
-    .option("--delink", "detach the head into open space; the token leaves the first mention and the prose stays")
+    .option("--target <node>", "move the head to this Node; the token in the Link's mention is rewritten")
+    .option("--delink", "detach the head into open space; the token leaves the Link's mention and the prose stays")
+    .option("--mention-index <n>", "point the Link at this entry of its mentions, counted from 0")
     .option("--target-position <x,y>", "with --delink, where the dangling head points in World space", parseTargetPosition)
     .option("--label <label>", "set the label override; empty displays a blank label; leaves the Note intact")
     .option("--clear-label", "clear the override to use the Note-derived label")

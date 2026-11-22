@@ -62,6 +62,8 @@ When the user asks to rearrange a Canvas, or for Regions nested inside Regions, 
 
 ## Link and removal semantics
 
+Two Nodes can share several Links. Each Link points at one sentence in the source Note that mentions the target, listed in its `mentions` with its own `mentionIndex`. Write one sentence per relationship, then create one Link per sentence: a create takes the first mention with no Link. In a `canvas apply` intent, a second Link for a pair names its sentence with `mentionIndex`, and a create without one leaves a pair that already shows a Link alone.
+
 A Link's `direction` is `directed` for a one-way relationship, `bidirectional` when both Notes mention each other and the relationship runs both ways, or `undirected` for a symmetric association. The arrowhead points at the target.
 
 Each command touches shared files differently:
@@ -70,8 +72,9 @@ Each command touches shared files differently:
 - `enso node rename <selector> <new-title>` renames the file and rewrites its `[[wikilinks]]` and Canvas references. It finds the Node on the open Canvas, so open a Canvas holding the Note first, and check `unreadableNotes` for Links it could not rewrite.
 - `enso excerpt source <id> --text` edits the passage in its Note. `enso excerpt delete` removes only the placement.
 - `enso link remove` removes a curve from this Canvas and keeps the prose.
-- `enso link delete` deletes the mentioning sentence. Removing the last mention removes the Link on every Canvas.
+- `enso link delete` deletes the Link's own sentence. Every Link on that sentence goes on every Canvas, and Links on other sentences stay.
 - Moving a Link endpoint rewrites its mention.
+- `enso link update <id> --mention-index <n>` moves a Link to another sentence and writes nothing.
 
 ## Recover from failure
 

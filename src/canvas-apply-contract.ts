@@ -31,7 +31,8 @@ export const canvasApplyContract = {
     links: {
       direction: ["directed", "undirected", "bidirectional"],
       lineStyle: lineStyleSchema.options,
-      create: { identity: "unordered source/target pair", required: ["mode", "source", "target"], optional: ["label", "color", "direction", "lineStyle", "labelFontSize"] },
+      mentionIndex: "zero-based entry in the Link's mentions: the sentence in the source Note the Link points at. Two Nodes can share several Links, each on its own sentence",
+      create: { identity: "source/target pair, plus mentionIndex when given; without it a pair that already shows a Link is left alone", required: ["mode", "source", "target"], optional: ["mentionIndex", "label", "color", "direction", "lineStyle", "labelFontSize"] },
       update: { identity: "app Link UUID", required: ["mode", "id"], optional: ["label", "color", "direction", "lineStyle", "labelFontSize", "source", "target", "targetPosition"] },
       remove: { identity: "app Link UUID", required: ["mode", "id"], preservesRelationProse: true }
     },
