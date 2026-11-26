@@ -40,7 +40,7 @@
     "type": "git",
     "url": "git+https://github.com/Enso-Team/enso-cli.git"
   },
-  "homepage": "https://github.com/Enso-Team/enso-cli#readme",
+  "homepage": "https://ensocanvas.com",
   "bugs": {
     "url": "https://github.com/Enso-Team/enso-cli/issues"
   }
