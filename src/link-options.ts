@@ -8,9 +8,16 @@ export function parseLabelFontSize(value: string): number {
   return size;
 }
 
+export function parseMentionIndex(value: string): number {
+  const index = Number(value);
+  if (!Number.isInteger(index) || index < 0) throw new Error("mention index must be a whole number from 0");
+  return index;
+}
+
 export type LinkCreateBody = {
   source: string;
   target: string;
+  mentionIndex?: number;
   label?: string;
   color?: string;
   direction?: LinkDirection;
@@ -19,7 +26,7 @@ export type LinkCreateBody = {
   dryRun: boolean;
 };
 
-export type LinkCreateOptions = Omit<LinkCreateBody, "source" | "target" | "dryRun" | "labelFontSize"> & { labelFontSize?: number | string; dryRun?: boolean };
+export type LinkCreateOptions = Omit<LinkCreateBody, "source" | "target" | "dryRun" | "labelFontSize" | "mentionIndex"> & { labelFontSize?: number | string; mentionIndex?: number | string; dryRun?: boolean };
 
 export type LinkUpdateOptions = {
   label?: string;
@@ -28,6 +35,7 @@ export type LinkUpdateOptions = {
   direction?: LinkDirection;
   lineStyle?: LineStyle;
   labelFontSize?: number | string;
+  mentionIndex?: number | string;
   source?: string;
   target?: string;
   delink?: boolean;
@@ -38,7 +46,7 @@ export type LinkUpdateOptions = {
 /**
  * One operation moves one end of a Link. `source` re-sources the tail, `target` re-targets
  * the head, and `target: null` delinks the head into open space, optionally at
- * `targetPosition`. The bridge edits the first mention for every move (ADR-0008).
+ * `targetPosition`. The bridge edits the Link's own mention for every move (ADR-0008).
  */
 export type LinkEndpointMove = { source: string } | { target: string } | { target: null; targetPosition?: WorldPoint };
 
@@ -74,6 +82,7 @@ export function buildLinkCreateBody(
     target,
     dryRun: Boolean(options.dryRun)
   };
+  if (options.mentionIndex !== undefined) body.mentionIndex = parseMentionIndex(String(options.mentionIndex));
   if (options.label !== undefined) body.label = options.label;
   if (options.color !== undefined) {
     assertVisualColor(options.color);
@@ -91,7 +100,13 @@ export function buildLinkUpdateBody(options: LinkUpdateOptions): Record<string, 
   }
 
   const body: Record<string, unknown> = { dryRun: Boolean(options.dryRun) };
-  Object.assign(body, linkEndpointMove(options));
+  const move = linkEndpointMove(options);
+  Object.assign(body, move);
+
+  if (options.mentionIndex !== undefined) {
+    if (move !== undefined) throw new Error("Choose the mention after moving an endpoint");
+    body.mentionIndex = parseMentionIndex(String(options.mentionIndex));
+  }
 
   if (options.clearLabel) {
     body.label = null;

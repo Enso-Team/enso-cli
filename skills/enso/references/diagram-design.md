@@ -13,7 +13,7 @@ A question about how code behaves, such as "how does deleting work?", usually ha
 - **One row per flow:** each row shows what the user does, what happens, and where it lands.
 - **A map of the relevant files:** each file or component the question touches is a Node, and each flow is a path of Links in its own color. Shared Nodes show where flows reach the same component, and separate paths show where they don't.
 
-On the file map, a Mark legend names each flow beside its color, and an Excerpt or Mark at each step says what happens there, so following one color reads as that flow's explanation. Two Nodes hold one Link between them, so a step two flows share gets a neutral color and both flows' names in the legend.
+On the file map, a Mark legend names each flow beside its color, and an Excerpt or Mark at each step says what happens there, so following one color reads as that flow's explanation. When two flows share a step, write one sentence per flow in the source Note and give each its own Link in that flow's color.
 
 Scale decides the layout. A few flows fit one row per flow. A dozen files fit a file map with colored flows. A whole system needs a cluster per subsystem, with Portals into detail Canvases. When the point is a change, put before and after side by side.
 

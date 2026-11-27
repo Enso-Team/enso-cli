@@ -6,7 +6,7 @@ const commandHints: Record<string, string> = {
 };
 const commandExpectations: Record<string, string> = { [CANVAS_INTENT_SCHEMA_EXPECTED]: "canvas apply schema" };
 
-const DUPLICATE_LINK_HINT = "Use link update on the existing link id instead of link create";
+const DUPLICATE_LINK_HINT = "Use link update on the existing link id, or pass --mention-index to link create to point a new link at another sentence from its mentions";
 
 const ownOutput = new WeakSet<object>();
 /** Marks a command whose action prints its own output and returns no envelope; any other action must return one. */
