@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Enso-Team/enso-cli/compare/v0.10.0...v0.11.0) (2026-11-27)
+
+
+### Features
+
+* **cli:** add a second link between two nodes with --mention-index ([#147](https://github.com/Enso-Team/enso-cli/issues/147)) ([058a9ee](https://github.com/Enso-Team/enso-cli/commit/058a9eeb1634dc47c9cf948c8f851ead64d27bae))
+
 ## [0.10.0](https://github.com/Enso-Team/enso-cli/compare/v0.9.2...v0.10.0) (2026-11-20)
 
 
